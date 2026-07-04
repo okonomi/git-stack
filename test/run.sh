@@ -8,10 +8,9 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# Defaults to the bash script; override to exercise another build, e.g.
-#   GIT_STACK="ruby $HERE/../bin/git-stack.rb" test/run.sh
+# Defaults to the Ruby script under CRuby; override to exercise another build:
 #   GIT_STACK="$HERE/../build/bin/git-stack" test/run.sh   # spinel binary
-GIT_STACK="${GIT_STACK:-$HERE/../git-stack}"
+GIT_STACK="${GIT_STACK:-ruby $HERE/../bin/git-stack.rb}"
 
 PASS=0
 FAIL=0
