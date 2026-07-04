@@ -8,7 +8,10 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-GIT_STACK="$HERE/../git-stack"
+# Defaults to the bash script; override to exercise another build, e.g.
+#   GIT_STACK="ruby $HERE/../bin/git-stack.rb" test/run.sh
+#   GIT_STACK="$HERE/../build/bin/git-stack" test/run.sh   # spinel binary
+GIT_STACK="${GIT_STACK:-$HERE/../git-stack}"
 
 PASS=0
 FAIL=0
@@ -55,7 +58,9 @@ new_repo() {
 	git commit -qm base
 }
 
-gs() { "$GIT_STACK" "$@"; }
+# Word-split GIT_STACK so it can carry an interpreter prefix ("ruby foo.rb").
+# shellcheck disable=SC2086
+gs() { $GIT_STACK "$@"; }
 
 commit() { # commit <file> <message>
 	echo "$2" > "$1"

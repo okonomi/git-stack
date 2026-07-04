@@ -2,3 +2,8 @@
 *.swp
 *~
 .DS_Store
+
+# spin build output
+/build/
+/vendor/
+/spin.lock

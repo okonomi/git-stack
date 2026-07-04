@@ -16,8 +16,13 @@ parent of each branch and does that replay for you.
 
 ## Install
 
-`git-stack` is a single self-contained script. Put it anywhere on your
-`PATH` with a name starting with `git-` and git will pick it up as the
+`git-stack` comes in two interchangeable flavours. Both speak the same
+commands and store the same git-config metadata, so you can mix and match.
+
+### bash script
+
+`git-stack` (repo root) is a single self-contained script. Put it anywhere on
+your `PATH` with a name starting with `git-` and git will pick it up as the
 `git stack` subcommand:
 
 ```sh
@@ -26,6 +31,32 @@ git stack help
 ```
 
 (You can also run `./git-stack ...` directly from a checkout.)
+
+### Ruby / native binary (Spinel)
+
+`bin/git-stack.rb` is a Ruby port written in the subset of Ruby that
+[Spinel](https://github.com/matz/spinel), Matz's ahead-of-time Ruby compiler,
+accepts. This repo is a Spinel project (`spin.toml`), so its `spin` tool
+compiles the script straight to a standalone native executable — no Ruby
+runtime needed at run time:
+
+```sh
+spin build                       # -> build/bin/git-stack (native binary)
+install -m 0755 build/bin/git-stack /usr/local/bin/git-stack
+git stack help
+
+# or let spin place it on PATH for you:
+spin install                     # copies it to ~/.local/bin
+```
+
+It also runs unchanged under plain CRuby if you'd rather not compile it:
+
+```sh
+ruby bin/git-stack.rb help
+```
+
+The port shells out to `git` exactly like the bash script (via `system()` and
+backticks), so it needs nothing beyond `git` and — to build — Spinel's `spin`.
 
 ## How it works
 
@@ -112,7 +143,13 @@ test/run.sh
 ```
 
 A dependency-free suite that exercises each command in throwaway
-repositories.
+repositories. It runs the bash script by default; point `GIT_STACK` at another
+build to test that one instead:
+
+```sh
+GIT_STACK="ruby $PWD/bin/git-stack.rb" test/run.sh   # Ruby port under CRuby
+GIT_STACK="$PWD/build/bin/git-stack" test/run.sh     # compiled Spinel binary
+```
 
 ## License
 
