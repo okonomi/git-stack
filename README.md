@@ -129,13 +129,18 @@ git stack restack               # continue restacking the rest
 
 ## Tests
 
+Two suites, both under `test/` (see [`test/README.md`](test/README.md)):
+
 ```sh
-test/run.sh
+spin test        # Spinel snapshot tests: compile each test/*.rb, CRuby is the oracle
+test/run.sh      # dependency-free bash suite, exercises each command
 ```
 
-A dependency-free suite that exercises each command in throwaway
-repositories. It runs the Ruby script under CRuby by default; point
-`GIT_STACK` at another build to test that one instead:
+`spin test` builds each `test/*.rb` with Spinel and compares its output
+against the same source run under CRuby, so it verifies git-stack behaves
+identically compiled and interpreted. `run.sh` is a self-contained bash suite
+that exercises each command in throwaway repositories; it runs the Ruby script
+under CRuby by default, but you can point `GIT_STACK` at another build:
 
 ```sh
 GIT_STACK="$PWD/build/bin/git-stack" test/run.sh     # compiled Spinel binary

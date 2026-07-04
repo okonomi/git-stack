@@ -404,4 +404,8 @@ def main(argv)
   end
 end
 
-main(ARGV)
+# Run as a program, but stay quiet when required by a snapshot test, which
+# sets GIT_STACK_TEST_NOEXEC before requiring this file to call its functions
+# directly. (Spinel's `__FILE__` is always the toplevel script, so the usual
+# `$PROGRAM_NAME == __FILE__` guard is not parity-safe under `spin test`.)
+main(ARGV) unless ENV["GIT_STACK_TEST_NOEXEC"]
