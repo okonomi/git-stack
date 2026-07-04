@@ -1,0 +1,119 @@
+# git-stack
+
+Manage **stacked branches** with plain git — no server, no database, no
+dependencies beyond `git` and `bash`.
+
+Stacked branches (a.k.a. stacked diffs) let you split a large change into a
+chain of small, dependent branches:
+
+```
+main ─▶ feature-a ─▶ feature-b ─▶ feature-c
+```
+
+Each branch builds on the one below it. When you amend a branch near the
+bottom, everything above it needs to be replayed — `git-stack` tracks the
+parent of each branch and does that replay for you.
+
+## Install
+
+`git-stack` is a single self-contained script. Put it anywhere on your
+`PATH` with a name starting with `git-` and git will pick it up as the
+`git stack` subcommand:
+
+```sh
+install -m 0755 git-stack /usr/local/bin/git-stack
+git stack help
+```
+
+(You can also run `./git-stack ...` directly from a checkout.)
+
+## How it works
+
+The parent of each branch is stored in your repository's git config:
+
+```
+branch.<name>.stackParent = <parent-branch>
+```
+
+The bottom of every stack rests on the **trunk** (`main`/`master`), stored
+as `stack.trunk`. Because everything lives in git config, there is no extra
+state file to commit and nothing to keep in sync.
+
+## Commands
+
+| Command                 | Description                                                        |
+| ----------------------- | ------------------------------------------------------------------ |
+| `git stack init [branch]` | Set (or auto-detect) the trunk branch.                           |
+| `git stack create <name>` | Create `<name>` stacked on the current branch. (alias: `b`)     |
+| `git stack tree`          | Show the stack as a tree. (aliases: `ls`, `list`)               |
+| `git stack up [child]`    | Check out the branch stacked on the current one.                |
+| `git stack down`          | Check out the current branch's parent.                          |
+| `git stack parent [branch]` | Show or set the parent of the current branch.                 |
+| `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
+| `git stack untrack`       | Stop tracking the current branch in a stack.                    |
+| `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
+
+## Walkthrough
+
+```sh
+git checkout main
+
+git stack create feature-a      # main -> feature-a, now on feature-a
+# ... hack, commit ...
+
+git stack create feature-b      # feature-a -> feature-b, now on feature-b
+# ... hack, commit ...
+
+git stack tree
+#   main (trunk)
+#     feature-a (1 commit(s))
+#     * feature-b (1 commit(s))
+
+# Address review feedback on the lower branch:
+git stack down                  # back to feature-a
+# ... amend, add a commit ...
+
+git stack restack               # replay feature-b on the new feature-a
+git stack up                    # back up to feature-b
+```
+
+`git stack tree` flags branches that have drifted from their parent:
+
+```
+  main (trunk)
+    feature-a (2 commit(s))
+      feature-b (needs restack: 1 behind)
+```
+
+## Adopting existing branches
+
+Already have a branch you want to fold into a stack?
+
+```sh
+git checkout my-existing-branch
+git stack track main            # or any other branch as the parent
+```
+
+## Restack conflicts
+
+If a rebase hits a conflict, `git stack restack` aborts cleanly and leaves
+your working tree untouched, telling you how to resolve it by hand:
+
+```sh
+git checkout <branch> && git rebase <parent>
+# resolve conflicts, git rebase --continue
+git stack restack               # continue restacking the rest
+```
+
+## Tests
+
+```sh
+test/run.sh
+```
+
+A dependency-free suite that exercises each command in throwaway
+repositories.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
