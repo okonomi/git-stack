@@ -1,0 +1,36 @@
+test: init auto-detects main
+  ok   trunk stored as main
+test: create records parent and checks out branch
+  ok   on new branch
+  ok   parent is main
+test: create rejects an existing branch
+  ok   error mentions already exists
+test: tree renders the whole stack
+  ok   tree shows trunk
+  ok   tree shows feat-a
+  ok   tree shows feat-b
+  ok   current branch marked
+test: up/down navigate the stack
+  ok   down moves to parent
+  ok   down again moves to trunk
+  ok   up moves to child
+test: up with multiple children requires a choice
+  ok   up is ambiguous (non-zero exit)
+  ok   lists both children
+  ok   up <name> disambiguates
+test: restack replays descendants onto updated parent
+  ok   feat-b now contains a2
+  ok   feat-b not behind feat-a
+  ok   restack restores branch
+test: restack aborts cleanly on conflict
+  ok   restack fails on conflict
+  ok   reports the conflict
+  ok   no rebase in progress
+test: parent shows and sets the parent
+  ok   parent reports feat-a
+  ok   parent updated to other
+test: untrack removes metadata
+  ok   parent metadata removed
+
+-------------------------------------
+passed: 23   failed: 0
