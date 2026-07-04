@@ -1,0 +1,106 @@
+name: release
+
+# Build the Spinel native `git-stack` binary for each supported platform and
+# attach the tarballs to the GitHub release. The Homebrew formula in Formula/
+# downloads these prebuilt tarballs, so users never need Spinel installed.
+#
+# Triggered by pushing a version tag (e.g. `v0.1.0`).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build/release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: macos-arm64
+          - os: macos-13
+            target: macos-x86_64
+          - os: ubuntu-24.04
+            target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+    steps:
+      - name: Check out git-stack
+        uses: actions/checkout@v4
+
+      - name: Install build toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl ruby
+
+      - name: Build Spinel from source
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/matz/spinel.git "$RUNNER_TEMP/spinel"
+          cd "$RUNNER_TEMP/spinel"
+          make deps
+          make
+          make install PREFIX="$RUNNER_TEMP/spinel-prefix"
+          echo "$RUNNER_TEMP/spinel-prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Compile git-stack native binary
+        run: |
+          set -eux
+          spin build
+          ./build/bin/git-stack help
+
+      - name: Package tarball
+        id: package
+        shell: bash
+        run: |
+          set -eux
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="${{ github.event.inputs.tag }}"
+            version="${version#v}"
+          fi
+          name="git-stack-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp build/bin/git-stack "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/${name}.tar.gz" "$name"
+          shasum -a 256 "dist/${name}.tar.gz" | tee "dist/${name}.tar.gz.sha256"
+          echo "artifact=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-stack-${{ matrix.target }}
+          path: dist/*.tar.gz*
+
+  release:
+    name: attach to release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release with tarballs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          fail_on_unmatched_files: true

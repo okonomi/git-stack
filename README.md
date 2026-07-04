@@ -19,6 +19,22 @@ parent of each branch and does that replay for you.
 `git-stack` comes in two interchangeable flavours. Both speak the same
 commands and store the same git-config metadata, so you can mix and match.
 
+### Homebrew (native binary)
+
+This repository doubles as its own Homebrew tap. `brew install` pulls down a
+prebuilt Spinel native binary for your platform — no Ruby runtime and no
+Spinel toolchain required:
+
+```sh
+brew tap okonomi/git-stack https://github.com/okonomi/git-stack
+brew install git-stack
+git stack help
+```
+
+The tarballs are produced per release by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) and served
+from the GitHub Releases page.
+
 ### bash script
 
 `git-stack` (repo root) is a single self-contained script. Put it anywhere on
