@@ -26,7 +26,9 @@ def color_enabled?
   nc = ENV["NO_COLOR"]
   return false if !nc.nil? && nc != ""
 
-  $stdout.tty?
+  # Spinel resolves `.tty?` on the STDOUT constant, but not on the $stdout
+  # global (it dispatches on `unknown` and raises); use the constant.
+  STDOUT.tty?
 end
 
 USE_COLOR = color_enabled?
