@@ -154,17 +154,21 @@ git stack restack               # continue restacking the rest
 
 ## Tests
 
+`test/*.rb` are Spinel snapshot tests: each drives `git-stack` against a
+throwaway repository and its stdout is diffed against a committed
+`test/<name>.rb.expected` snapshot.
+
 ```sh
-test/run.sh
+spin build && spin test          # compile, then run the snapshot suite
+spin test --regen                # refresh the .expected snapshots
 ```
 
-A dependency-free suite that exercises each command in throwaway
-repositories. It runs the bash script by default; point `GIT_STACK` at another
-build to test that one instead:
+`spin test` compiles each test the same way `spin build` compiles the binary,
+so the suite exercises the native build. The binary under test is `$GIT_STACK`
+(defaults to `build/bin/git-stack`), so you can point it at another build:
 
 ```sh
-GIT_STACK="ruby $PWD/bin/git-stack.rb" test/run.sh   # Ruby port under CRuby
-GIT_STACK="$PWD/build/bin/git-stack" test/run.sh     # compiled Spinel binary
+GIT_STACK="ruby $PWD/bin/git-stack.rb" spin test   # Ruby port under CRuby
 ```
 
 ## License

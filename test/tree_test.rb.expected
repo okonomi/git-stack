@@ -1,0 +1,18 @@
+== init ==
+trunk set to 'main'
+== tree (on feature-b) ==
+  main (trunk)
+    feature-a (1 commit(s))
+    * feature-b (1 commit(s))
+== parent of feature-b ==
+feature-a
+== down to feature-a ==
+Switched to branch 'feature-a'
+  main (trunk)
+  * feature-a (1 commit(s))
+      feature-b (1 commit(s))
+== up back to feature-b ==
+Switched to branch 'feature-b'
+  main (trunk)
+    feature-a (1 commit(s))
+    * feature-b (1 commit(s))

@@ -67,6 +67,9 @@ jobs:
           spin build
           ./build/bin/git-stack help
 
+      - name: Run snapshot tests
+        run: spin test
+
       - name: Package tarball
         shell: bash
         run: |

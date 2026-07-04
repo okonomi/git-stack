@@ -1,0 +1,37 @@
+name: ci
+
+# Compile git-stack with Spinel and run the `spin test` snapshot suite on every
+# push and pull request.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: spin test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out git-stack
+        uses: actions/checkout@v4
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl ruby
+
+      - name: Build Spinel from source
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/matz/spinel.git "$RUNNER_TEMP/spinel"
+          make -C "$RUNNER_TEMP/spinel" deps
+          make -C "$RUNNER_TEMP/spinel" -j"$(getconf _NPROCESSORS_ONLN)"
+          make -C "$RUNNER_TEMP/spinel" install PREFIX="$RUNNER_TEMP/spinel-prefix"
+          echo "$RUNNER_TEMP/spinel-prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Compile git-stack
+        run: spin build
+
+      - name: Run snapshot tests
+        run: spin test

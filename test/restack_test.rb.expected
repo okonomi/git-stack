@@ -1,0 +1,12 @@
+== tree before restack (feature-b is behind) ==
+  main (trunk)
+  * feature-a (2 commit(s))
+      feature-b (needs restack: 1 behind)
+== restack ==
+restacking stack rooted at feature-a
+restacking feature-b onto feature-a
+done.
+== tree after restack (feature-b caught up) ==
+  main (trunk)
+  * feature-a (2 commit(s))
+      feature-b (1 commit(s))
