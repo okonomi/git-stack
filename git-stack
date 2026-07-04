@@ -1,0 +1,392 @@
+#!/usr/bin/env bash
+#
+# git-stack — manage stacked branches with plain git.
+#
+# A "stack" is a chain of branches where each branch records a parent.
+# The parent relationship is stored in git config as:
+#
+#     branch.<name>.stackParent = <parent-branch>
+#
+# The bottom of every stack rests on the trunk (main/master), which is
+# stored as `stack.trunk` in git config (auto-detected on first use).
+#
+# See `git stack help` for the list of subcommands.
+
+set -euo pipefail
+
+readonly PROG="git stack"
+
+# --- output helpers ---------------------------------------------------------
+
+# Colours are enabled only when writing to a terminal.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	C_RESET=$'\033[0m'
+	C_DIM=$'\033[2m'
+	C_BOLD=$'\033[1m'
+	C_GREEN=$'\033[32m'
+	C_YELLOW=$'\033[33m'
+	C_CYAN=$'\033[36m'
+	C_RED=$'\033[31m'
+else
+	C_RESET='' C_DIM='' C_BOLD='' C_GREEN='' C_YELLOW='' C_CYAN='' C_RED=''
+fi
+
+die() {
+	printf '%serror:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
+	exit 1
+}
+
+info() {
+	printf '%s\n' "$*" >&2
+}
+
+# --- git helpers ------------------------------------------------------------
+
+require_repo() {
+	git rev-parse --git-dir >/dev/null 2>&1 \
+		|| die "not a git repository"
+}
+
+current_branch() {
+	git symbolic-ref --quiet --short HEAD 2>/dev/null \
+		|| die "you are in 'detached HEAD' state; check out a branch first"
+}
+
+branch_exists() {
+	git show-ref --verify --quiet "refs/heads/$1"
+}
+
+# Print the trunk branch, detecting and caching it on first use.
+trunk_branch() {
+	local trunk
+	trunk=$(git config --get stack.trunk 2>/dev/null || true)
+	if [ -n "$trunk" ]; then
+		printf '%s\n' "$trunk"
+		return
+	fi
+
+	# Auto-detect: prefer the remote's default branch, then main/master.
+	local head
+	head=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+	if [ -n "$head" ]; then
+		trunk=${head#origin/}
+	elif branch_exists main; then
+		trunk=main
+	elif branch_exists master; then
+		trunk=master
+	else
+		die "cannot determine trunk branch; run '$PROG init <branch>'"
+	fi
+
+	git config stack.trunk "$trunk"
+	printf '%s\n' "$trunk"
+}
+
+# --- stack metadata ---------------------------------------------------------
+
+get_parent() {
+	git config --get "branch.$1.stackParent" 2>/dev/null || true
+}
+
+set_parent() {
+	git config "branch.$1.stackParent" "$2"
+}
+
+clear_parent() {
+	git config --unset "branch.$1.stackParent" 2>/dev/null || true
+}
+
+# Echo every branch that records `$1` as its parent, one per line.
+#
+# Note: git lowercases the variable-name portion of a config key, so the
+# stored key is `branch.<name>.stackparent` even though we write `stackParent`.
+children_of() {
+	local parent=$1 key value name
+	while read -r key value; do
+		[ "$value" = "$parent" ] || continue
+		name=${key#branch.}
+		name=${name%.stackparent}
+		printf '%s\n' "$name"
+	done < <(git config --get-regexp '^branch\..*\.stackparent$' 2>/dev/null || true)
+}
+
+# Walk down from the current branch to the root of its stack (the branch
+# whose parent is the trunk or is untracked). Prints the root branch name.
+stack_root() {
+	local branch=$1 trunk=$2 parent
+	while :; do
+		parent=$(get_parent "$branch")
+		if [ -z "$parent" ] || [ "$parent" = "$trunk" ]; then
+			break
+		fi
+		if ! branch_exists "$parent"; then
+			break
+		fi
+		branch=$parent
+	done
+	printf '%s\n' "$branch"
+}
+
+# --- tree rendering ---------------------------------------------------------
+
+# Recursively print the subtree rooted at branch `$1` with indent prefix `$2`.
+print_subtree() {
+	local branch=$1 prefix=$2 cur=$3
+	local marker=' '
+	local name_style="$C_RESET"
+	if [ "$branch" = "$cur" ]; then
+		marker='*'
+		name_style="$C_GREEN$C_BOLD"
+	fi
+
+	local extra=''
+	local trunk
+	trunk=$(git config --get stack.trunk 2>/dev/null || true)
+	local parent
+	parent=$(get_parent "$branch")
+	[ -n "$parent" ] || parent=$trunk
+	if [ -n "$parent" ] && branch_exists "$parent"; then
+		# Count commits this branch is ahead of / behind its parent.
+		local ahead behind
+		ahead=$(git rev-list --count "$parent..$branch" 2>/dev/null || echo 0)
+		behind=$(git rev-list --count "$branch..$parent" 2>/dev/null || echo 0)
+		if [ "$behind" -gt 0 ]; then
+			extra="$C_YELLOW(needs restack: $behind behind)$C_RESET"
+		elif [ "$ahead" -gt 0 ]; then
+			extra="$C_DIM($ahead commit(s))$C_RESET"
+		fi
+	fi
+
+	printf '%s%s %s%s%s %s\n' \
+		"$prefix" "$marker" "$name_style" "$branch" "$C_RESET" "$extra"
+
+	local child
+	while IFS= read -r child; do
+		[ -n "$child" ] || continue
+		print_subtree "$child" "$prefix  " "$cur"
+	done < <(children_of "$branch" | sort)
+}
+
+# --- subcommands ------------------------------------------------------------
+
+cmd_init() {
+	local trunk=${1:-}
+	if [ -z "$trunk" ]; then
+		trunk=$(trunk_branch)
+		info "trunk is '$trunk' (auto-detected)"
+		return
+	fi
+	branch_exists "$trunk" || die "branch '$trunk' does not exist"
+	git config stack.trunk "$trunk"
+	info "trunk set to '$trunk'"
+}
+
+cmd_create() {
+	local name=${1:-}
+	[ -n "$name" ] || die "usage: $PROG create <branch-name>"
+	branch_exists "$name" && die "branch '$name' already exists"
+
+	local parent
+	parent=$(current_branch)
+	git checkout -b "$name" >/dev/null 2>&1 \
+		|| die "failed to create branch '$name'"
+	set_parent "$name" "$parent"
+	info "created ${C_GREEN}$name${C_RESET} on top of ${C_CYAN}$parent${C_RESET}"
+}
+
+cmd_tree() {
+	local trunk cur
+	trunk=$(trunk_branch)
+	cur=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+	# The trunk is the visual root; its children are the stack roots.
+	local marker=' ' style="$C_CYAN"
+	[ "$trunk" = "$cur" ] && { marker='*'; style="$C_GREEN$C_BOLD"; }
+	printf '%s %s%s%s %s(trunk)%s\n' \
+		"$marker" "$style" "$trunk" "$C_RESET" "$C_DIM" "$C_RESET"
+
+	local child
+	while IFS= read -r child; do
+		[ -n "$child" ] || continue
+		print_subtree "$child" "  " "$cur"
+	done < <(children_of "$trunk" | sort)
+}
+
+cmd_parent() {
+	local branch new_parent=${1:-}
+	branch=$(current_branch)
+	if [ -z "$new_parent" ]; then
+		local p
+		p=$(get_parent "$branch")
+		[ -n "$p" ] || p=$(trunk_branch)
+		printf '%s\n' "$p"
+		return
+	fi
+	branch_exists "$new_parent" || die "branch '$new_parent' does not exist"
+	[ "$new_parent" = "$branch" ] && die "a branch cannot be its own parent"
+	set_parent "$branch" "$new_parent"
+	info "parent of '$branch' set to '$new_parent'"
+}
+
+cmd_track() {
+	local branch parent
+	branch=$(current_branch)
+	parent=${1:-}
+	if [ -z "$parent" ]; then
+		parent=$(trunk_branch)
+	fi
+	branch_exists "$parent" || die "branch '$parent' does not exist"
+	[ "$parent" = "$branch" ] && die "a branch cannot be its own parent"
+	set_parent "$branch" "$parent"
+	info "tracking '$branch' on top of '$parent'"
+}
+
+cmd_untrack() {
+	local branch
+	branch=$(current_branch)
+	clear_parent "$branch"
+	info "'$branch' is no longer tracked in a stack"
+}
+
+cmd_down() {
+	local branch parent trunk
+	branch=$(current_branch)
+	trunk=$(trunk_branch)
+	parent=$(get_parent "$branch")
+	[ -n "$parent" ] || parent=$trunk
+	[ "$parent" = "$branch" ] && die "already at the bottom of the stack"
+	branch_exists "$parent" || die "parent branch '$parent' no longer exists"
+	git checkout "$parent"
+}
+
+cmd_up() {
+	local branch want=${1:-}
+	branch=$(current_branch)
+
+	local children=()
+	local child
+	while IFS= read -r child; do
+		[ -n "$child" ] && children+=("$child")
+	done < <(children_of "$branch" | sort)
+
+	[ "${#children[@]}" -gt 0 ] || die "no branch stacked on top of '$branch'"
+
+	if [ -n "$want" ]; then
+		for child in "${children[@]}"; do
+			if [ "$child" = "$want" ]; then
+				git checkout "$want"
+				return
+			fi
+		done
+		die "'$want' is not stacked directly on '$branch'"
+	fi
+
+	if [ "${#children[@]}" -eq 1 ]; then
+		git checkout "${children[0]}"
+		return
+	fi
+
+	info "'$branch' has multiple children; pick one:"
+	for child in "${children[@]}"; do
+		info "  $PROG up $child"
+	done
+	exit 1
+}
+
+# Rebase branch `$1` onto its parent, then recurse into its children.
+# `$2` is the branch to leave checked out at the very end.
+restack_subtree() {
+	local branch=$1
+	local parent
+	parent=$(get_parent "$branch")
+	[ -n "$parent" ] || parent=$(trunk_branch)
+
+	if branch_exists "$parent"; then
+		local behind
+		behind=$(git rev-list --count "$branch..$parent" 2>/dev/null || echo 0)
+		if [ "$behind" -gt 0 ]; then
+			info "restacking ${C_CYAN}$branch${C_RESET} onto ${C_CYAN}$parent${C_RESET}"
+			if ! git rebase "$parent" "$branch" >/dev/null 2>&1; then
+				git rebase --abort >/dev/null 2>&1 || true
+				die "conflict while rebasing '$branch' onto '$parent'.
+Resolve it manually with:
+    git checkout $branch && git rebase $parent
+then re-run '$PROG restack'."
+			fi
+		fi
+	fi
+
+	local child
+	while IFS= read -r child; do
+		[ -n "$child" ] || continue
+		restack_subtree "$child"
+	done < <(children_of "$branch" | sort)
+}
+
+cmd_restack() {
+	local start trunk root original
+	original=$(current_branch)
+	trunk=$(trunk_branch)
+	root=$(stack_root "$original" "$trunk")
+
+	info "restacking stack rooted at ${C_CYAN}$root${C_RESET}"
+	restack_subtree "$root"
+
+	git checkout "$original" >/dev/null 2>&1 || true
+	info "${C_GREEN}done.${C_RESET}"
+}
+
+cmd_help() {
+	cat <<EOF
+${C_BOLD}$PROG${C_RESET} — manage stacked branches with plain git
+
+${C_BOLD}USAGE${C_RESET}
+    $PROG <command> [args]
+
+${C_BOLD}COMMANDS${C_RESET}
+    init [branch]         Set (or auto-detect) the trunk branch.
+    create <name>         Create <name> stacked on the current branch. (alias: b)
+    tree                  Show the stack as a tree. (aliases: ls, list)
+    up [child]            Check out the branch stacked on the current one.
+    down                  Check out the current branch's parent.
+    parent [branch]       Show or set the parent of the current branch.
+    track [parent]        Track the current branch on top of [parent] (or trunk).
+    untrack               Stop tracking the current branch in a stack.
+    restack               Rebase the whole stack so each branch sits on its parent.
+    help                  Show this help.
+
+${C_BOLD}EXAMPLE${C_RESET}
+    git checkout main
+    $PROG create feature-a      # main -> feature-a
+    $PROG create feature-b      # feature-a -> feature-b
+    $PROG tree                  # inspect the stack
+    # ... amend feature-a ...
+    $PROG restack               # replay feature-b on the new feature-a
+
+Parent relationships are stored in git config (branch.<name>.stackParent).
+EOF
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+main() {
+	require_repo
+	local cmd=${1:-help}
+	[ $# -gt 0 ] && shift || true
+
+	case "$cmd" in
+		init)                 cmd_init "$@" ;;
+		create|b|branch)      cmd_create "$@" ;;
+		tree|ls|list)         cmd_tree "$@" ;;
+		up|next)              cmd_up "$@" ;;
+		down|prev)            cmd_down "$@" ;;
+		parent)               cmd_parent "$@" ;;
+		track)                cmd_track "$@" ;;
+		untrack)              cmd_untrack "$@" ;;
+		restack|sync)         cmd_restack "$@" ;;
+		help|-h|--help)       cmd_help ;;
+		*)                    die "unknown command '$cmd' (try '$PROG help')" ;;
+	esac
+}
+
+main "$@"
