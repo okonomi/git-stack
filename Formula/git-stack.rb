@@ -8,6 +8,10 @@
 # The formula downloads the prebuilt Spinel native binary for your platform
 # (built by .github/workflows/release.yml), so Spinel is not required to
 # install. `git` is the only runtime dependency.
+#
+# The sha256 values below are placeholders until the v0.1.0 release is built.
+# After the `release` workflow runs, copy the four checksums from the release
+# assets (or the workflow's job summary) into the matching blocks here.
 class GitStack < Formula
   desc "Manage stacked branches with plain git"
   homepage "https://github.com/okonomi/git-stack"

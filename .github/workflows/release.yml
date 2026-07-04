@@ -4,7 +4,10 @@ name: release
 # attach the tarballs to the GitHub release. The Homebrew formula in Formula/
 # downloads these prebuilt tarballs, so users never need Spinel installed.
 #
-# Triggered by pushing a version tag (e.g. `v0.1.0`).
+# Trigger it either way:
+#   * push a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`, or
+#   * run this workflow manually (Actions -> release -> Run workflow) and pass
+#     the tag, e.g. `v0.1.0` -- the release/tag is created for you.
 
 on:
   push:
@@ -13,11 +16,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build/release (e.g. v0.1.0)"
+        description: "Version tag to build and release (e.g. v0.1.0)"
         required: true
 
 permissions:
   contents: write
+
+env:
+  # v-prefixed tag for either trigger; version number is derived from it.
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -49,10 +56,9 @@ jobs:
         run: |
           set -eux
           git clone --depth 1 https://github.com/matz/spinel.git "$RUNNER_TEMP/spinel"
-          cd "$RUNNER_TEMP/spinel"
-          make deps
-          make
-          make install PREFIX="$RUNNER_TEMP/spinel-prefix"
+          make -C "$RUNNER_TEMP/spinel" deps
+          make -C "$RUNNER_TEMP/spinel" -j"$(getconf _NPROCESSORS_ONLN)"
+          make -C "$RUNNER_TEMP/spinel" install PREFIX="$RUNNER_TEMP/spinel-prefix"
           echo "$RUNNER_TEMP/spinel-prefix/bin" >> "$GITHUB_PATH"
 
       - name: Compile git-stack native binary
@@ -62,22 +68,15 @@ jobs:
           ./build/bin/git-stack help
 
       - name: Package tarball
-        id: package
         shell: bash
         run: |
           set -eux
-          version="${GITHUB_REF_NAME#v}"
-          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
-            version="${{ github.event.inputs.tag }}"
-            version="${version#v}"
-          fi
+          version="${TAG#v}"
           name="git-stack-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp build/bin/git-stack "dist/$name/"
-          cp README.md LICENSE "dist/$name/"
+          cp build/bin/git-stack README.md LICENSE "dist/$name/"
           tar -C dist -czf "dist/${name}.tar.gz" "$name"
           shasum -a 256 "dist/${name}.tar.gz" | tee "dist/${name}.tar.gz.sha256"
-          echo "artifact=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -86,7 +85,7 @@ jobs:
           path: dist/*.tar.gz*
 
   release:
-    name: attach to release
+    name: publish release
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -96,10 +95,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Summarize checksums
+        shell: bash
+        run: |
+          set -eu
+          {
+            echo "## git-stack ${TAG} checksums"
+            echo ""
+            echo "Copy these into \`Formula/git-stack.rb\`:"
+            echo ""
+            echo '```'
+            cat dist/*.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish release with tarballs
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
