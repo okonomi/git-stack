@@ -1,7 +1,7 @@
 # git-stack
 
 Manage **stacked branches** with plain git — no server, no database, no
-dependencies beyond `git` and `bash`.
+dependencies beyond `git` and `ruby`.
 
 Stacked branches (a.k.a. stacked diffs) let you split a large change into a
 chain of small, dependent branches:
@@ -16,25 +16,25 @@ parent of each branch and does that replay for you.
 
 ## Install
 
-`git-stack` comes in two interchangeable flavours. Both speak the same
-commands and store the same git-config metadata, so you can mix and match.
+`git-stack` is a single self-contained Ruby script (`bin/git-stack.rb`). It
+shells out to `git` for everything (via `system()` and backticks), so it needs
+nothing beyond `git` and a Ruby interpreter.
 
-### bash script
+### Ruby script
 
-`git-stack` (repo root) is a single self-contained script. Put it anywhere on
-your `PATH` with a name starting with `git-` and git will pick it up as the
-`git stack` subcommand:
+Put it anywhere on your `PATH` with a name starting with `git-` and git will
+pick it up as the `git stack` subcommand:
 
 ```sh
-install -m 0755 git-stack /usr/local/bin/git-stack
+install -m 0755 bin/git-stack.rb /usr/local/bin/git-stack
 git stack help
 ```
 
-(You can also run `./git-stack ...` directly from a checkout.)
+(You can also run `ruby bin/git-stack.rb ...` directly from a checkout.)
 
-### Ruby / native binary (Spinel)
+### Native binary (Spinel)
 
-`bin/git-stack.rb` is a Ruby port written in the subset of Ruby that
+The script is written in the subset of Ruby that
 [Spinel](https://github.com/matz/spinel), Matz's ahead-of-time Ruby compiler,
 accepts. This repo is a Spinel project (`spin.toml`), so its `spin` tool
 compiles the script straight to a standalone native executable — no Ruby
@@ -48,15 +48,6 @@ git stack help
 # or let spin place it on PATH for you:
 spin install                     # copies it to ~/.local/bin
 ```
-
-It also runs unchanged under plain CRuby if you'd rather not compile it:
-
-```sh
-ruby bin/git-stack.rb help
-```
-
-The port shells out to `git` exactly like the bash script (via `system()` and
-backticks), so it needs nothing beyond `git` and — to build — Spinel's `spin`.
 
 ## How it works
 
@@ -143,11 +134,10 @@ test/run.sh
 ```
 
 A dependency-free suite that exercises each command in throwaway
-repositories. It runs the bash script by default; point `GIT_STACK` at another
-build to test that one instead:
+repositories. It runs the Ruby script under CRuby by default; point
+`GIT_STACK` at another build to test that one instead:
 
 ```sh
-GIT_STACK="ruby $PWD/bin/git-stack.rb" test/run.sh   # Ruby port under CRuby
 GIT_STACK="$PWD/build/bin/git-stack" test/run.sh     # compiled Spinel binary
 ```
 
