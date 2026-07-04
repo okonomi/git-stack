@@ -129,20 +129,23 @@ git stack restack               # continue restacking the rest
 
 ## Tests
 
-The suite lives in `test/cli_test.rb`, a Spinel snapshot test that exercises
-each command in throwaway repositories. Run it with `spin`:
+The suite lives in `test/cli_test.rb`, a Spinel **snapshot test**: it drives
+each command in throwaway repositories and prints a transcript of exactly what
+they emit (output + exit status). `spin test` compiles it with Spinel and
+diffs that transcript against the committed snapshot in
+`test/cli_test.rb.expected` — any change in behaviour shows up as a diff.
 
 ```sh
-spin test                 # compile the test with Spinel and diff its output
-                          # against the committed test/cli_test.rb.expected snapshot
+spin test                 # run the test and diff its output against the snapshot
 spin test --regen         # refresh the snapshot after an intentional change
 ```
 
-It is also a plain Ruby program, so you can run it directly under CRuby without
-Spinel:
+It is also a plain Ruby program, so you can print/regenerate the transcript
+under CRuby without Spinel:
 
 ```sh
-ruby test/cli_test.rb
+ruby test/cli_test.rb                                # print the transcript
+ruby test/cli_test.rb > test/cli_test.rb.expected    # regenerate the snapshot
 ```
 
 By default it drives the Ruby script under CRuby; point `GIT_STACK` at another
