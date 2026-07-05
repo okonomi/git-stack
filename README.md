@@ -93,6 +93,7 @@ state file to commit and nothing to keep in sync.
 | `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
+| `git stack sync`          | Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. |
 | `git stack version`       | Show the git-stack version.                                    |
 
 ## Walkthrough
@@ -117,6 +118,16 @@ git stack down                  # back to feature-a
 
 git stack restack               # replay feature-b on the new feature-a
 git stack up                    # back up to feature-b
+```
+
+Once a branch merges, delete it and let `sync` clean up what was stacked on it:
+
+```sh
+git checkout main && git pull
+git branch -d feature-a         # already merged, safe to delete
+
+git checkout feature-b
+git stack sync                  # reparents feature-b onto main and restacks it
 ```
 
 `git stack tree` flags branches that have drifted from their parent:
