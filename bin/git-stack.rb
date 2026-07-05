@@ -104,6 +104,17 @@ def commit_count(range_from, range_to)
   git_out("git rev-list --count #{sh(range_from)}..#{sh(range_to)}").to_i
 end
 
+# [behind, ahead] commit counts between `branch` and `parent`, in a single
+# `git rev-list --left-right --count` call instead of two separate
+# `commit_count` calls -- half the subprocess cost per tree node.
+def ahead_behind(parent, branch)
+  out = git_out("git rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
+  parts = out.split("\t")
+  return [0, 0] if parts.length != 2
+
+  [parts[0].to_i, parts[1].to_i]
+end
+
 def set_trunk(trunk)
   system("git", "config", "stack.trunk", trunk)
 end
@@ -157,6 +168,24 @@ def scan_stack_config
   `git config --get-regexp '^branch\\..*\\.stackparent$' 2>/dev/null`
 end
 
+# Set of every local branch name, fetched with a single `git` subprocess.
+#
+# `tree` calls `branch_exists?` for every node it renders; on a stack of N
+# branches that means N extra `git show-ref` subprocesses (each a shell +
+# git fork/exec, ~10ms). Capturing the full branch list once and checking
+# it in memory removes that per-node cost, mirroring how `scan_stack_config`
+# avoids re-spawning `git config` per node.
+def existing_branches
+  out = `git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null`
+  set = {}
+  out.split("\n").each do |name|
+    next if name.empty?
+
+    set[name] = true
+  end
+  set
+end
+
 # Sorted list of branches that record `parent` as their parent, parsed from a
 # pre-captured `scan_stack_config` result -- no subprocess of its own.
 #
@@ -189,7 +218,10 @@ end
 # (its parent was merged and deleted). Treated as extra roots by `tree` so
 # they're always visible instead of silently disappearing; `git stack sync`
 # is what actually repairs them.
-def orphan_roots(scan)
+#
+# `branches` is a pre-captured `existing_branches` set so this needs no
+# subprocess of its own.
+def orphan_roots(scan, branches)
   names = []
   scan.split("\n").each do |line|
     next if line.empty?
@@ -200,7 +232,7 @@ def orphan_roots(scan)
     key = line[0...space]
     value = line[(space + 1)..-1]
     next if value.empty?
-    next if branch_exists?(value)
+    next if branches[value]
 
     name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
     names << name
@@ -288,16 +320,19 @@ def marker_and_style(branch, cur, default_style)
 end
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
-def print_subtree(branch, prefix, cur, trunk, scan)
+#
+# `branches` is a pre-captured `existing_branches` set, threaded through the
+# recursion for the same reason `scan` is: avoids re-spawning `git` per node.
+def print_subtree(branch, prefix, cur, trunk, scan, branches)
   marker, name_style = marker_and_style(branch, cur, C_RESET)
 
   extra = ""
   parent = parent_from(scan, branch)
   parent = trunk if parent.empty?
-  if !parent.empty? && branch_exists?(parent)
-    # Count commits this branch is ahead of / behind its parent.
-    ahead = commit_count(parent, branch)
-    behind = commit_count(branch, parent)
+  if !parent.empty? && branches[parent]
+    # Ahead+behind in one `git rev-list --left-right` call rather than two
+    # separate `commit_count` calls.
+    behind, ahead = ahead_behind(parent, branch)
     if behind > 0
       extra = "#{C_YELLOW}(needs restack: #{behind} behind)#{C_RESET}"
     elsif ahead > 0
@@ -310,7 +345,7 @@ def print_subtree(branch, prefix, cur, trunk, scan)
   puts "#{prefix}#{marker} #{name_style}#{branch}#{C_RESET} #{extra}"
 
   children_from(scan, branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur, trunk, scan)
+    print_subtree(child, "#{prefix}  ", cur, trunk, scan, branches)
   end
 end
 
@@ -348,17 +383,18 @@ def cmd_tree(_args)
   trunk = trunk_branch
   cur = current_branch_or_empty
   scan = scan_stack_config
+  branches = existing_branches
 
   # The trunk is the visual root; its children are the stack roots.
   marker, style = marker_and_style(trunk, cur, C_CYAN)
   puts "#{marker} #{style}#{trunk}#{C_RESET} #{C_DIM}(trunk)#{C_RESET}"
 
   children_from(scan, trunk).each do |child|
-    print_subtree(child, "  ", cur, trunk, scan)
+    print_subtree(child, "  ", cur, trunk, scan, branches)
   end
 
-  orphan_roots(scan).each do |child|
-    print_subtree(child, "  ", cur, trunk, scan)
+  orphan_roots(scan, branches).each do |child|
+    print_subtree(child, "  ", cur, trunk, scan, branches)
   end
 end
 
