@@ -61,15 +61,15 @@ def sh(arg)
   "'" + arg.gsub(/'/, "'\\''") + "'"
 end
 
-# Run a git command, discarding its output; return true on success (exit 0).
-def git_ok(cmd)
-  system("#{cmd} >/dev/null 2>&1")
+# Run `git <subcmd>`, discarding its output; return true on success (exit 0).
+def git_ok(subcmd)
+  system("git #{subcmd} >/dev/null 2>&1")
   $? == 0
 end
 
-# Capture the trimmed stdout of a git command (empty string on failure).
-def git_out(cmd)
-  `#{cmd} 2>/dev/null`.strip
+# Capture the trimmed stdout of `git <subcmd>` (empty string on failure).
+def git_out(subcmd)
+  `git #{subcmd} 2>/dev/null`.strip
 end
 
 # Check out `branch`, or die with a consistent message.
@@ -81,12 +81,12 @@ def checkout!(branch)
 end
 
 def require_repo
-  die("not a git repository") unless git_ok("git rev-parse --git-dir")
+  die("not a git repository") unless git_ok("rev-parse --git-dir")
 end
 
 # The current branch, or "" when detached (never dies).
 def current_branch_or_empty
-  git_out("git symbolic-ref --quiet --short HEAD")
+  git_out("symbolic-ref --quiet --short HEAD")
 end
 
 def current_branch
@@ -100,19 +100,19 @@ end
 # stack -- use the pre-captured `existing_branches` set there instead (see
 # `print_subtree`/`restack_subtree` for the pattern).
 def branch_exists?(name)
-  git_ok("git show-ref --verify --quiet refs/heads/#{sh(name)}")
+  git_ok("show-ref --verify --quiet refs/heads/#{sh(name)}")
 end
 
 # Count of commits reachable from `to` but not `from` (git rev-list from..to).
 def commit_count(range_from, range_to)
-  git_out("git rev-list --count #{sh(range_from)}..#{sh(range_to)}").to_i
+  git_out("rev-list --count #{sh(range_from)}..#{sh(range_to)}").to_i
 end
 
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
 # `git rev-list --left-right --count` call instead of two separate
 # `commit_count` calls -- half the subprocess cost per tree node.
 def ahead_behind(parent, branch)
-  out = git_out("git rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
+  out = git_out("rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
   parts = out.split("\t")
   return [0, 0] if parts.length != 2
 
@@ -125,11 +125,11 @@ end
 
 # Print the trunk branch, detecting and caching it on first use.
 def trunk_branch
-  trunk = git_out("git config --get stack.trunk")
+  trunk = git_out("config --get stack.trunk")
   return trunk unless trunk.empty?
 
   # Auto-detect: prefer the remote's default branch, then main/master.
-  head = git_out("git symbolic-ref --quiet --short refs/remotes/origin/HEAD")
+  head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
   if !head.empty?
     trunk = head.sub(/^origin\//, "")
   elsif branch_exists?("main")
@@ -151,7 +151,7 @@ end
 # --- stack metadata ---------------------------------------------------------
 
 def get_parent(branch)
-  git_out("git config --get branch.#{sh(branch)}.stackParent")
+  git_out("config --get branch.#{sh(branch)}.stackParent")
 end
 
 # Record `parent` as the parent of `branch`; return true on success.
@@ -164,7 +164,7 @@ def set_parent(branch, parent)
 end
 
 def clear_parent(branch)
-  git_ok("git config --unset branch.#{sh(branch)}.stackParent")
+  git_ok("config --unset branch.#{sh(branch)}.stackParent")
 end
 
 # One scan of git config listing every `branch.<name>.stackParent` entry.
@@ -382,7 +382,7 @@ def cmd_create(args)
   die("branch '#{name}' already exists") if branch_exists?(name)
 
   parent = current_branch
-  die("failed to create branch '#{name}'") unless git_ok("git checkout -b #{sh(name)}")
+  die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
   info "created #{C_GREEN}#{name}#{C_RESET} on top of #{C_CYAN}#{parent}#{C_RESET}"
 end
@@ -500,8 +500,8 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{C_CYAN}#{branch}#{C_RESET} onto #{C_CYAN}#{parent}#{C_RESET}"
-      unless git_ok("git rebase #{sh(parent)} #{sh(branch)}")
-        git_ok("git rebase --abort")
+      unless git_ok("rebase #{sh(parent)} #{sh(branch)}")
+        git_ok("rebase --abort")
         verb = heal_orphans ? "sync" : "restack"
         die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
             "Resolve it manually with:\n" \
@@ -526,7 +526,7 @@ def cmd_restack(_args)
   branches = existing_branches
   restack_subtree(root, scan, {}, trunk, false, branches)
 
-  unless git_ok("git checkout #{sh(original)}")
+  unless git_ok("checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
@@ -543,7 +543,7 @@ def cmd_sync(_args)
   branches = existing_branches
   restack_subtree(root, scan, {}, trunk, true, branches)
 
-  unless git_ok("git checkout #{sh(original)}")
+  unless git_ok("checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
