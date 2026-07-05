@@ -72,19 +72,27 @@ def git_out(cmd)
   `#{cmd} 2>/dev/null`.strip
 end
 
-def require_repo
-  die("not a git repository") unless git_ok("git rev-parse --git-dir")
+# Check out `branch`, or die with a consistent message.
+#
+# Uses array-form `system` (not git_ok) so git's own "Switched to branch"
+# message reaches the terminal instead of being redirected away.
+def checkout!(branch)
+  die("failed to check out '#{branch}'") unless system("git", "checkout", branch)
 end
 
-def current_branch
-  b = git_out("git symbolic-ref --quiet --short HEAD")
-  die("you are in 'detached HEAD' state; check out a branch first") if b.empty?
-  b
+def require_repo
+  die("not a git repository") unless git_ok("git rev-parse --git-dir")
 end
 
 # The current branch, or "" when detached (never dies).
 def current_branch_or_empty
   git_out("git symbolic-ref --quiet --short HEAD")
+end
+
+def current_branch
+  b = current_branch_or_empty
+  die("you are in 'detached HEAD' state; check out a branch first") if b.empty?
+  b
 end
 
 def branch_exists?(name)
@@ -93,8 +101,11 @@ end
 
 # Count of commits reachable from `to` but not `from` (git rev-list from..to).
 def commit_count(range_from, range_to)
-  n = git_out("git rev-list --count #{sh(range_from)}..#{sh(range_to)}")
-  n.empty? ? 0 : n.to_i
+  git_out("git rev-list --count #{sh(range_from)}..#{sh(range_to)}").to_i
+end
+
+def set_trunk(trunk)
+  system("git", "config", "stack.trunk", trunk)
 end
 
 # Print the trunk branch, detecting and caching it on first use.
@@ -114,7 +125,7 @@ def trunk_branch
     die("cannot determine trunk branch; run '#{PROG} init <branch>'")
   end
 
-  system("git", "config", "stack.trunk", trunk)
+  set_trunk(trunk)
   trunk
 end
 
@@ -174,6 +185,23 @@ def children_of(parent)
   children_from(scan_stack_config, parent)
 end
 
+# The parent recorded for `branch`, parsed from a pre-captured
+# `scan_stack_config` result -- no subprocess of its own (mirrors get_parent).
+def parent_from(scan, branch)
+  key = "branch.#{branch}.stackparent"
+  scan.split("\n").each do |line|
+    next if line.empty?
+
+    space = line.index(" ")
+    next if space.nil?
+
+    next unless line[0...space] == key
+
+    return line[(space + 1)..-1]
+  end
+  ""
+end
+
 # The parent used for display and navigation: the recorded parent, or the
 # trunk when none is recorded.
 def effective_parent(branch, trunk)
@@ -217,19 +245,32 @@ def would_cycle?(branch, new_parent, trunk)
   false
 end
 
+# Validate that `candidate` can become the parent of `branch`: it must exist,
+# must not be `branch` itself, and must not create a cycle. `verb` customizes
+# the cycle-error wording for the calling command.
+def validate_new_parent!(branch, candidate, trunk, verb)
+  die("branch '#{candidate}' does not exist") unless branch_exists?(candidate)
+  die("a branch cannot be its own parent") if candidate == branch
+  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunk)
+end
+
 # --- tree rendering ---------------------------------------------------------
+
+# The prefix marker and name colour for `branch` when rendering the tree:
+# highlighted if it's the checked-out branch, `default_style` otherwise.
+def marker_and_style(branch, cur, default_style)
+  return ["*", "#{C_GREEN}#{C_BOLD}"] if branch == cur
+
+  [" ", default_style]
+end
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
 def print_subtree(branch, prefix, cur, trunk, scan)
-  marker = " "
-  name_style = C_RESET
-  if branch == cur
-    marker = "*"
-    name_style = "#{C_GREEN}#{C_BOLD}"
-  end
+  marker, name_style = marker_and_style(branch, cur, C_RESET)
 
   extra = ""
-  parent = effective_parent(branch, trunk)
+  parent = parent_from(scan, branch)
+  parent = trunk if parent.empty?
   if !parent.empty? && branch_exists?(parent)
     # Count commits this branch is ahead of / behind its parent.
     ahead = commit_count(parent, branch)
@@ -250,20 +291,25 @@ end
 
 # --- subcommands ------------------------------------------------------------
 
+# The first CLI argument, or "" when none was given.
+def arg0(args)
+  args.empty? ? "" : args[0]
+end
+
 def cmd_init(args)
-  trunk = args.empty? ? "" : args[0]
+  trunk = arg0(args)
   if trunk.empty?
     trunk = trunk_branch
     info "trunk is '#{trunk}' (auto-detected)"
     return
   end
   die("branch '#{trunk}' does not exist") unless branch_exists?(trunk)
-  system("git", "config", "stack.trunk", trunk)
+  set_trunk(trunk)
   info "trunk set to '#{trunk}'"
 end
 
 def cmd_create(args)
-  name = args.empty? ? "" : args[0]
+  name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
   die("branch '#{name}' already exists") if branch_exists?(name)
 
@@ -279,12 +325,7 @@ def cmd_tree(_args)
   scan = scan_stack_config
 
   # The trunk is the visual root; its children are the stack roots.
-  marker = " "
-  style = C_CYAN
-  if trunk == cur
-    marker = "*"
-    style = "#{C_GREEN}#{C_BOLD}"
-  end
+  marker, style = marker_and_style(trunk, cur, C_CYAN)
   puts "#{marker} #{style}#{trunk}#{C_RESET} #{C_DIM}(trunk)#{C_RESET}"
 
   children_from(scan, trunk).each do |child|
@@ -294,14 +335,12 @@ end
 
 def cmd_parent(args)
   branch = current_branch
-  new_parent = args.empty? ? "" : args[0]
+  new_parent = arg0(args)
   if new_parent.empty?
     puts effective_parent(branch, trunk_branch)
     return
   end
-  die("branch '#{new_parent}' does not exist") unless branch_exists?(new_parent)
-  die("a branch cannot be its own parent") if new_parent == branch
-  die("'#{new_parent}' is downstream of '#{branch}'; setting it as parent would create a cycle") if would_cycle?(branch, new_parent, trunk_branch)
+  validate_new_parent!(branch, new_parent, trunk_branch, "setting it as parent")
   die("failed to set parent of '#{branch}'") unless set_parent(branch, new_parent)
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -309,11 +348,9 @@ end
 def cmd_track(args)
   branch = current_branch
   trunk = trunk_branch
-  parent = args.empty? ? "" : args[0]
+  parent = arg0(args)
   parent = trunk if parent.empty?
-  die("branch '#{parent}' does not exist") unless branch_exists?(parent)
-  die("a branch cannot be its own parent") if parent == branch
-  die("'#{parent}' is downstream of '#{branch}'; tracking it would create a cycle") if would_cycle?(branch, parent, trunk)
+  validate_new_parent!(branch, parent, trunk, "tracking it")
   die("failed to track '#{branch}'") unless set_parent(branch, parent)
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -330,28 +367,24 @@ def cmd_down(_args)
   parent = effective_parent(branch, trunk)
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
-  die("failed to check out '#{parent}'") unless system("git", "checkout", parent)
+  checkout!(parent)
 end
 
 def cmd_up(args)
   branch = current_branch
-  want = args.empty? ? "" : args[0]
+  want = arg0(args)
 
   children = children_of(branch)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   unless want.empty?
-    children.each do |child|
-      if child == want
-        die("failed to check out '#{want}'") unless system("git", "checkout", want)
-        return
-      end
-    end
-    die("'#{want}' is not stacked directly on '#{branch}'")
+    die("'#{want}' is not stacked directly on '#{branch}'") unless children.include?(want)
+    checkout!(want)
+    return
   end
 
   if children.length == 1
-    die("failed to check out '#{children[0]}'") unless system("git", "checkout", children[0])
+    checkout!(children[0])
     return
   end
 
@@ -371,7 +404,7 @@ def restack_subtree(branch, scan, visited)
   return if visited[branch]
   visited[branch] = true
 
-  parent = get_parent(branch)
+  parent = parent_from(scan, branch)
   if !parent.empty? && branch_exists?(parent)
     behind = commit_count(branch, parent)
     if behind > 0
