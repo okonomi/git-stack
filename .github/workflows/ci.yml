@@ -12,8 +12,8 @@ jobs:
     name: Snapshot test (CRuby)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
         with:
           ruby-version: .ruby-version
       - name: Diff transcript against snapshot
@@ -31,8 +31,8 @@ jobs:
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
         with:
           ruby-version: .ruby-version
 
@@ -40,7 +40,7 @@ jobs:
       # so caching that directory lets us skip the rebuild on later runs.
       - name: Cache Spinel install
         id: cache-spinel
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.SPINEL_PREFIX }}
           key: spinel-${{ runner.os }}-${{ env.SPINEL_REF }}
