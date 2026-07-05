@@ -54,6 +54,19 @@ def info(msg)
   $stderr.puts msg
 end
 
+# Debug logging is enabled by setting GIT_STACK_DEBUG. Following the NO_COLOR
+# convention above, the mere *presence* of the variable turns it on, whatever
+# its value (including an empty string). When enabled, every git subprocess
+# git-stack shells out to is echoed to stderr with a dimmed `debug:` prefix so
+# you can see exactly what it runs -- useful when a command misbehaves.
+DEBUG = !ENV["GIT_STACK_DEBUG"].nil?
+
+def debug(msg)
+  return unless DEBUG
+
+  $stderr.puts "#{C_DIM}debug:#{C_RESET} #{msg}"
+end
+
 # --- shell / git helpers ----------------------------------------------------
 
 # Quote a single argument for safe interpolation into a shell command.
@@ -63,12 +76,14 @@ end
 
 # Run a git command, discarding its output; return true on success (exit 0).
 def git_ok(cmd)
+  debug(cmd)
   system("#{cmd} >/dev/null 2>&1")
   $? == 0
 end
 
 # Capture the trimmed stdout of a git command (empty string on failure).
 def git_out(cmd)
+  debug(cmd)
   `#{cmd} 2>/dev/null`.strip
 end
 
@@ -77,6 +92,7 @@ end
 # Uses array-form `system` (not git_ok) so git's own "Switched to branch"
 # message reaches the terminal instead of being redirected away.
 def checkout!(branch)
+  debug("git checkout #{branch}")
   die("failed to check out '#{branch}'") unless system("git", "checkout", branch)
 end
 
@@ -120,6 +136,7 @@ def ahead_behind(parent, branch)
 end
 
 def set_trunk(trunk)
+  debug("git config stack.trunk #{trunk}")
   system("git", "config", "stack.trunk", trunk)
 end
 
@@ -159,6 +176,7 @@ end
 # The result is bound to a local before returning: Spinel drops the boolean
 # when a `system` call is a function's bare trailing expression.
 def set_parent(branch, parent)
+  debug("git config branch.#{branch}.stackParent #{parent}")
   ok = system("git", "config", "branch.#{branch}.stackParent", parent)
   ok
 end
@@ -173,6 +191,7 @@ end
 # the scan once and threading it through the recursion avoids re-spawning `git`
 # per node (an O(N^2) subprocess blow-up on a stack of N branches).
 def scan_stack_config
+  debug("git config --get-regexp '^branch\\..*\\.stackparent$'")
   `git config --get-regexp '^branch\\..*\\.stackparent$' 2>/dev/null`
 end
 
@@ -184,6 +203,7 @@ end
 # it in memory removes that per-node cost, mirroring how `scan_stack_config`
 # avoids re-spawning `git config` per node.
 def existing_branches
+  debug("git for-each-ref --format='%(refname:short)' refs/heads/")
   out = `git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null`
   set = {}
   out.split("\n").each do |name|
@@ -584,6 +604,10 @@ def cmd_help(_args)
         #{PROG} restack               # replay feature-b on the new feature-a
 
     Parent relationships are stored in git config (branch.<name>.stackParent).
+
+    #{C_BOLD}ENVIRONMENT#{C_RESET}
+        GIT_STACK_DEBUG       When set, echo every git subprocess to stderr.
+        NO_COLOR              When set, disable coloured output.
   HELP
 end
 

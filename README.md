@@ -158,6 +158,26 @@ git checkout <branch> && git rebase <parent>
 git stack restack               # continue restacking the rest
 ```
 
+## Debugging
+
+`git-stack` does everything by shelling out to `git`. To see exactly which git
+commands a subcommand runs, set `GIT_STACK_DEBUG` (any value — like `NO_COLOR`,
+its mere presence enables it) and each subprocess is echoed to stderr with a
+`debug:` prefix:
+
+```sh
+$ GIT_STACK_DEBUG=1 git stack tree
+debug: git rev-parse --git-dir
+debug: git config --get stack.trunk
+debug: git symbolic-ref --quiet --short HEAD
+debug: git config --get-regexp '^branch\..*\.stackparent$'
+debug: git for-each-ref --format='%(refname:short)' refs/heads/
+...
+```
+
+The debug log goes to stderr, so it stays out of the way when you pipe a
+command's stdout somewhere.
+
 ## Tests
 
 The suite lives in `test/cli_test.rb`, a Spinel **snapshot test**: it drives
