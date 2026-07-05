@@ -397,30 +397,43 @@ end
 
 # Rebase `branch` onto its parent, then recurse into its children.
 #
-# A branch with no recorded parent is untracked and is left untouched -- we do
-# *not* fall back to rebasing it onto the trunk. `visited` guards against
-# cyclic parent chains so the recursion always terminates.
-def restack_subtree(branch, scan, visited)
+# A branch with no recorded parent is untracked and is left untouched -- we
+# do *not* fall back to rebasing it onto the trunk. `visited` guards
+# against cyclic parent chains so the recursion always terminates.
+#
+# When `heal_orphans` is true (used by `git stack sync`), a branch whose
+# recorded parent no longer exists (e.g. it was merged and deleted) is
+# reparented onto `trunk` before the rebase check runs. When false (used by
+# `git stack restack`), such a branch is left untouched, same as before.
+def restack_subtree(branch, scan, visited, trunk, heal_orphans)
   return if visited[branch]
   visited[branch] = true
 
   parent = parent_from(scan, branch)
+
+  if heal_orphans && !parent.empty? && !branch_exists?(parent)
+    info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
+    die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
+    parent = trunk
+  end
+
   if !parent.empty? && branch_exists?(parent)
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{C_CYAN}#{branch}#{C_RESET} onto #{C_CYAN}#{parent}#{C_RESET}"
       unless git_ok("git rebase #{sh(parent)} #{sh(branch)}")
         git_ok("git rebase --abort")
+        verb = heal_orphans ? "sync" : "restack"
         die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
             "Resolve it manually with:\n" \
             "    git checkout #{branch} && git rebase #{parent}\n" \
-            "then re-run '#{PROG} restack'.")
+            "then re-run '#{PROG} #{verb}'.")
       end
     end
   end
 
   children_from(scan, branch).each do |child|
-    restack_subtree(child, scan, visited)
+    restack_subtree(child, scan, visited, trunk, heal_orphans)
   end
 end
 
@@ -431,10 +444,26 @@ def cmd_restack(_args)
 
   info "restacking stack rooted at #{C_CYAN}#{root}#{C_RESET}"
   scan = scan_stack_config
-  restack_subtree(root, scan, {})
+  restack_subtree(root, scan, {}, trunk, false)
 
   unless git_ok("git checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
+        "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
+  end
+  info "#{C_GREEN}done.#{C_RESET}"
+end
+
+def cmd_sync(_args)
+  original = current_branch
+  trunk = trunk_branch
+  root = stack_root(original, trunk)
+
+  info "syncing stack rooted at #{C_CYAN}#{root}#{C_RESET}"
+  scan = scan_stack_config
+  restack_subtree(root, scan, {}, trunk, true)
+
+  unless git_ok("git checkout #{sh(original)}")
+    die("sync completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
   info "#{C_GREEN}done.#{C_RESET}"
@@ -461,6 +490,7 @@ def cmd_help(_args)
         track [parent]        Track the current branch on top of [parent] (or trunk).
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
+        sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
         version               Show the git-stack version.
         help                  Show this help.
 
@@ -495,7 +525,8 @@ def main(argv)
   when "parent"               then cmd_parent(rest)
   when "track"                then cmd_track(rest)
   when "untrack"              then cmd_untrack(rest)
-  when "restack", "sync"      then cmd_restack(rest)
+  when "restack"              then cmd_restack(rest)
+  when "sync"                 then cmd_sync(rest)
   when "version", "--version", "-v" then cmd_version(rest)
   when "help", "-h", "--help" then cmd_help(rest)
   else

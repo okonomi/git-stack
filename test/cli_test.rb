@@ -203,3 +203,46 @@ gsq("create feat-a"); commit("a.txt", "a1")
 gsq("untrack") # feat-a is current; drop its parent
 run("restack") # must NOT rebase feat-a onto the trunk
 show("HEAD", "git branch --show-current")
+
+section "sync reparents an orphaned branch onto trunk and restacks it"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# simulate "merge feat-a into main, then delete it"
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q feat-b")
+run("sync")
+show("branch.feat-b.stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+show("HEAD", "git branch --show-current")
+
+section "sync heals a multi-level orphan chain in one pass"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+# merge and delete both feat-a and feat-b, leaving feat-c's parent chain
+# (feat-c -> feat-b -> feat-a -> main) with two missing links
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-b") # feat-b already contains feat-a's commit
+setup("git branch -d feat-a")
+setup("git branch -d feat-b")
+setup("git checkout -q feat-c")
+run("sync")
+show("branch.feat-c.stackParent", "git config --get branch.feat-c.stackParent")
+show("feat-c behind main", "git rev-list --count feat-c..main")
+
+section "sync reports a conflict the same way restack does"
+new_repo
+gsq("create feat-a")
+setup("echo from-a > shared.txt && git add shared.txt && git commit -qm a-shared")
+gsq("create feat-b")
+setup("echo from-b > shared.txt && git add shared.txt && git commit -qm b-shared")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("echo changed-a > shared.txt && git add shared.txt && git commit -qm main-conflict")
+setup("git checkout -q feat-b")
+run("sync")
