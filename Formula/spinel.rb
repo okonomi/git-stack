@@ -52,7 +52,7 @@ class Spinel < Formula
   end
 
   test do
-    assert_predicate bin/"spin", :exist?
+    assert_path_exists bin/"spin"
     system bin/"spin", "--help"
   end
 end
