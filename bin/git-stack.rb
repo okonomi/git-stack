@@ -23,9 +23,12 @@ VERSION = "0.1.0"
 # --- output helpers ---------------------------------------------------------
 
 # Colours are enabled only when writing to a terminal (and NO_COLOR is unset).
+#
+# Per the NO_COLOR spec (https://no-color.org/), the mere *presence* of the
+# variable disables colour, regardless of its value -- including an empty
+# string.
 def color_enabled?
-  nc = ENV["NO_COLOR"]
-  return false if !nc.nil? && nc != ""
+  return false unless ENV["NO_COLOR"].nil?
 
   # Spinel resolves `.tty?` on the STDOUT constant, but not on the $stdout
   # global (it dispatches on `unknown` and raises); use the constant.
@@ -115,33 +118,42 @@ def trunk_branch
   trunk
 end
 
-# The cached trunk without triggering detection (empty when unset).
-def trunk_cached
-  git_out("git config --get stack.trunk")
-end
-
 # --- stack metadata ---------------------------------------------------------
 
 def get_parent(branch)
   git_out("git config --get branch.#{sh(branch)}.stackParent")
 end
 
+# Record `parent` as the parent of `branch`; return true on success.
+#
+# The result is bound to a local before returning: Spinel drops the boolean
+# when a `system` call is a function's bare trailing expression.
 def set_parent(branch, parent)
-  system("git", "config", "branch.#{branch}.stackParent", parent)
+  ok = system("git", "config", "branch.#{branch}.stackParent", parent)
+  ok
 end
 
 def clear_parent(branch)
   git_ok("git config --unset branch.#{sh(branch)}.stackParent")
 end
 
-# Return every branch that records `parent` as its parent.
+# One scan of git config listing every `branch.<name>.stackParent` entry.
+#
+# The tree and restack recursions call `children_from` at every node; capturing
+# the scan once and threading it through the recursion avoids re-spawning `git`
+# per node (an O(N^2) subprocess blow-up on a stack of N branches).
+def scan_stack_config
+  `git config --get-regexp '^branch\\..*\\.stackparent$' 2>/dev/null`
+end
+
+# Sorted list of branches that record `parent` as their parent, parsed from a
+# pre-captured `scan_stack_config` result -- no subprocess of its own.
 #
 # Note: git lowercases the variable-name portion of a config key, so the
 # stored key is `branch.<name>.stackparent` even though we write `stackParent`.
-def children_of(parent)
-  out = `git config --get-regexp '^branch\\..*\\.stackparent$' 2>/dev/null`
+def children_from(scan, parent)
   names = []
-  out.split("\n").each do |line|
+  scan.split("\n").each do |line|
     next if line.empty?
 
     space = line.index(" ")
@@ -157,23 +169,58 @@ def children_of(parent)
   names.sort
 end
 
+# Return every branch that records `parent` as its parent (single lookup).
+def children_of(parent)
+  children_from(scan_stack_config, parent)
+end
+
+# The parent used for display and navigation: the recorded parent, or the
+# trunk when none is recorded.
+def effective_parent(branch, trunk)
+  parent = get_parent(branch)
+  parent.empty? ? trunk : parent
+end
+
 # Walk down from `branch` to the root of its stack (the branch whose parent is
 # the trunk or is untracked). Returns the root branch name.
+#
+# `seen` guards against cyclic parent chains (e.g. A -> B -> A) left over from
+# older versions or hand-edited config, so we terminate instead of hanging.
 def stack_root(branch, trunk)
+  seen = {}
   loop do
+    seen[branch] = true
     parent = get_parent(branch)
     break if parent.empty? || parent == trunk
     break unless branch_exists?(parent)
+    break if seen[parent]
 
     branch = parent
   end
   branch
 end
 
+# True if making `new_parent` the parent of `branch` would create a cycle --
+# that is, `branch` already lies on `new_parent`'s chain of ancestors.
+def would_cycle?(branch, new_parent, trunk)
+  seen = {}
+  cur = new_parent
+  loop do
+    return true if cur == branch
+    break if cur.empty? || cur == trunk
+    break if seen[cur]
+    break unless branch_exists?(cur)
+
+    seen[cur] = true
+    cur = get_parent(cur)
+  end
+  false
+end
+
 # --- tree rendering ---------------------------------------------------------
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
-def print_subtree(branch, prefix, cur)
+def print_subtree(branch, prefix, cur, trunk, scan)
   marker = " "
   name_style = C_RESET
   if branch == cur
@@ -182,8 +229,7 @@ def print_subtree(branch, prefix, cur)
   end
 
   extra = ""
-  parent = get_parent(branch)
-  parent = trunk_cached if parent.empty?
+  parent = effective_parent(branch, trunk)
   if !parent.empty? && branch_exists?(parent)
     # Count commits this branch is ahead of / behind its parent.
     ahead = commit_count(parent, branch)
@@ -197,8 +243,8 @@ def print_subtree(branch, prefix, cur)
 
   puts "#{prefix}#{marker} #{name_style}#{branch}#{C_RESET} #{extra}"
 
-  children_of(branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur)
+  children_from(scan, branch).each do |child|
+    print_subtree(child, "#{prefix}  ", cur, trunk, scan)
   end
 end
 
@@ -223,13 +269,14 @@ def cmd_create(args)
 
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("git checkout -b #{sh(name)}")
-  set_parent(name, parent)
+  die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
   info "created #{C_GREEN}#{name}#{C_RESET} on top of #{C_CYAN}#{parent}#{C_RESET}"
 end
 
 def cmd_tree(_args)
   trunk = trunk_branch
   cur = current_branch_or_empty
+  scan = scan_stack_config
 
   # The trunk is the visual root; its children are the stack roots.
   marker = " "
@@ -240,8 +287,8 @@ def cmd_tree(_args)
   end
   puts "#{marker} #{style}#{trunk}#{C_RESET} #{C_DIM}(trunk)#{C_RESET}"
 
-  children_of(trunk).each do |child|
-    print_subtree(child, "  ", cur)
+  children_from(scan, trunk).each do |child|
+    print_subtree(child, "  ", cur, trunk, scan)
   end
 end
 
@@ -249,24 +296,25 @@ def cmd_parent(args)
   branch = current_branch
   new_parent = args.empty? ? "" : args[0]
   if new_parent.empty?
-    p = get_parent(branch)
-    p = trunk_branch if p.empty?
-    puts p
+    puts effective_parent(branch, trunk_branch)
     return
   end
   die("branch '#{new_parent}' does not exist") unless branch_exists?(new_parent)
   die("a branch cannot be its own parent") if new_parent == branch
-  set_parent(branch, new_parent)
+  die("'#{new_parent}' is downstream of '#{branch}'; setting it as parent would create a cycle") if would_cycle?(branch, new_parent, trunk_branch)
+  die("failed to set parent of '#{branch}'") unless set_parent(branch, new_parent)
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
 def cmd_track(args)
   branch = current_branch
+  trunk = trunk_branch
   parent = args.empty? ? "" : args[0]
-  parent = trunk_branch if parent.empty?
+  parent = trunk if parent.empty?
   die("branch '#{parent}' does not exist") unless branch_exists?(parent)
   die("a branch cannot be its own parent") if parent == branch
-  set_parent(branch, parent)
+  die("'#{parent}' is downstream of '#{branch}'; tracking it would create a cycle") if would_cycle?(branch, parent, trunk)
+  die("failed to track '#{branch}'") unless set_parent(branch, parent)
   info "tracking '#{branch}' on top of '#{parent}'"
 end
 
@@ -279,11 +327,10 @@ end
 def cmd_down(_args)
   branch = current_branch
   trunk = trunk_branch
-  parent = get_parent(branch)
-  parent = trunk if parent.empty?
+  parent = effective_parent(branch, trunk)
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
-  system("git", "checkout", parent)
+  die("failed to check out '#{parent}'") unless system("git", "checkout", parent)
 end
 
 def cmd_up(args)
@@ -296,7 +343,7 @@ def cmd_up(args)
   unless want.empty?
     children.each do |child|
       if child == want
-        system("git", "checkout", want)
+        die("failed to check out '#{want}'") unless system("git", "checkout", want)
         return
       end
     end
@@ -304,7 +351,7 @@ def cmd_up(args)
   end
 
   if children.length == 1
-    system("git", "checkout", children[0])
+    die("failed to check out '#{children[0]}'") unless system("git", "checkout", children[0])
     return
   end
 
@@ -316,11 +363,16 @@ def cmd_up(args)
 end
 
 # Rebase `branch` onto its parent, then recurse into its children.
-def restack_subtree(branch)
-  parent = get_parent(branch)
-  parent = trunk_branch if parent.empty?
+#
+# A branch with no recorded parent is untracked and is left untouched -- we do
+# *not* fall back to rebasing it onto the trunk. `visited` guards against
+# cyclic parent chains so the recursion always terminates.
+def restack_subtree(branch, scan, visited)
+  return if visited[branch]
+  visited[branch] = true
 
-  if branch_exists?(parent)
+  parent = get_parent(branch)
+  if !parent.empty? && branch_exists?(parent)
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{C_CYAN}#{branch}#{C_RESET} onto #{C_CYAN}#{parent}#{C_RESET}"
@@ -334,8 +386,8 @@ def restack_subtree(branch)
     end
   end
 
-  children_of(branch).each do |child|
-    restack_subtree(child)
+  children_from(scan, branch).each do |child|
+    restack_subtree(child, scan, visited)
   end
 end
 
@@ -345,9 +397,13 @@ def cmd_restack(_args)
   root = stack_root(original, trunk)
 
   info "restacking stack rooted at #{C_CYAN}#{root}#{C_RESET}"
-  restack_subtree(root)
+  scan = scan_stack_config
+  restack_subtree(root, scan, {})
 
-  git_ok("git checkout #{sh(original)}")
+  unless git_ok("git checkout #{sh(original)}")
+    die("restack completed, but returning to '#{original}' failed;\n" \
+        "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
+  end
   info "#{C_GREEN}done.#{C_RESET}"
 end
 

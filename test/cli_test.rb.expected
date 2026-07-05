@@ -89,3 +89,21 @@ $ git stack untrack
 'feat-a' is no longer tracked in a stack
 [exit 0]
 branch.feat-a.stackParent: 
+
+### parent rejects an indirect cycle
+$ git stack parent feat-b
+error: 'feat-b' is downstream of 'feat-a'; setting it as parent would create a cycle
+[exit 1]
+branch.feat-a.stackParent: main
+
+### track rejects an indirect cycle
+$ git stack track feat-b
+error: 'feat-b' is downstream of 'feat-a'; tracking it would create a cycle
+[exit 1]
+
+### restack leaves an untracked branch alone
+$ git stack restack
+restacking stack rooted at feat-a
+done.
+[exit 0]
+HEAD: feat-a

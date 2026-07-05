@@ -181,3 +181,25 @@ new_repo
 gsq("create feat-a")
 run("untrack")
 show("branch.feat-a.stackParent", "git config --get branch.feat-a.stackParent")
+
+section "parent rejects an indirect cycle"
+new_repo
+gsq("create feat-a")
+gsq("create feat-b") # feat-b stacked on feat-a
+setup("git checkout -q feat-a")
+run("parent feat-b") # would make feat-a <-> feat-b a cycle
+show("branch.feat-a.stackParent", "git config --get branch.feat-a.stackParent")
+
+section "track rejects an indirect cycle"
+new_repo
+gsq("create feat-a")
+gsq("create feat-b")
+setup("git checkout -q feat-a")
+run("track feat-b")
+
+section "restack leaves an untracked branch alone"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("untrack") # feat-a is current; drop its parent
+run("restack") # must NOT rebase feat-a onto the trunk
+show("HEAD", "git branch --show-current")
