@@ -20,6 +20,19 @@ parent of each branch and does that replay for you.
 shells out to `git` for everything (via `system()` and backticks), so it needs
 nothing beyond `git` and a Ruby interpreter.
 
+### Homebrew
+
+This repo doubles as its own Homebrew tap (`Formula/git-stack.rb`). Since the
+repo isn't named `homebrew-git-stack`, tap it with an explicit URL:
+
+```sh
+brew tap okonomi/git-stack https://github.com/okonomi/git-stack
+brew install git-stack
+git stack help
+```
+
+There are no tagged releases yet, so the formula builds from the tip of `main`.
+
 ### Ruby script
 
 Put it anywhere on your `PATH` with a name starting with `git-` and git will
