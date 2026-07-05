@@ -18,6 +18,7 @@
 # See `git stack help` for the list of subcommands.
 
 PROG = "git stack"
+VERSION = "0.1.0"
 
 # --- output helpers ---------------------------------------------------------
 
@@ -350,6 +351,10 @@ def cmd_restack(_args)
   info "#{C_GREEN}done.#{C_RESET}"
 end
 
+def cmd_version(_args)
+  puts "#{PROG} #{VERSION}"
+end
+
 def cmd_help(_args)
   puts <<~HELP
     #{C_BOLD}#{PROG}#{C_RESET} -- manage stacked branches with plain git
@@ -367,6 +372,7 @@ def cmd_help(_args)
         track [parent]        Track the current branch on top of [parent] (or trunk).
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
+        version               Show the git-stack version.
         help                  Show this help.
 
     #{C_BOLD}EXAMPLE#{C_RESET}
@@ -384,9 +390,12 @@ end
 # --- dispatch ---------------------------------------------------------------
 
 def main(argv)
-  require_repo
   cmd = argv.empty? ? "help" : argv[0]
   rest = argv.empty? ? [] : argv[1..-1]
+
+  repo_optional = cmd == "version" || cmd == "--version" || cmd == "-v" ||
+                  cmd == "help" || cmd == "-h" || cmd == "--help"
+  require_repo unless repo_optional
 
   case cmd
   when "init"                 then cmd_init(rest)
@@ -398,6 +407,7 @@ def main(argv)
   when "track"                then cmd_track(rest)
   when "untrack"              then cmd_untrack(rest)
   when "restack", "sync"      then cmd_restack(rest)
+  when "version", "--version", "-v" then cmd_version(rest)
   when "help", "-h", "--help" then cmd_help(rest)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")

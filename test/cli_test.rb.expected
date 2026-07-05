@@ -5,6 +5,11 @@ trunk is 'main' (auto-detected)
 [exit 0]
 stack.trunk: main
 
+### version shows the program version
+$ git stack version
+git stack 0.1.0
+[exit 0]
+
 ### create records the parent and checks out the branch
 $ git stack create feat-a
 created feat-a on top of main

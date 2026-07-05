@@ -98,6 +98,9 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
+section "version shows the program version"
+run("version")
+
 section "create records the parent and checks out the branch"
 new_repo
 run("create feat-a")
