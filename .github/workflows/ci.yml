@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Keep this in sync with SPINEL_REF in .claude/hooks/session-start.sh.
-      SPINEL_REF: 0ee18cfc7496d1c50cb5399919544d174ab38572
+      SPINEL_REF: 11ec0497760fa4617cef1ac1b21b0d712aec0499
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
     steps:

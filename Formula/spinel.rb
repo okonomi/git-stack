@@ -11,8 +11,8 @@ class Spinel < Formula
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
   url "https://github.com/matz/spinel.git",
-      revision: "0ee18cfc7496d1c50cb5399919544d174ab38572"
-  version "0.0.0-0ee18cf"
+      revision: "11ec0497760fa4617cef1ac1b21b0d712aec0499"
+  version "0.0.0-11ec049"
   license "MIT"
 
   # `make deps` normally curls these gems from rubygems.org for their bundled
