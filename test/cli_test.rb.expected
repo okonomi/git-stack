@@ -1,0 +1,86 @@
+
+### init auto-detects the trunk
+$ git stack init
+trunk is 'main' (auto-detected)
+[exit 0]
+stack.trunk: main
+
+### create records the parent and checks out the branch
+$ git stack create feat-a
+created feat-a on top of main
+[exit 0]
+HEAD: feat-a
+branch.feat-a.stackParent: main
+
+### create rejects an existing branch
+$ git stack create dup
+error: branch 'dup' already exists
+[exit 1]
+
+### tree renders the whole stack
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+
+### down / up navigate the stack
+$ git stack down
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+$ git stack down
+Switched to branch 'main'
+[exit 0]
+HEAD: main
+$ git stack up
+Switched to branch 'feat-b'
+[exit 0]
+HEAD: feat-b
+
+### up with multiple children requires a choice
+$ git stack up
+'feat-a' has multiple children; pick one:
+  git stack up feat-b
+  git stack up feat-c
+[exit 1]
+$ git stack up feat-c
+Switched to branch 'feat-c'
+[exit 0]
+HEAD: feat-c
+
+### restack replays descendants onto the updated parent
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b contains a2: 1
+HEAD: feat-b
+
+### restack aborts cleanly on a conflict
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+error: conflict while rebasing 'feat-b' onto 'feat-a'.
+Resolve it manually with:
+    git checkout feat-b && git rebase feat-a
+then re-run 'git stack restack'.
+[exit 1]
+rebase in progress: 0
+
+### parent shows and sets the parent
+$ git stack parent
+feat-a
+[exit 0]
+$ git stack parent other
+parent of 'feat-b' set to 'other'
+[exit 0]
+branch.feat-b.stackParent: other
+
+### untrack removes the metadata
+$ git stack untrack
+'feat-a' is no longer tracked in a stack
+[exit 0]
+branch.feat-a.stackParent: 
