@@ -9,19 +9,29 @@
 # There are no tagged releases yet, so the formula is HEAD-only: it builds
 # straight from the tip of `main`. Once a release is cut, add `url`/`sha256`
 # stable stanzas alongside the `head` line below.
+#
+# The install compiles bin/git-stack.rb into a standalone native binary with
+# Spinel (Matz's ahead-of-time Ruby compiler), so the installed `git-stack`
+# carries no Ruby runtime dependency. Spinel isn't packaged, so it ships as a
+# sibling formula in this tap (Formula/spinel.rb) and is pulled in as a build
+# dependency below.
 class GitStack < Formula
   desc "Manage stacked branches with plain git"
   homepage "https://github.com/okonomi/git-stack"
   head "https://github.com/okonomi/git-stack.git", branch: "main"
   license "MIT"
 
-  # git-stack is a self-contained Ruby script that shells out to `git`.
+  # The compiled binary shells out to `git` at run time; that is its only
+  # runtime dependency. Spinel is only needed to build it.
   depends_on "git"
+  depends_on "okonomi/git-stack/spinel" => :build
 
   def install
-    # Install the script as `git-stack` so it works both directly and as the
-    # `git stack` subcommand (git picks up `git-*` executables on PATH).
-    bin.install "bin/git-stack.rb" => "git-stack"
+    # Compile bin/git-stack.rb -> build/bin/git-stack with Spinel, then install
+    # that native binary. Naming it `git-stack` lets it work both directly and
+    # as the `git stack` subcommand (git picks up `git-*` executables on PATH).
+    system "spin", "build"
+    bin.install "build/bin/git-stack"
   end
 
   test do
