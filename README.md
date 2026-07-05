@@ -32,6 +32,10 @@ git stack help
 ```
 
 There are no tagged releases yet, so the formula builds from the tip of `main`.
+It compiles the script into a standalone native binary with Spinel (see below),
+so the installed `git-stack` needs no Ruby runtime — only `git` at run time.
+Because Spinel isn't packaged, the formula builds it from a pinned source ref
+as part of the install, so the first `brew install` takes a little longer.
 
 ### Ruby script
 
