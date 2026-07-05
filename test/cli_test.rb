@@ -246,3 +246,15 @@ setup("git branch -d feat-a")
 setup("echo changed-a > shared.txt && git add shared.txt && git commit -qm main-conflict")
 setup("git checkout -q feat-b")
 run("sync")
+
+section "tree shows a branch whose parent was deleted, then sync fixes it"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q feat-b")
+run("tree")
+gsq("sync")
+run("tree")

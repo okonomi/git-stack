@@ -137,3 +137,13 @@ Resolve it manually with:
     git checkout feat-b && git rebase main
 then re-run 'git stack sync'.
 [exit 1]
+
+### tree shows a branch whose parent was deleted, then sync fixes it
+$ git stack tree
+  main (trunk)
+  * feat-b (parent 'feat-a' missing; run `git stack sync`)
+[exit 0]
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s))
+[exit 0]

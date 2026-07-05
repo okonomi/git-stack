@@ -185,6 +185,29 @@ def children_of(parent)
   children_from(scan_stack_config, parent)
 end
 
+# Branches whose recorded parent is non-empty but no longer a real branch
+# (its parent was merged and deleted). Treated as extra roots by `tree` so
+# they're always visible instead of silently disappearing; `git stack sync`
+# is what actually repairs them.
+def orphan_roots(scan)
+  names = []
+  scan.split("\n").each do |line|
+    next if line.empty?
+
+    space = line.index(" ")
+    next if space.nil?
+
+    key = line[0...space]
+    value = line[(space + 1)..-1]
+    next if value.empty?
+    next if branch_exists?(value)
+
+    name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
+    names << name
+  end
+  names.sort
+end
+
 # The parent recorded for `branch`, parsed from a pre-captured
 # `scan_stack_config` result -- no subprocess of its own (mirrors get_parent).
 def parent_from(scan, branch)
@@ -280,6 +303,8 @@ def print_subtree(branch, prefix, cur, trunk, scan)
     elsif ahead > 0
       extra = "#{C_DIM}(#{ahead} commit(s))#{C_RESET}"
     end
+  elsif !parent.empty?
+    extra = "#{C_YELLOW}(parent '#{parent}' missing; run `#{PROG} sync`)#{C_RESET}"
   end
 
   puts "#{prefix}#{marker} #{name_style}#{branch}#{C_RESET} #{extra}"
@@ -329,6 +354,10 @@ def cmd_tree(_args)
   puts "#{marker} #{style}#{trunk}#{C_RESET} #{C_DIM}(trunk)#{C_RESET}"
 
   children_from(scan, trunk).each do |child|
+    print_subtree(child, "  ", cur, trunk, scan)
+  end
+
+  orphan_roots(scan).each do |child|
     print_subtree(child, "  ", cur, trunk, scan)
   end
 end
