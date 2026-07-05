@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Fast feedback: the test is a plain Ruby program, so run the snapshot
+  # transcript under CRuby and diff it against the committed expectation.
+  cruby:
+    name: Snapshot test (CRuby)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Diff transcript against snapshot
+        run: ruby test/cli_test.rb | diff -u test/cli_test.rb.expected -
+
+  # Full check: compile the CLI and the test with Spinel and run `spin test`,
+  # exercising the actual native binary that ships. Spinel is built from
+  # source (it is not packaged), mirroring the SessionStart hook.
+  spinel:
+    name: Compiled test (Spinel)
+    runs-on: ubuntu-latest
+    env:
+      # Keep this in sync with SPINEL_REF in .claude/hooks/session-start.sh.
+      SPINEL_REF: 0ee18cfc7496d1c50cb5399919544d174ab38572
+      SPINEL_REPO: https://github.com/matz/spinel.git
+      SPINEL_PREFIX: ${{ github.workspace }}/.spinel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      # `spin` is self-contained under SPINEL_PREFIX after `make install`,
+      # so caching that directory lets us skip the rebuild on later runs.
+      - name: Cache Spinel install
+        id: cache-spinel
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SPINEL_PREFIX }}
+          key: spinel-${{ runner.os }}-${{ env.SPINEL_REF }}
+
+      - name: Build & install Spinel
+        if: steps.cache-spinel.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/spinel-src"
+          git init -q "$src"
+          git -C "$src" remote add origin "$SPINEL_REPO"
+          git -C "$src" fetch -q --depth 1 origin "$SPINEL_REF"
+          git -C "$src" checkout -q FETCH_HEAD
+          make -C "$src" deps
+          make -C "$src"
+          make -C "$src" install PREFIX="$SPINEL_PREFIX"
+
+      - name: Run spin test
+        run: |
+          echo "$SPINEL_PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$SPINEL_PREFIX/bin:$PATH"
+          spin --version
+          spin test
