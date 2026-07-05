@@ -95,6 +95,10 @@ def current_branch
   b
 end
 
+# Spawns a `git` subprocess per call. Fine for the one-off checks scattered
+# through this file, but do NOT call this inside a per-node loop over a
+# stack -- use the pre-captured `existing_branches` set there instead (see
+# `print_subtree`/`restack_subtree` for the pattern).
 def branch_exists?(name)
   git_ok("git show-ref --verify --quiet refs/heads/#{sh(name)}")
 end
@@ -129,9 +133,13 @@ def trunk_branch
   if !head.empty?
     trunk = head.sub(/^origin\//, "")
   elsif branch_exists?("main")
-    trunk = "main"
+    # `.dup` avoids handing out the frozen string literal: Spinel's Hash
+    # lookup can fail to match a frozen literal key against the
+    # non-frozen keys `existing_branches` builds from `git` output, even
+    # though the contents are identical.
+    trunk = "main".dup
   elsif branch_exists?("master")
-    trunk = "master"
+    trunk = "master".dup
   else
     die("cannot determine trunk branch; run '#{PROG} init <branch>'")
   end
@@ -470,19 +478,25 @@ end
 # recorded parent no longer exists (e.g. it was merged and deleted) is
 # reparented onto `trunk` before the rebase check runs. When false (used by
 # `git stack restack`), such a branch is left untouched, same as before.
-def restack_subtree(branch, scan, visited, trunk, heal_orphans)
+#
+# `branches` is a pre-captured `existing_branches` set, threaded through the
+# recursion so existence checks don't spawn a `git` subprocess per node --
+# safe because neither restack nor sync creates or deletes branch refs
+# mid-traversal (sync only rewrites `stackParent` config, and rebase updates
+# a branch's history in place without removing the ref).
+def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
   return if visited[branch]
   visited[branch] = true
 
   parent = parent_from(scan, branch)
 
-  if heal_orphans && !parent.empty? && !branch_exists?(parent)
+  if heal_orphans && !parent.empty? && !branches[parent]
     info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
     die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
     parent = trunk
   end
 
-  if !parent.empty? && branch_exists?(parent)
+  if !parent.empty? && branches[parent]
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{C_CYAN}#{branch}#{C_RESET} onto #{C_CYAN}#{parent}#{C_RESET}"
@@ -498,7 +512,7 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans)
   end
 
   children_from(scan, branch).each do |child|
-    restack_subtree(child, scan, visited, trunk, heal_orphans)
+    restack_subtree(child, scan, visited, trunk, heal_orphans, branches)
   end
 end
 
@@ -509,7 +523,8 @@ def cmd_restack(_args)
 
   info "restacking stack rooted at #{C_CYAN}#{root}#{C_RESET}"
   scan = scan_stack_config
-  restack_subtree(root, scan, {}, trunk, false)
+  branches = existing_branches
+  restack_subtree(root, scan, {}, trunk, false, branches)
 
   unless git_ok("git checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
@@ -525,7 +540,8 @@ def cmd_sync(_args)
 
   info "syncing stack rooted at #{C_CYAN}#{root}#{C_RESET}"
   scan = scan_stack_config
-  restack_subtree(root, scan, {}, trunk, true)
+  branches = existing_branches
+  restack_subtree(root, scan, {}, trunk, true, branches)
 
   unless git_ok("git checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
