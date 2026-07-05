@@ -107,3 +107,43 @@ restacking stack rooted at feat-a
 done.
 [exit 0]
 HEAD: feat-a
+
+### sync reparents an orphaned branch onto trunk and restacks it
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+branch.feat-b.stackParent: main
+feat-b behind main: 0
+HEAD: feat-b
+
+### sync heals a multi-level orphan chain in one pass
+$ git stack sync
+syncing stack rooted at feat-c
+'feat-c': parent 'feat-b' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+branch.feat-c.stackParent: main
+feat-c behind main: 0
+
+### sync reports a conflict the same way restack does
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main
+error: conflict while rebasing 'feat-b' onto 'main'.
+Resolve it manually with:
+    git checkout feat-b && git rebase main
+then re-run 'git stack sync'.
+[exit 1]
+
+### tree shows a branch whose parent was deleted, then sync fixes it
+$ git stack tree
+  main (trunk)
+  * feat-b (parent 'feat-a' missing; run `git stack sync`)
+[exit 0]
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s))
+[exit 0]
