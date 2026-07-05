@@ -74,6 +74,7 @@ state file to commit and nothing to keep in sync.
 | `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
+| `git stack version`       | Show the git-stack version.                                    |
 
 ## Walkthrough
 
