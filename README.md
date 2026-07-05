@@ -71,7 +71,6 @@ state file to commit and nothing to keep in sync.
 | `git stack up [child]`    | Check out the branch stacked on the current one.                |
 | `git stack down`          | Check out the current branch's parent.                          |
 | `git stack parent [branch]` | Show or set the parent of the current branch.                 |
-| `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack version`       | Show the git-stack version.                                    |
@@ -114,7 +113,7 @@ Already have a branch you want to fold into a stack?
 
 ```sh
 git checkout my-existing-branch
-git stack track main            # or any other branch as the parent
+git stack parent main           # or any other branch as the parent
 ```
 
 ## Restack conflicts

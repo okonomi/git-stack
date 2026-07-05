@@ -260,16 +260,6 @@ def cmd_parent(args)
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
-def cmd_track(args)
-  branch = current_branch
-  parent = args.empty? ? "" : args[0]
-  parent = trunk_branch if parent.empty?
-  die("branch '#{parent}' does not exist") unless branch_exists?(parent)
-  die("a branch cannot be its own parent") if parent == branch
-  set_parent(branch, parent)
-  info "tracking '#{branch}' on top of '#{parent}'"
-end
-
 def cmd_untrack(_args)
   branch = current_branch
   clear_parent(branch)
@@ -369,7 +359,6 @@ def cmd_help(_args)
         up [child]            Check out the branch stacked on the current one.
         down                  Check out the current branch's parent.
         parent [branch]       Show or set the parent of the current branch.
-        track [parent]        Track the current branch on top of [parent] (or trunk).
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
         version               Show the git-stack version.
@@ -404,7 +393,6 @@ def main(argv)
   when "up", "next"           then cmd_up(rest)
   when "down", "prev"         then cmd_down(rest)
   when "parent"               then cmd_parent(rest)
-  when "track"                then cmd_track(rest)
   when "untrack"              then cmd_untrack(rest)
   when "restack", "sync"      then cmd_restack(rest)
   when "version", "--version", "-v" then cmd_version(rest)
