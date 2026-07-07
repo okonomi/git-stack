@@ -22,6 +22,11 @@ VERSION = "0.1.0"
 
 # --- output helpers ---------------------------------------------------------
 
+# All terminal decoration goes through this section. Nothing outside it should
+# emit a raw ANSI escape or pair a colour with its reset by hand; callers name
+# the *intent* (`green(name)`, `bold("USAGE")`) and the reset -- and the
+# colour-disabled case -- are handled here in one place.
+
 # Colours are enabled only when writing to a terminal (and NO_COLOR is unset).
 #
 # Per the NO_COLOR spec (https://no-color.org/), the mere *presence* of the
@@ -37,16 +42,41 @@ end
 
 USE_COLOR = color_enabled?
 
-C_RESET  = USE_COLOR ? "\033[0m"  : ""
-C_DIM    = USE_COLOR ? "\033[2m"  : ""
-C_BOLD   = USE_COLOR ? "\033[1m"  : ""
-C_GREEN  = USE_COLOR ? "\033[32m" : ""
-C_YELLOW = USE_COLOR ? "\033[33m" : ""
-C_CYAN   = USE_COLOR ? "\033[36m" : ""
-C_RED    = USE_COLOR ? "\033[31m" : ""
+# Wrap `text` in the SGR sequence `code` (e.g. "32", "1"), resetting after.
+# When colour is disabled this is the identity function, so callers never
+# touch escape codes or the matching reset themselves.
+def paint(code, text)
+  return text unless USE_COLOR
+
+  "\033[#{code}m#{text}\033[0m"
+end
+
+def bold(text)
+  paint("1", text)
+end
+
+def dim(text)
+  paint("2", text)
+end
+
+def green(text)
+  paint("32", text)
+end
+
+def yellow(text)
+  paint("33", text)
+end
+
+def cyan(text)
+  paint("36", text)
+end
+
+def red(text)
+  paint("31", text)
+end
 
 def die(msg)
-  $stderr.puts "#{C_RED}error:#{C_RESET} #{msg}"
+  $stderr.puts "#{red("error:")} #{msg}"
   exit 1
 end
 
@@ -315,12 +345,19 @@ end
 
 # --- tree rendering ---------------------------------------------------------
 
-# The prefix marker and name colour for `branch` when rendering the tree:
-# highlighted if it's the checked-out branch, `default_style` otherwise.
-def marker_and_style(branch, cur, default_style)
-  return ["*", "#{C_GREEN}#{C_BOLD}"] if branch == cur
+# The tree row marker for `branch`: "*" when it's the checked-out branch.
+def tree_marker(branch, cur)
+  branch == cur ? "*" : " "
+end
 
-  [" ", default_style]
+# `branch` coloured for a tree row: highlighted (bold green) when it's the
+# checked-out branch, otherwise painted with `default_code` (an SGR code
+# string, or "" for no colour).
+def tree_name(branch, cur, default_code)
+  return bold(green(branch)) if branch == cur
+  return branch if default_code.empty?
+
+  paint(default_code, branch)
 end
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
@@ -328,8 +365,6 @@ end
 # `branches` is a pre-captured `existing_branches` set, threaded through the
 # recursion for the same reason `scan` is: avoids re-spawning `git` per node.
 def print_subtree(branch, prefix, cur, trunk, scan, branches)
-  marker, name_style = marker_and_style(branch, cur, C_RESET)
-
   extra = ""
   parent = parent_from(scan, branch)
   parent = trunk if parent.empty?
@@ -338,15 +373,15 @@ def print_subtree(branch, prefix, cur, trunk, scan, branches)
     # separate `commit_count` calls.
     behind, ahead = ahead_behind(parent, branch)
     if behind > 0
-      extra = "#{C_YELLOW}(needs restack: #{behind} behind)#{C_RESET}"
+      extra = yellow("(needs restack: #{behind} behind)")
     elsif ahead > 0
-      extra = "#{C_DIM}(#{ahead} commit(s))#{C_RESET}"
+      extra = dim("(#{ahead} commit(s))")
     end
   elsif !parent.empty?
-    extra = "#{C_YELLOW}(parent '#{parent}' missing; run `#{PROG} sync`)#{C_RESET}"
+    extra = yellow("(parent '#{parent}' missing; run `#{PROG} sync`)")
   end
 
-  puts "#{prefix}#{marker} #{name_style}#{branch}#{C_RESET} #{extra}"
+  puts "#{prefix}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
 
   children_from(scan, branch).each do |child|
     print_subtree(child, "#{prefix}  ", cur, trunk, scan, branches)
@@ -380,7 +415,7 @@ def cmd_create(args)
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
-  info "created #{C_GREEN}#{name}#{C_RESET} on top of #{C_CYAN}#{parent}#{C_RESET}"
+  info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
 def cmd_tree(_args)
@@ -390,8 +425,7 @@ def cmd_tree(_args)
   branches = existing_branches
 
   # The trunk is the visual root; its children are the stack roots.
-  marker, style = marker_and_style(trunk, cur, C_CYAN)
-  puts "#{marker} #{style}#{trunk}#{C_RESET} #{C_DIM}(trunk)#{C_RESET}"
+  puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
   children_from(scan, trunk).each do |child|
     print_subtree(child, "  ", cur, trunk, scan, branches)
@@ -495,7 +529,7 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
   if !parent.empty? && branches[parent]
     behind = commit_count(branch, parent)
     if behind > 0
-      info "restacking #{C_CYAN}#{branch}#{C_RESET} onto #{C_CYAN}#{parent}#{C_RESET}"
+      info "restacking #{cyan(branch)} onto #{cyan(parent)}"
       unless git_ok("rebase #{sh(parent)} #{sh(branch)}")
         git_ok("rebase --abort")
         verb = heal_orphans ? "sync" : "restack"
@@ -517,7 +551,7 @@ def cmd_restack(_args)
   trunk = trunk_branch
   root = stack_root(original, trunk)
 
-  info "restacking stack rooted at #{C_CYAN}#{root}#{C_RESET}"
+  info "restacking stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
   restack_subtree(root, scan, {}, trunk, false, branches)
@@ -526,7 +560,7 @@ def cmd_restack(_args)
     die("restack completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
-  info "#{C_GREEN}done.#{C_RESET}"
+  info green("done.")
 end
 
 def cmd_sync(_args)
@@ -534,7 +568,7 @@ def cmd_sync(_args)
   trunk = trunk_branch
   root = stack_root(original, trunk)
 
-  info "syncing stack rooted at #{C_CYAN}#{root}#{C_RESET}"
+  info "syncing stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
   restack_subtree(root, scan, {}, trunk, true, branches)
@@ -543,7 +577,7 @@ def cmd_sync(_args)
     die("sync completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
-  info "#{C_GREEN}done.#{C_RESET}"
+  info green("done.")
 end
 
 def cmd_version(_args)
@@ -552,12 +586,12 @@ end
 
 def cmd_help(_args)
   puts <<~HELP
-    #{C_BOLD}#{PROG}#{C_RESET} -- manage stacked branches with plain git
+    #{bold(PROG)} -- manage stacked branches with plain git
 
-    #{C_BOLD}USAGE#{C_RESET}
+    #{bold("USAGE")}
         #{PROG} <command> [args]
 
-    #{C_BOLD}COMMANDS#{C_RESET}
+    #{bold("COMMANDS")}
         init [branch]         Set (or auto-detect) the trunk branch.
         create <name>         Create <name> stacked on the current branch. (alias: b)
         tree                  Show the stack as a tree. (aliases: ls, list)
@@ -571,7 +605,7 @@ def cmd_help(_args)
         version               Show the git-stack version.
         help                  Show this help.
 
-    #{C_BOLD}EXAMPLE#{C_RESET}
+    #{bold("EXAMPLE")}
         git checkout main
         #{PROG} create feature-a      # main -> feature-a
         #{PROG} create feature-b      # feature-a -> feature-b
