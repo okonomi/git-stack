@@ -14,8 +14,8 @@ class Spinel < Formula
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
   url "https://github.com/matz/spinel.git",
-      revision: "11ec0497760fa4617cef1ac1b21b0d712aec0499"
-  version "0.0.0-11ec049"
+      revision: "ee8bcf9fac98dcc500dbeaef8623c82abd1ba834"
+  version "0.0.0-ee8bcf9"
   head "https://github.com/matz/spinel.git", branch: "master"
   license "MIT"
 

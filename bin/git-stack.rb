@@ -133,13 +133,9 @@ def trunk_branch
   if !head.empty?
     trunk = head.sub(/^origin\//, "")
   elsif branch_exists?("main")
-    # `.dup` avoids handing out the frozen string literal: Spinel's Hash
-    # lookup can fail to match a frozen literal key against the
-    # non-frozen keys `existing_branches` builds from `git` output, even
-    # though the contents are identical.
-    trunk = "main".dup
+    trunk = "main"
   elsif branch_exists?("master")
-    trunk = "master".dup
+    trunk = "master"
   else
     die("cannot determine trunk branch; run '#{PROG} init <branch>'")
   end
