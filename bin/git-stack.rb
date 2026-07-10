@@ -21,6 +21,18 @@
 PROG = "git stack"
 VERSION = "0.1.0"
 
+# The Spinel revision this binary was compiled with, shown by `git stack
+# version`. A Spinel-compiled binary can't introspect its compiler's revision
+# at run time (the only build signal it exposes is RUBY_DESCRIPTION ==
+# "spinel", with no revision), so it is stamped in at build time: the Homebrew
+# formula rewrites this line with the actual `spinel --version` before
+# `spin build` (see Formula/git-stack.rb).
+#
+# It is intentionally left empty here -- a placeholder for that stamp, not a
+# hand-maintained revision. A build that doesn't stamp it (a plain
+# `spin build`) reports "unknown" instead of a stale pinned value.
+SPINEL_REF = ""
+
 # --- output helpers ---------------------------------------------------------
 
 # All terminal decoration goes through this section. Nothing outside it should
@@ -651,6 +663,16 @@ end
 
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
+  # Only the Spinel-compiled binary was "built with" Spinel; run as a plain
+  # Ruby script there is no build toolchain to report. Spinel is the only
+  # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version),
+  # so key on that.
+  return unless RUBY_DESCRIPTION == "spinel"
+
+  # SPINEL_REF is stamped at build time; an un-stamped build leaves it empty.
+  # The 12-char slice matches `spinel --version`'s short rev.
+  rev = SPINEL_REF.empty? ? "unknown" : SPINEL_REF[0...12]
+  puts "built with spinel #{rev}"
 end
 
 def cmd_help(_args)
@@ -671,7 +693,7 @@ def cmd_help(_args)
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
         sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
-        version               Show the git-stack version.
+        version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
     #{bold("EXAMPLE")}
