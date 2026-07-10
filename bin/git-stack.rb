@@ -8,8 +8,9 @@
 #
 #     branch.<name>.stackParent = <parent-branch>
 #
-# The bottom of every stack rests on the trunk (main/master), which is
-# stored as `stack.trunk` in git config (auto-detected on first use).
+# The bottom of every stack rests on a trunk (main/master, and optionally
+# others like a git-flow `develop`). Trunks are stored as the multi-valued
+# `stack.trunk` git config key (auto-detected on first use).
 #
 # This is a Ruby port of the original bash script, written in the subset of
 # Ruby that Spinel's AOT compiler accepts so that `spin build` turns it into a
@@ -149,16 +150,39 @@ def ahead_behind(parent, branch)
   [parts[0].to_i, parts[1].to_i]
 end
 
-def set_trunk(trunk)
-  system("git", "config", "stack.trunk", trunk)
+# Trunks are the branches every stack ultimately rests on. A repo can have
+# more than one (e.g. git-flow's `main` and `develop`); they are stored as a
+# multi-valued `stack.trunk` git config key. The first configured trunk is the
+# "primary" one -- the default base a branch falls back to when it needs a
+# trunk (an untracked branch's implied parent, or reparenting a branch whose
+# parent was merged and deleted).
+
+# Every configured trunk, in config order (empty list when none is set yet).
+def configured_trunks
+  out = `git config --get-all stack.trunk 2>/dev/null`
+  list = []
+  out.split("\n").each do |line|
+    name = line.strip
+    next if name.empty?
+
+    list << name
+  end
+  list
 end
 
-# Print the trunk branch, detecting and caching it on first use.
-def trunk_branch
-  trunk = git_out("config --get stack.trunk")
-  return trunk unless trunk.empty?
+# Replace the trunk list with exactly `trunks`.
+def set_trunks(trunks)
+  # --unset-all exits non-zero when the key is absent; that's expected, we
+  # only need any old values gone before adding the new ones.
+  git_ok("config --unset-all stack.trunk")
+  trunks.each do |trunk|
+    git_ok("config --add stack.trunk #{sh(trunk)}")
+  end
+end
 
-  # Auto-detect: prefer the remote's default branch, then main/master.
+# Auto-detect a single trunk: prefer the remote's default branch, then
+# main/master. Dies when none can be determined.
+def detect_trunk
   head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
   if !head.empty?
     trunk = head.sub(/^origin\//, "")
@@ -168,10 +192,43 @@ def trunk_branch
     trunk = "master"
   else
     die("cannot determine trunk branch; run '#{PROG} init <branch>'")
+    trunk = "" # unreachable: die exits
   end
-
-  set_trunk(trunk)
   trunk
+end
+
+# Every trunk, auto-detecting and caching one on first use.
+def trunk_branches
+  list = configured_trunks
+  return list unless list.empty?
+
+  trunk = detect_trunk
+  set_trunks([trunk])
+  [trunk]
+end
+
+# The primary trunk -- the default base a branch falls back to (the first
+# configured trunk).
+#
+# The first value is picked with an accumulator loop rather than indexing
+# `trunk_branches` with `[0]`: this result flows into `checkout` and
+# `git config`, and Spinel mistypes an array element read there as a
+# compile-time constant, breaking the native build.
+def primary_trunk
+  first = ""
+  configured_trunks.each do |trunk|
+    first = trunk if first.empty?
+  end
+  return first unless first.empty?
+
+  detected = detect_trunk
+  set_trunks([detected])
+  detected
+end
+
+# True when `branch` is one of the configured trunks.
+def is_trunk?(branch, trunks)
+  trunks.include?(branch)
 end
 
 # --- stack metadata ---------------------------------------------------------
@@ -303,12 +360,12 @@ end
 #
 # `seen` guards against cyclic parent chains (e.g. A -> B -> A) left over from
 # older versions or hand-edited config, so we terminate instead of hanging.
-def stack_root(branch, trunk)
+def stack_root(branch, trunks)
   seen = {}
   loop do
     seen[branch] = true
     parent = get_parent(branch)
-    break if parent.empty? || parent == trunk
+    break if parent.empty? || is_trunk?(parent, trunks)
     break unless branch_exists?(parent)
     break if seen[parent]
 
@@ -319,12 +376,12 @@ end
 
 # True if making `new_parent` the parent of `branch` would create a cycle --
 # that is, `branch` already lies on `new_parent`'s chain of ancestors.
-def would_cycle?(branch, new_parent, trunk)
+def would_cycle?(branch, new_parent, trunks)
   seen = {}
   cur = new_parent
   loop do
     return true if cur == branch
-    break if cur.empty? || cur == trunk
+    break if cur.empty? || is_trunk?(cur, trunks)
     break if seen[cur]
     break unless branch_exists?(cur)
 
@@ -337,10 +394,10 @@ end
 # Validate that `candidate` can become the parent of `branch`: it must exist,
 # must not be `branch` itself, and must not create a cycle. `verb` customizes
 # the cycle-error wording for the calling command.
-def validate_new_parent!(branch, candidate, trunk, verb)
+def validate_new_parent!(branch, candidate, trunks, verb)
   die("branch '#{candidate}' does not exist") unless branch_exists?(candidate)
   die("a branch cannot be its own parent") if candidate == branch
-  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunk)
+  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunks)
 end
 
 # --- tree rendering ---------------------------------------------------------
@@ -395,16 +452,26 @@ def arg0(args)
   args.empty? ? "" : args[0]
 end
 
+# Join `items` with ", " (Array#join is outside the Spinel subset).
+def comma_list(items)
+  s = ""
+  items.each do |item|
+    s = s.empty? ? item : "#{s}, #{item}"
+  end
+  s
+end
+
 def cmd_init(args)
-  trunk = arg0(args)
-  if trunk.empty?
-    trunk = trunk_branch
-    info "trunk is '#{trunk}' (auto-detected)"
+  if args.empty?
+    trunks = trunk_branches
+    info "trunk(s): #{comma_list(trunks)}"
     return
   end
-  die("branch '#{trunk}' does not exist") unless branch_exists?(trunk)
-  set_trunk(trunk)
-  info "trunk set to '#{trunk}'"
+  args.each do |trunk|
+    die("branch '#{trunk}' does not exist") unless branch_exists?(trunk)
+  end
+  set_trunks(args)
+  info "trunk set to #{comma_list(args)}"
 end
 
 def cmd_create(args)
@@ -419,20 +486,23 @@ def cmd_create(args)
 end
 
 def cmd_tree(_args)
-  trunk = trunk_branch
+  trunks = trunk_branches
   cur = current_branch_or_empty
   scan = scan_stack_config
   branches = existing_branches
+  primary = trunks[0]
 
-  # The trunk is the visual root; its children are the stack roots.
-  puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
+  # Each trunk is a visual root; its children are the stack roots resting on it.
+  trunks.each do |trunk|
+    puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
-  children_from(scan, trunk).each do |child|
-    print_subtree(child, "  ", cur, trunk, scan, branches)
+    children_from(scan, trunk).each do |child|
+      print_subtree(child, "  ", cur, primary, scan, branches)
+    end
   end
 
   orphan_roots(scan, branches).each do |child|
-    print_subtree(child, "  ", cur, trunk, scan, branches)
+    print_subtree(child, "  ", cur, primary, scan, branches)
   end
 end
 
@@ -440,20 +510,20 @@ def cmd_parent(args)
   branch = current_branch
   new_parent = arg0(args)
   if new_parent.empty?
-    puts effective_parent(branch, trunk_branch)
+    puts effective_parent(branch, primary_trunk)
     return
   end
-  validate_new_parent!(branch, new_parent, trunk_branch, "setting it as parent")
+  validate_new_parent!(branch, new_parent, trunk_branches, "setting it as parent")
   die("failed to set parent of '#{branch}'") unless set_parent(branch, new_parent)
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
 def cmd_track(args)
   branch = current_branch
-  trunk = trunk_branch
+  trunks = trunk_branches
   parent = arg0(args)
-  parent = trunk if parent.empty?
-  validate_new_parent!(branch, parent, trunk, "tracking it")
+  parent = trunks[0] if parent.empty?
+  validate_new_parent!(branch, parent, trunks, "tracking it")
   die("failed to track '#{branch}'") unless set_parent(branch, parent)
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -466,8 +536,7 @@ end
 
 def cmd_down(_args)
   branch = current_branch
-  trunk = trunk_branch
-  parent = effective_parent(branch, trunk)
+  parent = effective_parent(branch, primary_trunk)
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
   checkout!(parent)
@@ -548,13 +617,13 @@ end
 
 def cmd_restack(_args)
   original = current_branch
-  trunk = trunk_branch
-  root = stack_root(original, trunk)
+  trunks = trunk_branches
+  root = stack_root(original, trunks)
 
   info "restacking stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
-  restack_subtree(root, scan, {}, trunk, false, branches)
+  restack_subtree(root, scan, {}, trunks[0], false, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
@@ -565,13 +634,13 @@ end
 
 def cmd_sync(_args)
   original = current_branch
-  trunk = trunk_branch
-  root = stack_root(original, trunk)
+  trunks = trunk_branches
+  root = stack_root(original, trunks)
 
   info "syncing stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
-  restack_subtree(root, scan, {}, trunk, true, branches)
+  restack_subtree(root, scan, {}, trunks[0], true, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
@@ -592,7 +661,7 @@ def cmd_help(_args)
         #{PROG} <command> [args]
 
     #{bold("COMMANDS")}
-        init [branch]         Set (or auto-detect) the trunk branch.
+        init [branch...]      Set (or auto-detect) the trunk branch(es).
         create <name>         Create <name> stacked on the current branch. (alias: b)
         tree                  Show the stack as a tree. (aliases: ls, list)
         up [child]            Check out the branch stacked on the current one.
