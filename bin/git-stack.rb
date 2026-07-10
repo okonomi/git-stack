@@ -20,18 +20,17 @@
 PROG = "git stack"
 VERSION = "0.1.0"
 
-# The Spinel revision this binary is built with, shown by `git stack version`.
-# A Spinel-compiled binary can't introspect its compiler's revision at run time
-# (the only build signal it exposes is RUBY_DESCRIPTION == "spinel", with no
-# revision), so it is recorded here at build time instead: the Homebrew formula
-# rewrites this line with the actual `spinel --version` before `spin build`, so
-# the installed binary reports its true toolchain (including a --HEAD Spinel).
+# The Spinel revision this binary was compiled with, shown by `git stack
+# version`. A Spinel-compiled binary can't introspect its compiler's revision
+# at run time (the only build signal it exposes is RUBY_DESCRIPTION ==
+# "spinel", with no revision), so it is stamped in at build time: the Homebrew
+# formula rewrites this line with the actual `spinel --version` before
+# `spin build` (see Formula/git-stack.rb).
 #
-# This committed value is the fallback for builds that don't stamp it (a plain
-# `spin build`, or running under CRuby). Keep it in sync with SPINEL_REF in
-# .github/workflows/ci.yml, .claude/hooks/session-start.sh, and the `revision`
-# in Formula/spinel.rb -- the places that pin the Spinel we build against.
-SPINEL_REF = "ee8bcf9fac98dcc500dbeaef8623c82abd1ba834"
+# It is intentionally left empty here -- a placeholder for that stamp, not a
+# hand-maintained revision. A build that doesn't stamp it (a plain
+# `spin build`) reports "unknown" instead of a stale pinned value.
+SPINEL_REF = ""
 
 # --- output helpers ---------------------------------------------------------
 
@@ -598,8 +597,13 @@ def cmd_version(_args)
   # Only the Spinel-compiled binary was "built with" Spinel; run as a plain
   # Ruby script there is no build toolchain to report. Spinel is the only
   # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version),
-  # so key on that. The 12-char slice matches `spinel --version`'s short rev.
-  puts "built with spinel #{SPINEL_REF[0...12]}" if RUBY_DESCRIPTION == "spinel"
+  # so key on that.
+  return unless RUBY_DESCRIPTION == "spinel"
+
+  # SPINEL_REF is stamped at build time; an un-stamped build leaves it empty.
+  # The 12-char slice matches `spinel --version`'s short rev.
+  rev = SPINEL_REF.empty? ? "unknown" : SPINEL_REF[0...12]
+  puts "built with spinel #{rev}"
 end
 
 def cmd_help(_args)

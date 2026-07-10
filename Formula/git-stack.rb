@@ -28,10 +28,10 @@ class GitStack < Formula
 
   def install
     # Stamp the exact Spinel revision compiling this binary into the source, so
-    # `git stack version` reports its real build toolchain instead of the pinned
-    # default baked into bin/git-stack.rb. This matters for a `--HEAD` Spinel
-    # build, whose revision differs from that pinned default. `spinel --version`
-    # prints "spinel <short-rev>"; take the revision token when present.
+    # `git stack version` reports its real build toolchain. bin/git-stack.rb
+    # ships SPINEL_REF as an empty placeholder; fill it in here with the actual
+    # `spinel --version` before `spin build`. `spinel --version` prints
+    # "spinel <short-rev>"; take the revision token when present.
     rev = Utils.safe_popen_read("spinel", "--version").split[1]
     inreplace "bin/git-stack.rb", /^SPINEL_REF = ".*"$/, %Q(SPINEL_REF = "#{rev}") if rev
 

@@ -17,9 +17,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 # Pin the Spinel revision we validated the test suite against. Override with
-# SPINEL_REF to track a different commit/branch/tag. Keep it in sync with
-# SPINEL_REF in .github/workflows/ci.yml, Formula/spinel.rb, and
-# bin/git-stack.rb (shown by `git stack version`).
+# SPINEL_REF to track a different commit/branch/tag.
 SPINEL_REF="${SPINEL_REF:-ee8bcf9fac98dcc500dbeaef8623c82abd1ba834}"
 SPINEL_REPO="${SPINEL_REPO:-https://github.com/matz/spinel.git}"
 
