@@ -23,9 +23,14 @@ VERSION = "0.1.0"
 # The Spinel revision this binary is built with, shown by `git stack version`.
 # A Spinel-compiled binary can't introspect its compiler's revision at run time
 # (the only build signal it exposes is RUBY_DESCRIPTION == "spinel", with no
-# revision), so we pin it here instead. Keep it in sync with SPINEL_REF in
+# revision), so it is recorded here at build time instead: the Homebrew formula
+# rewrites this line with the actual `spinel --version` before `spin build`, so
+# the installed binary reports its true toolchain (including a --HEAD Spinel).
+#
+# This committed value is the fallback for builds that don't stamp it (a plain
+# `spin build`, or running under CRuby). Keep it in sync with SPINEL_REF in
 # .github/workflows/ci.yml, .claude/hooks/session-start.sh, and the `revision`
-# in Formula/spinel.rb -- the places that actually build with Spinel.
+# in Formula/spinel.rb -- the places that pin the Spinel we build against.
 SPINEL_REF = "ee8bcf9fac98dcc500dbeaef8623c82abd1ba834"
 
 # --- output helpers ---------------------------------------------------------
