@@ -20,6 +20,14 @@
 PROG = "git stack"
 VERSION = "0.1.0"
 
+# The Spinel revision this binary is built with, shown by `git stack version`.
+# A Spinel-compiled binary can't introspect its compiler's revision at run time
+# (the only build signal it exposes is RUBY_DESCRIPTION == "spinel", with no
+# revision), so we pin it here instead. Keep it in sync with SPINEL_REF in
+# .github/workflows/ci.yml, .claude/hooks/session-start.sh, and the `revision`
+# in Formula/spinel.rb -- the places that actually build with Spinel.
+SPINEL_REF = "ee8bcf9fac98dcc500dbeaef8623c82abd1ba834"
+
 # --- output helpers ---------------------------------------------------------
 
 # All terminal decoration goes through this section. Nothing outside it should
@@ -582,6 +590,8 @@ end
 
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
+  # Match `spinel --version`, which prints its 12-char short revision.
+  puts "built with spinel #{SPINEL_REF[0...12]}"
 end
 
 def cmd_help(_args)
@@ -602,7 +612,7 @@ def cmd_help(_args)
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
         sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
-        version               Show the git-stack version.
+        version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
     #{bold("EXAMPLE")}

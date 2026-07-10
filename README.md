@@ -94,7 +94,7 @@ state file to commit and nothing to keep in sync.
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack sync`          | Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. |
-| `git stack version`       | Show the git-stack version.                                    |
+| `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 
 ## Walkthrough
 

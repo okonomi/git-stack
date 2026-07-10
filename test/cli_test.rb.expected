@@ -8,6 +8,7 @@ stack.trunk: main
 ### version shows the program version
 $ git stack version
 git stack 0.1.0
+built with spinel ee8bcf9fac98
 [exit 0]
 
 ### create records the parent and checks out the branch

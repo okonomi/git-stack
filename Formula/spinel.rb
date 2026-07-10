@@ -8,8 +8,9 @@
 # `brew install --HEAD okonomi/git-stack/spinel` builds straight from the tip
 # of upstream `master` instead, for testing against the latest Spinel.
 #
-# Keep the revision in sync with SPINEL_REF in .github/workflows/ci.yml and
-# the SessionStart hook (.claude/hooks/session-start.sh).
+# Keep the revision in sync with SPINEL_REF in .github/workflows/ci.yml, the
+# SessionStart hook (.claude/hooks/session-start.sh), and SPINEL_REF in
+# bin/git-stack.rb (shown by `git stack version`).
 class Spinel < Formula
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
