@@ -76,15 +76,32 @@ The parent of each branch is stored in your repository's git config:
 branch.<name>.stackParent = <parent-branch>
 ```
 
-The bottom of every stack rests on the **trunk** (`main`/`master`), stored
+The bottom of every stack rests on a **trunk** (`main`/`master`), stored
 as `stack.trunk`. Because everything lives in git config, there is no extra
 state file to commit and nothing to keep in sync.
+
+### Multiple trunks
+
+Some workflows have more than one long-lived base branch — git-flow, for
+example, uses both `main` and `develop`. `stack.trunk` is a multi-valued git
+config key, so you can register several trunks and stack branches on whichever
+one you like:
+
+```sh
+git stack init main develop     # both are trunks
+git stack init                  # -> trunk(s): main, develop
+```
+
+Each trunk is a root in `git stack tree`, and `restack`/`sync` stop walking a
+stack down when they reach any trunk. The **first** trunk you register is the
+*primary* one: it's the default base a branch falls back to — for example when
+`git stack sync` reparents a branch whose parent was merged and deleted.
 
 ## Commands
 
 | Command                 | Description                                                        |
 | ----------------------- | ------------------------------------------------------------------ |
-| `git stack init [branch]` | Set (or auto-detect) the trunk branch.                           |
+| `git stack init [branch...]` | Set (or auto-detect) the trunk branch(es).                    |
 | `git stack create <name>` | Create `<name>` stacked on the current branch. (alias: `b`)     |
 | `git stack tree`          | Show the stack as a tree. (aliases: `ls`, `list`)               |
 | `git stack up [child]`    | Check out the branch stacked on the current one.                |

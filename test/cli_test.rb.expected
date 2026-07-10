@@ -1,9 +1,43 @@
 
 ### init auto-detects the trunk
 $ git stack init
-trunk is 'main' (auto-detected)
+trunk(s): main
 [exit 0]
 stack.trunk: main
+
+### init records multiple trunks and lists them
+$ git stack init main develop
+trunk set to main, develop
+[exit 0]
+stack.trunk: main
+develop
+$ git stack init
+trunk(s): main, develop
+[exit 0]
+
+### init rejects a non-existent trunk
+$ git stack init nope
+error: branch 'nope' does not exist
+[exit 1]
+
+### tree renders each trunk as its own root
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+  develop (trunk)
+  * feat-d (1 commit(s))
+[exit 0]
+
+### restack stops at the secondary trunk it rests on
+$ git stack restack
+restacking stack rooted at feat-d
+restacking feat-d onto develop
+restacking feat-d2 onto feat-d
+done.
+[exit 0]
+feat-d parent: develop
+feat-d behind develop: 0
+feat-d2 behind feat-d: 0
 
 ### version shows the program version
 $ git stack version

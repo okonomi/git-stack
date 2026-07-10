@@ -98,6 +98,42 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
+section "init records multiple trunks and lists them"
+new_repo
+setup("git branch develop main")
+run("init main develop")
+show("stack.trunk", "git config --get-all stack.trunk")
+run("init")
+
+section "init rejects a non-existent trunk"
+new_repo
+run("init nope")
+
+section "tree renders each trunk as its own root"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q main")
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q develop")
+gsq("create feat-d"); commit("d.txt", "d1")
+run("tree")
+
+section "restack stops at the secondary trunk it rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop")
+gsq("create feat-d"); commit("d.txt", "d1")
+gsq("create feat-d2"); commit("d2.txt", "d2")
+# advance develop, leaving feat-d behind its trunk
+setup("git checkout -q develop"); commit("dev.txt", "dev2")
+setup("git checkout -q feat-d")
+run("restack")
+show("feat-d parent", "git config --get branch.feat-d.stackParent")
+show("feat-d behind develop", "git rev-list --count feat-d..develop")
+show("feat-d2 behind feat-d", "git rev-list --count feat-d2..feat-d")
+
 section "version shows the program version"
 run("version")
 
