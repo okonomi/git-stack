@@ -595,8 +595,11 @@ end
 
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
-  # Match `spinel --version`, which prints its 12-char short revision.
-  puts "built with spinel #{SPINEL_REF[0...12]}"
+  # Only the Spinel-compiled binary was "built with" Spinel; run as a plain
+  # Ruby script there is no build toolchain to report. Spinel is the only
+  # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version),
+  # so key on that. The 12-char slice matches `spinel --version`'s short rev.
+  puts "built with spinel #{SPINEL_REF[0...12]}" if RUBY_DESCRIPTION == "spinel"
 end
 
 def cmd_help(_args)
