@@ -72,12 +72,18 @@ jobs:
           spin --version
           spin test
 
-      # Golden-file check on Spinel's inferred types: git-stack.rbs is the
+      # Golden-file check on Spinel's inferred types: the snapshot is the
       # committed output of `spinel --emit-rbs bin/git-stack.rb`. A diff here
       # means a source change shifted inference -- an `untyped (slow path)`
       # line appearing is a type regression; anything else means refresh the
-      # golden file by re-running that command and committing the result.
+      # snapshot with:
+      #
+      #   spinel --emit-rbs bin/git-stack.rb --output=test/git-stack.rbs.expected
+      #
+      # It lives in test/ with the other .expected snapshot, NOT in rbs/:
+      # rbs/ holds hand-written seeds spin feeds back into the compiler, so
+      # emitted output there would seed itself.
       - name: Check emitted RBS against golden file
         run: |
           spinel --emit-rbs bin/git-stack.rb --output=/tmp/emitted.rbs
-          diff -u git-stack.rbs /tmp/emitted.rbs
+          diff -u test/git-stack.rbs.expected /tmp/emitted.rbs
