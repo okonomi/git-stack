@@ -226,7 +226,13 @@ def trunk_branches
   return list unless list.empty?
 
   trunk = detect_trunk
-  set_trunks([trunk])
+  # `.to_s` (identity for the String this always is) gives the array literal
+  # a concrete String element type. Seeding it with a user-defined method's
+  # return -- still an unresolved inference variable at this point -- passes
+  # that transiently-untyped element through set_trunks' block into sh's
+  # parameter, locking sh onto the boxed untyped slow path (same failure mode
+  # as paint's, see there).
+  set_trunks([trunk.to_s])
   [trunk]
 end
 
@@ -245,7 +251,9 @@ def primary_trunk
   return first unless first.empty?
 
   detected = detect_trunk
-  set_trunks([detected])
+  # `.to_s` for the same reason as in trunk_branches: keep sh off the
+  # untyped slow path.
+  set_trunks([detected.to_s])
   detected
 end
 
@@ -627,6 +635,10 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
   children_from(scan, branch).each do |child|
     restack_subtree(child, scan, visited, trunk, heal_orphans, branches)
   end
+  # An explicit nil: with the recursive `each` as the bare trailing
+  # expression, the return type refers back to the method's own (not yet
+  # resolved) type and Spinel widens it to untyped (slow path).
+  nil
 end
 
 def cmd_restack(_args)
@@ -766,6 +778,10 @@ def main(argv)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")
   end
+  # An explicit nil: as the bare trailing expression the case would be the
+  # return value, and its branches' mixed types (nil from most cmd_*
+  # handlers, Array[String] from cmd_tree) widen to untyped (slow path).
+  nil
 end
 
 main(ARGV)

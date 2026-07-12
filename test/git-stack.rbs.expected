@@ -9,7 +9,7 @@ class Object
   def red: (String) -> String
   def die: (String) -> void
   def info: (String) -> nil
-  def sh: (untyped) -> String # spinel: widened to untyped (slow path)
+  def sh: (String) -> String
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def checkout!: (String) -> nil
@@ -50,13 +50,13 @@ class Object
   def cmd_untrack: (Array[String]) -> nil
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
-  def restack_subtree: (String, String, Set, String, bool, Set) -> untyped # spinel: widened to untyped (slow path)
+  def restack_subtree: (String, String, Set, String, bool, Set) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_version: (Array[String]) -> nil
   def cmd_help: (Array[String]) -> nil
   def parse_global_flags: (Array[String]) -> String
-  def main: (Array[String]) -> untyped # spinel: widened to untyped (slow path)
+  def main: (Array[String]) -> nil
 end
 
 class OptionParser
