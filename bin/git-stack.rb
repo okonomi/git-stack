@@ -18,6 +18,11 @@
 #
 # See `git stack help` for the list of subcommands.
 
+# Both resolve in both worlds: CRuby's stdlib, and the equivalent packages
+# pre-installed with Spinel (spliced into the program at compile time).
+require "optparse"
+require "set"
+
 PROG = "git stack"
 VERSION = "0.1.0"
 
@@ -280,11 +285,11 @@ end
 # avoids re-spawning `git config` per node.
 def existing_branches
   out = `git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null`
-  set = {}
+  set = Set.new
   out.split("\n").each do |name|
     next if name.empty?
 
-    set[name] = true
+    set.add(name)
   end
   set
 end
@@ -335,7 +340,7 @@ def orphan_roots(scan, branches)
     key = line[0...space]
     value = line[(space + 1)..-1]
     next if value.empty?
-    next if branches[value]
+    next if branches.include?(value)
 
     name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
     names << name
@@ -373,13 +378,13 @@ end
 # `seen` guards against cyclic parent chains (e.g. A -> B -> A) left over from
 # older versions or hand-edited config, so we terminate instead of hanging.
 def stack_root(branch, trunks)
-  seen = {}
+  seen = Set.new
   loop do
-    seen[branch] = true
+    seen.add(branch)
     parent = get_parent(branch)
     break if parent.empty? || is_trunk?(parent, trunks)
     break unless branch_exists?(parent)
-    break if seen[parent]
+    break if seen.include?(parent)
 
     branch = parent
   end
@@ -389,15 +394,15 @@ end
 # True if making `new_parent` the parent of `branch` would create a cycle --
 # that is, `branch` already lies on `new_parent`'s chain of ancestors.
 def would_cycle?(branch, new_parent, trunks)
-  seen = {}
+  seen = Set.new
   cur = new_parent
   loop do
     return true if cur == branch
     break if cur.empty? || is_trunk?(cur, trunks)
-    break if seen[cur]
+    break if seen.include?(cur)
     break unless branch_exists?(cur)
 
-    seen[cur] = true
+    seen.add(cur)
     cur = get_parent(cur)
   end
   false
@@ -437,7 +442,7 @@ def print_subtree(branch, prefix, cur, trunk, scan, branches)
   extra = ""
   parent = parent_from(scan, branch)
   parent = trunk if parent.empty?
-  if !parent.empty? && branches[parent]
+  if !parent.empty? && branches.include?(parent)
     # Ahead+behind in one `git rev-list --left-right` call rather than two
     # separate `commit_count` calls.
     behind, ahead = ahead_behind(parent, branch)
@@ -464,26 +469,17 @@ def arg0(args)
   args.empty? ? "" : args[0]
 end
 
-# Join `items` with ", " (Array#join is outside the Spinel subset).
-def comma_list(items)
-  s = ""
-  items.each do |item|
-    s = s.empty? ? item : "#{s}, #{item}"
-  end
-  s
-end
-
 def cmd_init(args)
   if args.empty?
     trunks = trunk_branches
-    info "trunk(s): #{comma_list(trunks)}"
+    info "trunk(s): #{trunks.join(", ")}"
     return
   end
   args.each do |trunk|
     die("branch '#{trunk}' does not exist") unless branch_exists?(trunk)
   end
   set_trunks(args)
-  info "trunk set to #{comma_list(args)}"
+  info "trunk set to #{args.join(", ")}"
 end
 
 def cmd_create(args)
@@ -596,18 +592,18 @@ end
 # mid-traversal (sync only rewrites `stackParent` config, and rebase updates
 # a branch's history in place without removing the ref).
 def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
-  return if visited[branch]
-  visited[branch] = true
+  return if visited.include?(branch)
+  visited.add(branch)
 
   parent = parent_from(scan, branch)
 
-  if heal_orphans && !parent.empty? && !branches[parent]
+  if heal_orphans && !parent.empty? && !branches.include?(parent)
     info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
     die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
     parent = trunk
   end
 
-  if !parent.empty? && branches[parent]
+  if !parent.empty? && branches.include?(parent)
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{cyan(branch)} onto #{cyan(parent)}"
@@ -635,7 +631,7 @@ def cmd_restack(_args)
   info "restacking stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
-  restack_subtree(root, scan, {}, trunks[0], false, branches)
+  restack_subtree(root, scan, Set.new, trunks[0], false, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
@@ -652,7 +648,7 @@ def cmd_sync(_args)
   info "syncing stack rooted at #{cyan(root)}"
   scan = scan_stack_config
   branches = existing_branches
-  restack_subtree(root, scan, {}, trunks[0], true, branches)
+  restack_subtree(root, scan, Set.new, trunks[0], true, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
@@ -710,12 +706,42 @@ end
 
 # --- dispatch ---------------------------------------------------------------
 
-def main(argv)
-  cmd = argv.empty? ? "help" : argv[0]
-  rest = argv.empty? ? [] : argv[1..-1]
+# Parse the global flags (-h/--help, -v/--version) out of `argv` with
+# OptionParser, returning the command they map to ("help"/"version"), or ""
+# when no flag was given. Flags are removed from `argv` in place and may
+# appear anywhere (`tree -v` prints the version), as usual for optparse.
+#
+# Spinel's optparse package is an exact-match subset of CRuby's: no option
+# clustering (`-hv`), no long-option abbreviation (`--ver`), no `--`
+# terminator -- so registered flags must be spelled out in full -- and its
+# `parse!` leaves an unknown flag in argv instead of raising. The leftover
+# check below reports such a flag with the same message CRuby's
+# InvalidOption carries, keeping the script and the compiled binary aligned.
+def parse_global_flags(argv)
+  cmd = ""
+  parser = OptionParser.new
+  parser.on("-h", "--help") { |_| cmd = "help" }
+  parser.on("-v", "--version") { |_| cmd = "version" }
+  begin
+    parser.parse!(argv)
+  rescue OptionParser::ParseError => e
+    die(e.message)
+  end
+  argv.each do |arg|
+    die("invalid option: #{arg}") if arg.start_with?("-")
+  end
+  cmd
+end
 
-  repo_optional = cmd == "version" || cmd == "--version" || cmd == "-v" ||
-                  cmd == "help" || cmd == "-h" || cmd == "--help"
+def main(argv)
+  cmd = parse_global_flags(argv)
+  rest = []
+  if cmd.empty?
+    cmd = argv.empty? ? "help" : argv[0]
+    rest = argv.empty? ? [] : argv[1..-1]
+  end
+
+  repo_optional = cmd == "version" || cmd == "help"
   require_repo unless repo_optional
 
   case cmd
@@ -729,8 +755,8 @@ def main(argv)
   when "untrack"              then cmd_untrack(rest)
   when "restack"              then cmd_restack(rest)
   when "sync"                 then cmd_sync(rest)
-  when "version", "--version", "-v" then cmd_version(rest)
-  when "help", "-h", "--help" then cmd_help(rest)
+  when "version"              then cmd_version(rest)
+  when "help"                 then cmd_help(rest)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")
   end
