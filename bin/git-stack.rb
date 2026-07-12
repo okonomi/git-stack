@@ -657,40 +657,63 @@ def ahead_behind_chunk(group)
   result
 end
 
-# [behind, ahead] for `branch` parsed from a pre-captured `scan_ahead_behind`
-# result -- no subprocess of its own (mirrors `parent_from`).
+# Parse a `scan_ahead_behind` result string once into a name -> "behind\tahead"
+# index, so each node's lookup is O(1) instead of re-splitting and re-scanning
+# the whole result per node (an O(N^2) blow-up on a stack of N branches, mirroring
+# the one `stack_index` removed for the config scan).
 #
-# Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git too old for
-# the batched atom, so the result was empty), signalling `print_subtree` to fall
-# back to a per-node `ahead_behind`. A sentinel array rather than nil keeps the
-# return type a plain Array[Integer], off Spinel's untyped slow path.
-def ahead_behind_from(ab, branch)
+# The counts are kept as the packed "<behind>\t<ahead>" string they already
+# arrive in, not as an `Array[Integer]` value: a hash whose values are read back
+# out stays a concrete `Hash[String, String]` in Spinel's emitted signatures,
+# whereas an array-valued hash widens to untyped (the same reason `ab` itself
+# stays a String rather than an `Array[String]`; see scan_ahead_behind).
+# `ahead_behind_from` unpacks the pair back into a fresh `Array[Integer]`.
+def ahead_behind_index(ab)
+  index = {}
   ab.split("\n").each do |line|
     next if line.empty?
 
     fields = line.split("\t")
     next if fields.length != 3
-    next unless fields[0] == branch
 
-    return [fields[1].to_i, fields[2].to_i]
+    index[fields[0]] = "#{fields[1]}\t#{fields[2]}"
   end
-  [-1, -1]
+  index
+end
+
+# [behind, ahead] for `branch` from a pre-built `ahead_behind_index` -- a single
+# `Hash` lookup, no subprocess of its own (mirrors `parent_from`).
+#
+# Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git too old for
+# the batched atom, so the index was empty), signalling `print_subtree` to fall
+# back to a per-node `ahead_behind`. The pair is rebuilt into a fresh literal
+# `[behind, ahead]` (rather than returned straight from the hash) so the return
+# type stays a plain `Array[Integer]`, off Spinel's untyped slow path.
+def ahead_behind_from(index, branch)
+  packed = index[branch]
+  return [-1, -1] if packed.nil?
+
+  fields = packed.split("\t")
+  return [-1, -1] if fields.length != 2
+
+  [fields[0].to_i, fields[1].to_i]
 end
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
 #
-# `branches` is a pre-captured `existing_branches` set, and `ab` a pre-captured
-# `scan_ahead_behind` result -- both threaded through the recursion for the same
-# reason `scan` is: avoids re-spawning `git` per node.
-def print_subtree(branch, prefix, cur, trunk, index, branches, ab)
+# `branches` is a pre-captured `existing_branches` set, and `ab_index` a
+# pre-built `ahead_behind_index` -- both threaded through the recursion for the
+# same reason `index` is: avoids re-spawning `git` (or, for `ab_index`,
+# re-parsing the whole ahead/behind result) per node.
+def print_subtree(branch, prefix, cur, trunk, index, branches, ab_index)
   extra = ""
   parent = parent_from(index, branch)
   parent = trunk if parent.empty?
   if !parent.empty? && branches.include?(parent)
     # Counts come from the single batched `git for-each-ref` (see
     # scan_ahead_behind), looked up in memory. The sentinel guards the git-too-
-    # old case, where `ab` is empty and we fall back to a per-node call.
-    behind, ahead = ahead_behind_from(ab, branch)
+    # old case, where the index is empty and we fall back to a per-node call.
+    behind, ahead = ahead_behind_from(ab_index, branch)
     if behind < 0
       behind, ahead = ahead_behind(parent, branch)
     end
@@ -706,7 +729,7 @@ def print_subtree(branch, prefix, cur, trunk, index, branches, ab)
   puts "#{prefix}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
 
   children_from(index, branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur, trunk, index, branches, ab)
+    print_subtree(child, "#{prefix}  ", cur, trunk, index, branches, ab_index)
   end
 end
 
@@ -749,22 +772,23 @@ def cmd_tree(_args)
   branches = existing_branches
   primary = trunks[0]
   # Every tree node's [behind, ahead] counts, batched into a few `git
-  # for-each-ref` calls up front and threaded through the recursion (replaces
-  # one `git rev-list` per node -- the O(N) subprocess blow-up that made large
-  # trees slow).
-  ab = scan_ahead_behind(scan, branches, primary)
+  # for-each-ref` calls up front (replaces one `git rev-list` per node -- the
+  # O(N) subprocess blow-up that made large trees slow), then parsed once into a
+  # name -> counts index so each node's lookup is O(1) as the recursion threads
+  # it through (replaces re-splitting the whole result per node).
+  ab_index = ahead_behind_index(scan_ahead_behind(scan, branches, primary))
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
     children_from(index, trunk).each do |child|
-      print_subtree(child, "  ", cur, primary, index, branches, ab)
+      print_subtree(child, "  ", cur, primary, index, branches, ab_index)
     end
   end
 
   orphan_roots(index, branches).each do |child|
-    print_subtree(child, "  ", cur, primary, index, branches, ab)
+    print_subtree(child, "  ", cur, primary, index, branches, ab_index)
   end
 end
 
