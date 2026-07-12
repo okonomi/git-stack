@@ -43,7 +43,10 @@ class Object
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (untyped, String) -> String # spinel: widened to untyped (slow path)
   def tree_name: (untyped, String, String) -> untyped # spinel: widened to untyped (slow path)
-  def print_subtree: (untyped, String, String, String, Array[untyped], Set) -> Set # spinel: widened to untyped (slow path)
+  def scan_ahead_behind: (String, Set, String) -> String
+  def ahead_behind_chunk: (String) -> String
+  def ahead_behind_from: (String, untyped) -> Array[Integer] # spinel: widened to untyped (slow path)
+  def print_subtree: (String, String, String, String, Array[untyped], Set, String) -> Set # spinel: widened to untyped (slow path)
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
