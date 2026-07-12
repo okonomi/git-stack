@@ -328,13 +328,33 @@ def existing_branches
   set
 end
 
-# Sorted list of branches that record `parent` as their parent, parsed from a
-# pre-captured `scan_stack_config` result -- no subprocess of its own.
+# Parse the stack config once into both directions needed by tree traversal.
+# Keeping the children and parent indexes means each node lookup is O(1),
+# rather than splitting and scanning the complete config once per node.
 #
 # Note: git lowercases the variable-name portion of a config key, so the
 # stored key is `branch.<name>.stackparent` even though we write `stackParent`.
-def children_from(scan, parent)
-  names = []
+def sorted_names(names)
+  result = []
+  names.each do |name|
+    next_result = []
+    inserted = false
+    result.each do |existing|
+      if !inserted && name < existing
+        next_result << name
+        inserted = true
+      end
+      next_result << existing
+    end
+    next_result << name unless inserted
+    result = next_result
+  end
+  result
+end
+
+def stack_index(scan)
+  parents = {}
+  children = {}
   scan.split("\n").each do |line|
     next if line.empty?
 
@@ -343,17 +363,34 @@ def children_from(scan, parent)
 
     key = line[0...space]
     value = line[(space + 1)..-1]
-    next unless value == parent
-
     name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
+    parents[name] = value
+    names = children[value]
+    if names.nil?
+      names = []
+      children[value] = names
+    end
     names << name
   end
-  names.sort
+
+  children.each do |_parent, names|
+    children[_parent] = sorted_names(names)
+  end
+  [parents, children]
+end
+
+# Sorted list of branches that record `parent` as their parent, from the
+# pre-built index -- no subprocess or config scan of its own.
+def children_from(index, parent)
+  children = index[1][parent]
+  return [] if children.nil?
+
+  children
 end
 
 # Return every branch that records `parent` as its parent (single lookup).
 def children_of(parent)
-  children_from(scan_stack_config, parent)
+  children_from(stack_index(scan_stack_config), parent)
 end
 
 # Branches whose recorded parent is non-empty but no longer a real branch
@@ -363,40 +400,22 @@ end
 #
 # `branches` is a pre-captured `existing_branches` set so this needs no
 # subprocess of its own.
-def orphan_roots(scan, branches)
+def orphan_roots(index, branches)
   names = []
-  scan.split("\n").each do |line|
-    next if line.empty?
-
-    space = line.index(" ")
-    next if space.nil?
-
-    key = line[0...space]
-    value = line[(space + 1)..-1]
+  index[0].each do |name, value|
     next if value.empty?
     next if branches.include?(value)
 
-    name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
     names << name
   end
-  names.sort
+  sorted_names(names)
 end
 
 # The parent recorded for `branch`, parsed from a pre-captured
-# `scan_stack_config` result -- no subprocess of its own (mirrors get_parent).
-def parent_from(scan, branch)
-  key = "branch.#{branch}.stackparent"
-  scan.split("\n").each do |line|
-    next if line.empty?
-
-    space = line.index(" ")
-    next if space.nil?
-
-    next unless line[0...space] == key
-
-    return line[(space + 1)..-1]
-  end
-  ""
+# pre-built stack index -- no subprocess of its own (mirrors get_parent).
+def parent_from(index, branch)
+  parent = index[0][branch]
+  parent.nil? ? "" : parent
 end
 
 # The parent used for display and navigation: the recorded parent, or the
@@ -472,9 +491,9 @@ end
 #
 # `branches` is a pre-captured `existing_branches` set, threaded through the
 # recursion for the same reason `scan` is: avoids re-spawning `git` per node.
-def print_subtree(branch, prefix, cur, trunk, scan, branches)
+def print_subtree(branch, prefix, cur, trunk, index, branches)
   extra = ""
-  parent = parent_from(scan, branch)
+  parent = parent_from(index, branch)
   parent = trunk if parent.empty?
   if !parent.empty? && branches.include?(parent)
     # Ahead+behind in one `git rev-list --left-right` call rather than two
@@ -491,8 +510,8 @@ def print_subtree(branch, prefix, cur, trunk, scan, branches)
 
   puts "#{prefix}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
 
-  children_from(scan, branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur, trunk, scan, branches)
+  children_from(index, branch).each do |child|
+    print_subtree(child, "#{prefix}  ", cur, trunk, index, branches)
   end
 end
 
@@ -530,7 +549,7 @@ end
 def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
-  scan = scan_stack_config
+  index = stack_index(scan_stack_config)
   branches = existing_branches
   primary = trunks[0]
 
@@ -538,13 +557,13 @@ def cmd_tree(_args)
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
-    children_from(scan, trunk).each do |child|
-      print_subtree(child, "  ", cur, primary, scan, branches)
+    children_from(index, trunk).each do |child|
+      print_subtree(child, "  ", cur, primary, index, branches)
     end
   end
 
-  orphan_roots(scan, branches).each do |child|
-    print_subtree(child, "  ", cur, primary, scan, branches)
+  orphan_roots(index, branches).each do |child|
+    print_subtree(child, "  ", cur, primary, index, branches)
   end
 end
 
@@ -620,16 +639,16 @@ end
 # reparented onto `trunk` before the rebase check runs. When false (used by
 # `git stack restack`), such a branch is left untouched, same as before.
 #
-# `branches` is a pre-captured `existing_branches` set, threaded through the
-# recursion so existence checks don't spawn a `git` subprocess per node --
+# `index` and `branches` are pre-captured snapshots threaded through the
+# recursion so config parsing and existence checks don't spawn work per node --
 # safe because neither restack nor sync creates or deletes branch refs
 # mid-traversal (sync only rewrites `stackParent` config, and rebase updates
 # a branch's history in place without removing the ref).
-def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
+def restack_subtree(branch, index, visited, trunk, heal_orphans, branches)
   return if visited.include?(branch)
   visited.add(branch)
 
-  parent = parent_from(scan, branch)
+  parent = parent_from(index, branch)
 
   if heal_orphans && !parent.empty? && !branches.include?(parent)
     info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
@@ -652,8 +671,8 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
     end
   end
 
-  children_from(scan, branch).each do |child|
-    restack_subtree(child, scan, visited, trunk, heal_orphans, branches)
+  children_from(index, branch).each do |child|
+    restack_subtree(child, index, visited, trunk, heal_orphans, branches)
   end
   # An explicit nil: with the recursive `each` as the bare trailing
   # expression, the return type refers back to the method's own (not yet
@@ -667,9 +686,9 @@ def cmd_restack(_args)
   root = stack_root(original, trunks)
 
   info "restacking stack rooted at #{cyan(root)}"
-  scan = scan_stack_config
+  index = stack_index(scan_stack_config)
   branches = existing_branches
-  restack_subtree(root, scan, Set.new, trunks[0], false, branches)
+  restack_subtree(root, index, Set.new, trunks[0], false, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
@@ -684,9 +703,9 @@ def cmd_sync(_args)
   root = stack_root(original, trunks)
 
   info "syncing stack rooted at #{cyan(root)}"
-  scan = scan_stack_config
+  index = stack_index(scan_stack_config)
   branches = existing_branches
-  restack_subtree(root, scan, Set.new, trunks[0], true, branches)
+  restack_subtree(root, index, Set.new, trunks[0], true, branches)
 
   unless git_ok("checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
