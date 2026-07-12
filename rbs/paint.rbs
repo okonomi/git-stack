@@ -1,0 +1,9 @@
+class Object
+  def paint: (String, String) -> String
+  def bold: (String) -> String
+  def dim: (String) -> String
+  def green: (String) -> String
+  def yellow: (String) -> String
+  def cyan: (String) -> String
+  def red: (String) -> String
+end
