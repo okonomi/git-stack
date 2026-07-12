@@ -1,25 +1,25 @@
 class Object
   def color_enabled?: () -> bool
-  def paint: (String, String) -> String
+  def paint: (String, untyped) -> String # spinel: widened to untyped (slow path)
   def bold: (String) -> String
   def dim: (String) -> String
-  def green: (String) -> String
+  def green: (untyped) -> String # spinel: widened to untyped (slow path)
   def yellow: (String) -> String
-  def cyan: (String) -> String
+  def cyan: (untyped) -> String # spinel: widened to untyped (slow path)
   def red: (String) -> String
   def die: (String) -> void
   def info: (String) -> nil
-  def sh: (String) -> String
+  def sh: (untyped) -> String # spinel: widened to untyped (slow path)
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def git_run: (String) -> bool
-  def checkout!: (String) -> nil
+  def checkout!: (untyped) -> nil # spinel: widened to untyped (slow path)
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
   def current_branch: () -> String
   def branch_exists?: (String) -> bool
-  def commit_count: (String, String) -> Integer
-  def ahead_behind: (String, String) -> Array[Integer]
+  def commit_count: (untyped, untyped) -> Integer # spinel: widened to untyped (slow path)
+  def ahead_behind: (untyped, untyped) -> Array[Integer] # spinel: widened to untyped (slow path)
   def configured_trunks: () -> Array[String]
   def set_trunks: (Array[String]) -> Array[String]
   def detect_trunk: () -> String
@@ -27,34 +27,36 @@ class Object
   def primary_trunk: () -> String
   def is_trunk?: (String, Array[String]) -> bool
   def get_parent: (String) -> String
-  def set_parent: (String, String) -> bool
+  def set_parent: (untyped, String) -> bool # spinel: widened to untyped (slow path)
   def clear_parent: (String) -> bool
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
-  def children_from: (String, String) -> Array[String]
-  def children_of: (String) -> Array[String]
-  def orphan_roots: (String, Set) -> Array[String]
-  def parent_from: (String, String) -> String
+  def sorted_names: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def stack_index: (String) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def children_from: (Array[untyped], untyped) -> untyped # spinel: widened to untyped (slow path)
+  def children_of: (String) -> untyped # spinel: widened to untyped (slow path)
+  def orphan_roots: (Array[untyped], Set) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def parent_from: (Array[untyped], untyped) -> untyped # spinel: widened to untyped (slow path)
   def effective_parent: (String, String) -> String
   def stack_root: (String, Array[String]) -> String
   def would_cycle?: (String, String, Array[String]) -> bool
   def validate_new_parent!: (String, String, Array[String], String) -> nil
-  def tree_marker: (String, String) -> String
-  def tree_name: (String, String, String) -> String
+  def tree_marker: (untyped, String) -> String # spinel: widened to untyped (slow path)
+  def tree_name: (untyped, String, String) -> untyped # spinel: widened to untyped (slow path)
   def scan_ahead_behind: (String, Set, String) -> String
   def ahead_behind_chunk: (String) -> String
-  def ahead_behind_from: (String, String) -> Array[Integer]
-  def print_subtree: (String, String, String, String, String, Set, String) -> Array[String]
+  def ahead_behind_from: (String, untyped) -> Array[Integer] # spinel: widened to untyped (slow path)
+  def print_subtree: (untyped, String, String, String, Array[untyped], Set, String) -> Set # spinel: widened to untyped (slow path)
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
-  def cmd_tree: (Array[String]) -> Array[String]
+  def cmd_tree: (Array[String]) -> Array[untyped] # spinel: widened to untyped (slow path)
   def cmd_parent: (Array[String]) -> nil
   def cmd_track: (Array[String]) -> nil
   def cmd_untrack: (Array[String]) -> nil
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
-  def restack_subtree: (String, String, Set, String, bool, Set) -> nil
+  def restack_subtree: (untyped, Array[untyped], Set, String, bool, Set) -> nil # spinel: widened to untyped (slow path)
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_version: (Array[String]) -> nil
@@ -112,7 +114,7 @@ class Set
   def -: (Set) -> Set
   def ^: (untyped) -> Set # spinel: widened to untyped (slow path)
   def ==: (String) -> bool
-  def subset?: (String) -> bool
+  def subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
