@@ -128,3 +128,4 @@ class Set
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
 end
+
