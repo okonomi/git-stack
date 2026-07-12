@@ -115,6 +115,19 @@ def sh(arg)
   "'" + arg.gsub(/'/, "'\\''") + "'"
 end
 
+# Every git call goes through one of the three wrappers below. Pick by
+# answering two questions in order:
+#
+#   1. Do you need the command's OUTPUT, or just whether it SUCCEEDED?
+#        output   -> git_out  (returns the trimmed stdout as a String)
+#        success  -> a bool wrapper; go to question 2
+#   2. (bool only) Should git's output be shown to the user, or swallowed?
+#        swallow  -> git_ok   (quiet; the common case for internal checks)
+#        show     -> git_run  (git's own messages reach the terminal)
+#
+# git_run is the rare one -- reach for it only when git's own message is the
+# point (currently just `checkout!`, for "Switched to branch").
+
 # Run `git <subcmd>`, discarding its output; return true on success (exit 0).
 def git_ok(subcmd)
   system("git #{subcmd} >/dev/null 2>&1")
@@ -126,12 +139,23 @@ def git_out(subcmd)
   `git #{subcmd} 2>/dev/null`.strip
 end
 
+# Run `git <subcmd>` with its stdout/stderr passing through to the terminal;
+# return true on success (exit 0). Unlike git_ok, nothing is redirected away,
+# so git's own progress/status messages (e.g. "Switched to branch") stay
+# visible -- use this for the interactive commands whose output the user
+# should see. The `$? == 0` is read on its own line because Spinel drops the
+# boolean when a bare `system` call is a method's trailing expression.
+def git_run(subcmd)
+  system("git #{subcmd}")
+  $? == 0
+end
+
 # Check out `branch`, or die with a consistent message.
 #
-# Uses array-form `system` (not git_ok) so git's own "Switched to branch"
-# message reaches the terminal instead of being redirected away.
+# Uses git_run (not git_ok) so git's own "Switched to branch" message reaches
+# the terminal instead of being redirected away.
 def checkout!(branch)
-  die("failed to check out '#{branch}'") unless system("git", "checkout", branch)
+  die("failed to check out '#{branch}'") unless git_run("checkout #{sh(branch)}")
 end
 
 def require_repo
@@ -182,7 +206,7 @@ end
 
 # Every configured trunk, in config order (empty list when none is set yet).
 def configured_trunks
-  out = `git config --get-all stack.trunk 2>/dev/null`
+  out = git_out("config --get-all stack.trunk")
   list = []
   out.split("\n").each do |line|
     name = line.strip
@@ -269,12 +293,8 @@ def get_parent(branch)
 end
 
 # Record `parent` as the parent of `branch`; return true on success.
-#
-# The result is bound to a local before returning: Spinel drops the boolean
-# when a `system` call is a function's bare trailing expression.
 def set_parent(branch, parent)
-  ok = system("git", "config", "branch.#{branch}.stackParent", parent)
-  ok
+  git_ok("config branch.#{sh(branch)}.stackParent #{sh(parent)}")
 end
 
 def clear_parent(branch)
@@ -287,7 +307,7 @@ end
 # the scan once and threading it through the recursion avoids re-spawning `git`
 # per node (an O(N^2) subprocess blow-up on a stack of N branches).
 def scan_stack_config
-  `git config --get-regexp '^branch\\..*\\.stackparent$' 2>/dev/null`
+  git_out("config --get-regexp '^branch\\..*\\.stackparent$'")
 end
 
 # Set of every local branch name, fetched with a single `git` subprocess.
@@ -298,7 +318,7 @@ end
 # it in memory removes that per-node cost, mirroring how `scan_stack_config`
 # avoids re-spawning `git config` per node.
 def existing_branches
-  out = `git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null`
+  out = git_out("for-each-ref --format='%(refname:short)' refs/heads/")
   set = Set.new
   out.split("\n").each do |name|
     next if name.empty?
