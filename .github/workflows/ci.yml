@@ -80,9 +80,9 @@ jobs:
       #
       #   spinel --emit-rbs bin/git-stack.rb --output=test/git-stack.rbs.expected
       #
-      # It lives in test/ with the other .expected snapshot, NOT in rbs/:
-      # rbs/ holds hand-written seeds spin feeds back into the compiler, so
-      # emitted output there would seed itself.
+      # It lives in test/ with the other .expected snapshot. Keep emitted
+      # output out of any rbs/ seed directory spin would feed back into the
+      # compiler -- it would seed itself.
       - name: Check emitted RBS against golden file
         run: |
           spinel --emit-rbs bin/git-stack.rb --output=/tmp/emitted.rbs
