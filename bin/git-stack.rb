@@ -188,7 +188,12 @@ end
 
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
 # `git rev-list --left-right --count` call instead of two separate
-# `commit_count` calls -- half the subprocess cost per tree node.
+# `commit_count` calls.
+#
+# `tree` no longer calls this per node -- it batches every node's counts into
+# one `git for-each-ref` (see scan_ahead_behind) and only falls back here on
+# git too old for that atom. It is still the per-branch path for `restack`'s
+# up-to-date check (via commit_count) and remains correct for one-off use.
 def ahead_behind(parent, branch)
   out = git_out("rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
   parts = out.split("\t")
@@ -468,18 +473,165 @@ def tree_name(branch, cur, default_code)
   paint(default_code, branch)
 end
 
+# How many branches per batched `git for-each-ref` in scan_ahead_behind.
+#
+# Each batch's captured output must stay well under Spinel's ~4 KB backtick
+# cap (a compiled binary's backticks read a single ~4 KB chunk, silently
+# dropping the rest -- verified against the toolchain). A batch emits at most
+# CHUNK rows of at most CHUNK+1 numeric columns, so its bytes grow as CHUNK^2;
+# 12 keeps a batch comfortably small (~2 KB worst case) while still turning one
+# git call into a dozen branches' worth of counts.
+AHEAD_BEHIND_CHUNK = 12
+
+# Precompute [behind, ahead] for every branch against its effective parent in a
+# HANDFUL of batched `git for-each-ref` calls, instead of one `git rev-list` per
+# tree node (an O(N) subprocess blow-up -- the dominant cost of a large tree,
+# since every other lookup was already collapsed into a single `git` call).
+#
+# `git for-each-ref`'s `%(ahead-behind:<base>)` atom reports "<ahead> <behind>"
+# for every listed ref against <base> in one graph walk. Each branch rests on
+# its own parent, so we process branches in chunks of AHEAD_BEHIND_CHUNK: one
+# call per chunk, listing that chunk's refs with one atom per distinct parent in
+# it, then reading back each branch's own parent column. That is ~N/12 git calls
+# instead of N -- and, crucially, bounds each call's output so it never trips the
+# ~4 KB backtick cap that a single all-branches-by-all-parents call (O(N^2)
+# output) would blow past on a stack of more than a couple dozen branches.
+#
+# Returns one `"<branch>\t<behind>\t<ahead>"` line per branch (parsed back by
+# `ahead_behind_from`), threaded through `print_subtree` like `scan`/`branches`.
+# Tabs are safe separators: git refnames cannot contain control characters, and
+# the atom's own output is just two space-separated numbers.
+#
+# The atom requires git 2.41+. On older git `for-each-ref` fails, a chunk yields
+# nothing, and `print_subtree` falls back to the per-node `ahead_behind` for its
+# branches -- so the tree still renders correctly (just without the batching
+# win). A branch whose name breaks the atom's `)`-terminated argument fails the
+# same closed way, only for its own chunk.
+def scan_ahead_behind(scan, branches, trunk)
+  # (branch, effective-parent) pairs needing counts: both must exist as
+  # branches. Kept as parallel arrays in scan order.
+  pair_branch = []
+  pair_parent = []
+  scan.split("\n").each do |line|
+    next if line.empty?
+
+    space = line.index(" ")
+    next if space.nil?
+
+    key = line[0...space]
+    value = line[(space + 1)..-1]
+    parent = value.empty? ? trunk : value
+    next if parent.empty? || !branches.include?(parent)
+
+    name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
+    next unless branches.include?(name)
+
+    pair_branch << name
+    pair_parent << parent
+  end
+
+  result = ""
+  total = pair_branch.length
+  start = 0
+  while start < total
+    stop = start + AHEAD_BEHIND_CHUNK
+    stop = total if stop > total
+
+    # Distinct parents in this chunk (its atom columns) and the chunk's refs.
+    bases = []
+    refs = ""
+    i = start
+    while i < stop
+      p = pair_parent[i]
+      bases << p unless bases.include?(p)
+      refs = "#{refs} refs/heads/#{sh(pair_branch[i])}"
+      i += 1
+    end
+
+    fmt = "%(refname:short)"
+    bases.each do |base|
+      fmt = "#{fmt}\t%(ahead-behind:#{base})"
+    end
+
+    out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
+    out.split("\n").each do |row|
+      next if row.empty?
+
+      fields = row.split("\t")
+      next if fields.length < 2
+
+      branch = fields[0]
+
+      # This branch's parent (it is one of this chunk's pairs).
+      parent = ""
+      j = start
+      while j < stop
+        parent = pair_parent[j] if pair_branch[j] == branch
+        j += 1
+      end
+      next if parent.empty?
+
+      # Which atom column holds that parent?
+      idx = -1
+      k = 0
+      bases.each do |base|
+        idx = k if base == parent
+        k += 1
+      end
+      next if idx < 0
+
+      col = fields[idx + 1]
+      next if col.nil?
+
+      # The atom prints "<ahead> <behind>"; the consumer wants [behind, ahead].
+      ab = col.split(" ")
+      next if ab.length != 2
+
+      result = "#{result}#{branch}\t#{ab[1].to_i}\t#{ab[0].to_i}\n"
+    end
+
+    start = stop
+  end
+  result
+end
+
+# [behind, ahead] for `branch` parsed from a pre-captured `scan_ahead_behind`
+# result -- no subprocess of its own (mirrors `parent_from`).
+#
+# Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git too old for
+# the batched atom, so the result was empty), signalling `print_subtree` to fall
+# back to a per-node `ahead_behind`. A sentinel array rather than nil keeps the
+# return type a plain Array[Integer], off Spinel's untyped slow path.
+def ahead_behind_from(ab, branch)
+  ab.split("\n").each do |line|
+    next if line.empty?
+
+    fields = line.split("\t")
+    next if fields.length != 3
+    next unless fields[0] == branch
+
+    return [fields[1].to_i, fields[2].to_i]
+  end
+  [-1, -1]
+end
+
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
 #
-# `branches` is a pre-captured `existing_branches` set, threaded through the
-# recursion for the same reason `scan` is: avoids re-spawning `git` per node.
-def print_subtree(branch, prefix, cur, trunk, scan, branches)
+# `branches` is a pre-captured `existing_branches` set, and `ab` a pre-captured
+# `scan_ahead_behind` result -- both threaded through the recursion for the same
+# reason `scan` is: avoids re-spawning `git` per node.
+def print_subtree(branch, prefix, cur, trunk, scan, branches, ab)
   extra = ""
   parent = parent_from(scan, branch)
   parent = trunk if parent.empty?
   if !parent.empty? && branches.include?(parent)
-    # Ahead+behind in one `git rev-list --left-right` call rather than two
-    # separate `commit_count` calls.
-    behind, ahead = ahead_behind(parent, branch)
+    # Counts come from the single batched `git for-each-ref` (see
+    # scan_ahead_behind), looked up in memory. The sentinel guards the git-too-
+    # old case, where `ab` is empty and we fall back to a per-node call.
+    behind, ahead = ahead_behind_from(ab, branch)
+    if behind < 0
+      behind, ahead = ahead_behind(parent, branch)
+    end
     if behind > 0
       extra = yellow("(needs restack: #{behind} behind)")
     elsif ahead > 0
@@ -492,7 +644,7 @@ def print_subtree(branch, prefix, cur, trunk, scan, branches)
   puts "#{prefix}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
 
   children_from(scan, branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur, trunk, scan, branches)
+    print_subtree(child, "#{prefix}  ", cur, trunk, scan, branches, ab)
   end
 end
 
@@ -533,18 +685,23 @@ def cmd_tree(_args)
   scan = scan_stack_config
   branches = existing_branches
   primary = trunks[0]
+  # Every tree node's [behind, ahead] counts, batched into a few `git
+  # for-each-ref` calls up front and threaded through the recursion (replaces
+  # one `git rev-list` per node -- the O(N) subprocess blow-up that made large
+  # trees slow).
+  ab = scan_ahead_behind(scan, branches, primary)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
     children_from(scan, trunk).each do |child|
-      print_subtree(child, "  ", cur, primary, scan, branches)
+      print_subtree(child, "  ", cur, primary, scan, branches, ab)
     end
   end
 
   orphan_roots(scan, branches).each do |child|
-    print_subtree(child, "  ", cur, primary, scan, branches)
+    print_subtree(child, "  ", cur, primary, scan, branches, ab)
   end
 end
 
