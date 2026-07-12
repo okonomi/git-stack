@@ -50,7 +50,7 @@ class Object
   def cmd_untrack: (Array[String]) -> nil
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
-  def restack_subtree: (String, String, Set, String, bool, Set) -> untyped # spinel: widened to untyped (slow path)
+  def restack_subtree: (String, String, Set, String, bool, Set) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_version: (Array[String]) -> nil

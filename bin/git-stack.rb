@@ -635,6 +635,10 @@ def restack_subtree(branch, scan, visited, trunk, heal_orphans, branches)
   children_from(scan, branch).each do |child|
     restack_subtree(child, scan, visited, trunk, heal_orphans, branches)
   end
+  # An explicit nil: with the recursive `each` as the bare trailing
+  # expression, the return type refers back to the method's own (not yet
+  # resolved) type and Spinel widens it to untyped (slow path).
+  nil
 end
 
 def cmd_restack(_args)
