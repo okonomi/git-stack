@@ -1,14 +1,14 @@
 class Object
   def color_enabled?: () -> bool
-  def paint: (String, untyped) -> untyped # spinel: widened to untyped (slow path)
-  def bold: (untyped) -> untyped # spinel: widened to untyped (slow path)
-  def dim: (String) -> untyped # spinel: widened to untyped (slow path)
-  def green: (String) -> untyped # spinel: widened to untyped (slow path)
-  def yellow: (String) -> untyped # spinel: widened to untyped (slow path)
-  def cyan: (String) -> untyped # spinel: widened to untyped (slow path)
-  def red: (String) -> untyped # spinel: widened to untyped (slow path)
+  def paint: (String, String) -> String
+  def bold: (String) -> String
+  def dim: (String) -> String
+  def green: (String) -> String
+  def yellow: (String) -> String
+  def cyan: (String) -> String
+  def red: (String) -> String
   def die: (String) -> void
-  def info: (untyped) -> nil # spinel: widened to untyped (slow path)
+  def info: (String) -> nil
   def sh: (untyped) -> String # spinel: widened to untyped (slow path)
   def git_ok: (String) -> bool
   def git_out: (String) -> String
@@ -39,7 +39,7 @@ class Object
   def would_cycle?: (String, String, Array[String]) -> bool
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
-  def tree_name: (String, String, String) -> untyped # spinel: widened to untyped (slow path)
+  def tree_name: (String, String, String) -> String
   def print_subtree: (String, String, String, String, String, Set) -> Array[String]
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil

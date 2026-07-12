@@ -64,7 +64,13 @@ USE_COLOR = color_enabled?
 # When colour is disabled this is the identity function, so callers never
 # touch escape codes or the matching reset themselves.
 def paint(code, text)
-  return text unless USE_COLOR
+  # `.to_s` (identity for the String this always receives) keeps Spinel's
+  # return type independent of `text`: `return text` ties them together, and
+  # the `bold(green(branch))` nesting in tree_name then feeds paint's return
+  # back into this parameter -- a constraint cycle that locks the whole
+  # colour-helper family to untyped once any transiently-untyped value
+  # (cmd_tree's `trunks.each` block variable) passes through it.
+  return text.to_s unless USE_COLOR
 
   "\033[#{code}m#{text}\033[0m"
 end
