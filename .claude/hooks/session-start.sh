@@ -18,7 +18,7 @@ fi
 
 # Pin the Spinel revision we validated the test suite against. Override with
 # SPINEL_REF to track a different commit/branch/tag.
-SPINEL_REF="${SPINEL_REF:-83e8a596b10074dc184b9c1d8b9cfa5442a446cd}"
+SPINEL_REF="${SPINEL_REF:-9e444790f6380cba03236dc91efa263fa1a5bfe5}"
 SPINEL_REPO="${SPINEL_REPO:-https://github.com/matz/spinel.git}"
 
 PREFIX="$HOME/.local"
