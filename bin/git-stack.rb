@@ -508,10 +508,12 @@ AHEAD_BEHIND_CHUNK = 12
 # win). A branch whose name breaks the atom's `)`-terminated argument fails the
 # same closed way, only for its own chunk.
 def scan_ahead_behind(scan, branches, trunk)
-  # (branch, effective-parent) pairs needing counts: both must exist as
-  # branches. Kept as parallel arrays in scan order.
-  pair_branch = []
-  pair_parent = []
+  # "<branch>\t<parent>" lines for branches whose effective parent exists as a
+  # branch. Held as one string and processed with the same string-slicing idiom
+  # as `scan` itself -- deliberately NOT as an Array[String], whose element
+  # reads Spinel widens to untyped (and that widening bleeds into the emitted
+  # Set signatures; see test/git-stack.rbs.expected).
+  pairs = ""
   scan.split("\n").each do |line|
     next if line.empty?
 
@@ -526,71 +528,112 @@ def scan_ahead_behind(scan, branches, trunk)
     name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
     next unless branches.include?(name)
 
-    pair_branch << name
-    pair_parent << parent
+    pairs = "#{pairs}#{name}\t#{parent}\n"
   end
 
+  # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
+  # call's captured output stays well under Spinel's ~4 KB backtick cap.
   result = ""
-  total = pair_branch.length
-  start = 0
-  while start < total
-    stop = start + AHEAD_BEHIND_CHUNK
-    stop = total if stop > total
+  count = 0
+  group = ""
+  pairs.split("\n").each do |pl|
+    next if pl.empty?
 
-    # Distinct parents in this chunk (its atom columns) and the chunk's refs.
-    bases = []
-    refs = ""
-    i = start
-    while i < stop
-      p = pair_parent[i]
-      bases << p unless bases.include?(p)
-      refs = "#{refs} refs/heads/#{sh(pair_branch[i])}"
-      i += 1
+    group = "#{group}#{pl}\n"
+    count += 1
+    if count == AHEAD_BEHIND_CHUNK
+      result = "#{result}#{ahead_behind_chunk(group)}"
+      group = ""
+      count = 0
     end
+  end
+  result = "#{result}#{ahead_behind_chunk(group)}" unless group.empty?
+  result
+end
 
-    fmt = "%(refname:short)"
-    bases.each do |base|
-      fmt = "#{fmt}\t%(ahead-behind:#{base})"
+# One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
+# "<branch>\t<parent>" lines. Runs a single `git for-each-ref` listing those
+# branches, with one `%(ahead-behind:<parent>)` atom per distinct parent in the
+# group, then reads back each branch's own parent column. Returns
+# "<branch>\t<behind>\t<ahead>" lines (empty on git older than 2.41, where the
+# atom is unknown and the call fails -- print_subtree then falls back per node).
+#
+# Everything here is string slicing plus `.each` block variables and counters;
+# there is intentionally no Array[String] indexing (see scan_ahead_behind).
+def ahead_behind_chunk(group)
+  # Distinct parents (atom columns, newline-joined) and the batch's ref list.
+  bases = ""
+  refs = ""
+  group.split("\n").each do |pl|
+    next if pl.empty?
+
+    tab = pl.index("\t")
+    next if tab.nil?
+
+    branch = pl[0...tab]
+    parent = pl[(tab + 1)..-1]
+    refs = "#{refs} refs/heads/#{sh(branch)}"
+
+    known = false
+    bases.split("\n").each do |b|
+      known = true if b == parent
     end
+    bases = "#{bases}#{parent}\n" unless known
+  end
+  return "" if refs.empty?
 
-    out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
-    out.split("\n").each do |row|
-      next if row.empty?
+  fmt = "%(refname:short)"
+  bases.split("\n").each do |b|
+    next if b.empty?
 
-      fields = row.split("\t")
-      next if fields.length < 2
+    fmt = "#{fmt}\t%(ahead-behind:#{b})"
+  end
 
-      branch = fields[0]
+  out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
+  result = ""
+  out.split("\n").each do |row|
+    next if row.empty?
 
-      # This branch's parent (it is one of this chunk's pairs).
-      parent = ""
-      j = start
-      while j < stop
-        parent = pair_parent[j] if pair_branch[j] == branch
-        j += 1
-      end
-      next if parent.empty?
+    tab = row.index("\t")
+    next if tab.nil?
 
-      # Which atom column holds that parent?
-      idx = -1
-      k = 0
-      bases.each do |base|
-        idx = k if base == parent
-        k += 1
-      end
-      next if idx < 0
+    branch = row[0...tab]
+    rest = row[(tab + 1)..-1]
 
-      col = fields[idx + 1]
-      next if col.nil?
+    # This branch's parent (from the group), then that parent's column number.
+    parent = ""
+    group.split("\n").each do |pl|
+      ptab = pl.index("\t")
+      next if ptab.nil?
 
-      # The atom prints "<ahead> <behind>"; the consumer wants [behind, ahead].
-      ab = col.split(" ")
-      next if ab.length != 2
-
-      result = "#{result}#{branch}\t#{ab[1].to_i}\t#{ab[0].to_i}\n"
+      parent = pl[(ptab + 1)..-1] if pl[0...ptab] == branch
     end
+    next if parent.empty?
 
-    start = stop
+    idx = -1
+    n = 0
+    bases.split("\n").each do |b|
+      next if b.empty?
+
+      idx = n if b == parent
+      n += 1
+    end
+    next if idx < 0
+
+    # The idx-th tab-separated ahead-behind column ("<ahead> <behind>").
+    col = ""
+    c = 0
+    rest.split("\t").each do |f|
+      col = f if c == idx
+      c += 1
+    end
+    next if col.empty?
+
+    # The atom prints "<ahead> <behind>"; the consumer wants [behind, ahead].
+    ab = col.split(" ")
+    next if ab.length != 2
+
+    result = "#{result}#{branch}\t#{ab[1].to_i}\t#{ab[0].to_i}\n"
   end
   result
 end

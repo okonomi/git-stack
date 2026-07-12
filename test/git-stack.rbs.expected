@@ -41,7 +41,10 @@ class Object
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
-  def print_subtree: (String, String, String, String, String, Set) -> Array[String]
+  def scan_ahead_behind: (String, Set, String) -> String
+  def ahead_behind_chunk: (String) -> String
+  def ahead_behind_from: (String, String) -> Array[Integer]
+  def print_subtree: (String, String, String, String, String, Set, String) -> Array[String]
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
