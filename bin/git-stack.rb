@@ -308,9 +308,10 @@ end
 
 # One scan of git config listing every `branch.<name>.stackParent` entry.
 #
-# The tree and restack recursions call `children_from` at every node; capturing
-# the scan once and threading it through the recursion avoids re-spawning `git`
-# per node (an O(N^2) subprocess blow-up on a stack of N branches).
+# The tree and restack recursions look up a node's children at every step;
+# StackContext parses this scan once up front so the recursion reads it in
+# memory instead of re-spawning `git` per node (an O(N^2) subprocess blow-up on
+# a stack of N branches).
 def scan_stack_config
   git_out("config --get-regexp '^branch\\..*\\.stackparent$'")
 end
@@ -333,12 +334,9 @@ def existing_branches
   set
 end
 
-# Parse the stack config once into both directions needed by tree traversal.
-# Keeping the children and parent indexes means each node lookup is O(1),
-# rather than splitting and scanning the complete config once per node.
-#
-# Note: git lowercases the variable-name portion of a config key, so the
-# stored key is `branch.<name>.stackparent` even though we write `stackParent`.
+# Insertion-sort `names` into a new ascending list. Kept as a hand-rolled sort
+# (rather than Array#sort) to stay within Spinel's accepted subset; orders each
+# parent's children and the orphan roots deterministically.
 def sorted_names(names)
   result = []
   names.each do |name|
@@ -357,70 +355,12 @@ def sorted_names(names)
   result
 end
 
-def stack_index(scan)
-  parents = {}
-  children = {}
-  scan.split("\n").each do |line|
-    next if line.empty?
-
-    space = line.index(" ")
-    next if space.nil?
-
-    key = line[0...space]
-    value = line[(space + 1)..-1]
-    name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
-    parents[name] = value
-    names = children[value]
-    if names.nil?
-      names = []
-      children[value] = names
-    end
-    names << name
-  end
-
-  children.each do |_parent, names|
-    children[_parent] = sorted_names(names)
-  end
-  [parents, children]
-end
-
-# Sorted list of branches that record `parent` as their parent, from the
-# pre-built index -- no subprocess or config scan of its own.
-def children_from(index, parent)
-  children = index[1][parent]
-  return [] if children.nil?
-
-  children
-end
-
-# Return every branch that records `parent` as its parent (single lookup).
+# Return every branch that records `parent` as its parent. Builds a throwaway
+# StackContext (a single config scan, no ahead/behind git walk) -- the one-shot
+# path used by `up`, distinct from the shared context `tree`/`restack`/`sync`
+# build once and thread through their recursion.
 def children_of(parent)
-  children_from(stack_index(scan_stack_config), parent)
-end
-
-# Branches whose recorded parent is non-empty but no longer a real branch
-# (its parent was merged and deleted). Treated as extra roots by `tree` so
-# they're always visible instead of silently disappearing; `git stack sync`
-# is what actually repairs them.
-#
-# `branches` is a pre-captured `existing_branches` set so this needs no
-# subprocess of its own.
-def orphan_roots(index, branches)
-  names = []
-  index[0].each do |name, value|
-    next if value.empty?
-    next if branches.include?(value)
-
-    names << name
-  end
-  sorted_names(names)
-end
-
-# The parent recorded for `branch`, parsed from a pre-captured
-# pre-built stack index -- no subprocess of its own (mirrors get_parent).
-def parent_from(index, branch)
-  parent = index[0][branch]
-  parent.nil? ? "" : parent
+  StackContext.build_topology.children_of(parent)
 end
 
 # The parent used for display and navigation: the recorded parent, or the
@@ -516,10 +456,11 @@ AHEAD_BEHIND_CHUNK = 12
 # ~4 KB backtick cap that a single all-branches-by-all-parents call (O(N^2)
 # output) would blow past on a stack of more than a couple dozen branches.
 #
-# Returns one `"<branch>\t<behind>\t<ahead>"` line per branch (parsed back by
-# `ahead_behind_from`), threaded through `print_subtree` like `scan`/`branches`.
-# Tabs are safe separators: git refnames cannot contain control characters, and
-# the atom's own output is just two space-separated numbers.
+# Returns one `"<branch>\t<behind>\t<ahead>"` line per branch, parsed back by
+# `ahead_behind_index` into the StackContext's `@ab` and read via
+# `StackContext#ahead_behind_of`. Tabs are safe separators: git refnames cannot
+# contain control characters, and the atom's own output is just two
+# space-separated numbers.
 #
 # The atom requires git 2.41+. On older git `for-each-ref` fails, a chunk yields
 # nothing, and `print_subtree` falls back to the per-node `ahead_behind` for its
@@ -660,14 +601,14 @@ end
 # Parse a `scan_ahead_behind` result string once into a name -> "behind\tahead"
 # index, so each node's lookup is O(1) instead of re-splitting and re-scanning
 # the whole result per node (an O(N^2) blow-up on a stack of N branches, mirroring
-# the one `stack_index` removed for the config scan).
+# the one StackContext's parent/child indexes remove for the config scan).
 #
 # The counts are kept as the packed "<behind>\t<ahead>" string they already
 # arrive in, not as an `Array[Integer]` value: a hash whose values are read back
 # out stays a concrete `Hash[String, String]` in Spinel's emitted signatures,
 # whereas an array-valued hash widens to untyped (the same reason `ab` itself
 # stays a String rather than an `Array[String]`; see scan_ahead_behind).
-# `ahead_behind_from` unpacks the pair back into a fresh `Array[Integer]`.
+# `StackContext#ahead_behind_of` unpacks the pair back into a fresh `Array[Integer]`.
 def ahead_behind_index(ab)
   index = {}
   ab.split("\n").each do |line|
@@ -681,39 +622,154 @@ def ahead_behind_index(ab)
   index
 end
 
-# [behind, ahead] for `branch` from a pre-built `ahead_behind_index` -- a single
-# `Hash` lookup, no subprocess of its own (mirrors `parent_from`).
+# One snapshot of the stack, captured up front and threaded through the tree /
+# restack / sync recursions in place of the loose `index` / `branches` /
+# `ab_index` triple those used to pass around by hand.
 #
-# Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git too old for
-# the batched atom, so the index was empty), signalling `print_subtree` to fall
-# back to a per-node `ahead_behind`. The pair is rebuilt into a fresh literal
-# `[behind, ahead]` (rather than returned straight from the hash) so the return
-# type stays a plain `Array[Integer]`, off Spinel's untyped slow path.
-def ahead_behind_from(index, branch)
-  packed = index[branch]
-  return [-1, -1] if packed.nil?
+# It bundles the four pieces of git state a traversal reads repeatedly:
+#
+#   @parents   branch -> recorded parent          (from the config scan)
+#   @children  branch -> sorted child branches     (the same scan, inverted)
+#   @branches  the set of existing local branches  (existing_branches)
+#   @ab        branch -> "<behind>\t<ahead>"       (ahead_behind_index)
+#
+# Every lookup is in memory, so a whole traversal costs the two or three `git`
+# calls `build` makes up front rather than a subprocess per node. Splitting the
+# old `[parents, children]` Array into two named fields also drops the
+# `index[0]` / `index[1]` positional reads Spinel widened to untyped.
+#
+# Build it once per command with `build` (with ahead/behind counts, for `tree`)
+# or `build_topology` (topology only, for restack/sync, which navigate the
+# stack but never render counts and so skip the ahead/behind git walk).
+class StackContext
+  def initialize
+    @parents = {}
+    @children = {}
+    @branches = Set.new
+    @ab = {}
+    # Explicit nil: without it the trailing `@ab = {}` assignment would be the
+    # initializer's value and Spinel widens it to the untyped slow path.
+    nil
+  end
 
-  fields = packed.split("\t")
-  return [-1, -1] if fields.length != 2
+  # Full snapshot including ahead/behind counts, for `tree`.
+  def self.build(trunk)
+    ctx = new
+    scan = scan_stack_config
+    ctx.load(scan)
+    ctx.load_ahead_behind(scan, trunk)
+    ctx
+  end
 
-  [fields[0].to_i, fields[1].to_i]
+  # Topology and branch existence only -- no ahead/behind git walk. For
+  # restack/sync (which never render counts) and the one-shot `children_of`.
+  def self.build_topology
+    ctx = new
+    ctx.load(scan_stack_config)
+    ctx
+  end
+
+  # Parse one `scan_stack_config` string into the parent and child indexes and
+  # capture the existing-branch set. Note: git lowercases the variable-name
+  # portion of a config key, so the stored key is `branch.<name>.stackparent`
+  # even though we write `stackParent`.
+  def load(scan)
+    @branches = existing_branches
+    scan.split("\n").each do |line|
+      next if line.empty?
+
+      space = line.index(" ")
+      next if space.nil?
+
+      key = line[0...space]
+      value = line[(space + 1)..-1]
+      name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
+      @parents[name] = value
+      names = @children[value]
+      if names.nil?
+        names = []
+        @children[value] = names
+      end
+      names << name
+    end
+
+    @children.each do |_parent, names|
+      @children[_parent] = sorted_names(names)
+    end
+    nil
+  end
+
+  # Populate the ahead/behind index from a batched `git for-each-ref` walk
+  # (see scan_ahead_behind). Reuses the `scan` already captured by `build`.
+  def load_ahead_behind(scan, trunk)
+    @ab = ahead_behind_index(scan_ahead_behind(scan, @branches, trunk))
+    nil
+  end
+
+  # The parent recorded for `branch`, or "" when none is recorded.
+  def parent_of(branch)
+    parent = @parents[branch]
+    parent.nil? ? "" : parent
+  end
+
+  # Sorted list of branches that record `branch` as their parent (empty when
+  # none do) -- a single in-memory lookup, no subprocess of its own.
+  def children_of(branch)
+    names = @children[branch]
+    names.nil? ? [] : names
+  end
+
+  # True when `name` is an existing local branch.
+  def branch?(name)
+    @branches.include?(name)
+  end
+
+  # [behind, ahead] for `branch` from the ahead/behind index -- a single `Hash`
+  # lookup. Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git
+  # too old for the batched atom, so the index was empty, or a context built
+  # without counts), signalling `print_subtree` to fall back to a per-node
+  # `ahead_behind`. The pair is rebuilt into a fresh literal so the return type
+  # stays a plain `Array[Integer]`, off Spinel's untyped slow path.
+  def ahead_behind_of(branch)
+    packed = @ab[branch]
+    return [-1, -1] if packed.nil?
+
+    fields = packed.split("\t")
+    return [-1, -1] if fields.length != 2
+
+    [fields[0].to_i, fields[1].to_i]
+  end
+
+  # Branches whose recorded parent is non-empty but no longer a real branch
+  # (its parent was merged and deleted). Treated as extra roots by `tree` so
+  # they're always visible instead of silently disappearing; `git stack sync`
+  # is what actually repairs them.
+  def orphan_roots
+    names = []
+    @parents.each do |name, value|
+      next if value.empty?
+      next if @branches.include?(value)
+
+      names << name
+    end
+    sorted_names(names)
+  end
 end
 
 # Recursively print the subtree rooted at `branch` with indent `prefix`.
 #
-# `branches` is a pre-captured `existing_branches` set, and `ab_index` a
-# pre-built `ahead_behind_index` -- both threaded through the recursion for the
-# same reason `index` is: avoids re-spawning `git` (or, for `ab_index`,
-# re-parsing the whole ahead/behind result) per node.
-def print_subtree(branch, prefix, cur, trunk, index, branches, ab_index)
+# `ctx` is the pre-built StackContext threaded through the recursion: every
+# parent / child / branch-existence / ahead-behind lookup it makes is in
+# memory, so rendering the whole tree costs no `git` per node.
+def print_subtree(branch, prefix, cur, trunk, ctx)
   extra = ""
-  parent = parent_from(index, branch)
+  parent = ctx.parent_of(branch)
   parent = trunk if parent.empty?
-  if !parent.empty? && branches.include?(parent)
+  if !parent.empty? && ctx.branch?(parent)
     # Counts come from the single batched `git for-each-ref` (see
     # scan_ahead_behind), looked up in memory. The sentinel guards the git-too-
     # old case, where the index is empty and we fall back to a per-node call.
-    behind, ahead = ahead_behind_from(ab_index, branch)
+    behind, ahead = ctx.ahead_behind_of(branch)
     if behind < 0
       behind, ahead = ahead_behind(parent, branch)
     end
@@ -728,8 +784,8 @@ def print_subtree(branch, prefix, cur, trunk, index, branches, ab_index)
 
   puts "#{prefix}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
 
-  children_from(index, branch).each do |child|
-    print_subtree(child, "#{prefix}  ", cur, trunk, index, branches, ab_index)
+  ctx.children_of(branch).each do |child|
+    print_subtree(child, "#{prefix}  ", cur, trunk, ctx)
   end
 end
 
@@ -767,28 +823,25 @@ end
 def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
-  scan = scan_stack_config
-  index = stack_index(scan)
-  branches = existing_branches
   primary = trunks[0]
-  # Every tree node's [behind, ahead] counts, batched into a few `git
-  # for-each-ref` calls up front (replaces one `git rev-list` per node -- the
-  # O(N) subprocess blow-up that made large trees slow), then parsed once into a
-  # name -> counts index so each node's lookup is O(1) as the recursion threads
-  # it through (replaces re-splitting the whole result per node).
-  ab_index = ahead_behind_index(scan_ahead_behind(scan, branches, primary))
+  # One StackContext captures the whole stack up front -- topology, existing
+  # branches, and every node's [behind, ahead] counts (the latter batched into a
+  # few `git for-each-ref` calls, replacing one `git rev-list` per node) -- so
+  # the recursion below reads it all in memory instead of re-spawning `git` per
+  # node.
+  ctx = StackContext.build(primary)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
 
-    children_from(index, trunk).each do |child|
-      print_subtree(child, "  ", cur, primary, index, branches, ab_index)
+    ctx.children_of(trunk).each do |child|
+      print_subtree(child, "  ", cur, primary, ctx)
     end
   end
 
-  orphan_roots(index, branches).each do |child|
-    print_subtree(child, "  ", cur, primary, index, branches, ab_index)
+  ctx.orphan_roots.each do |child|
+    print_subtree(child, "  ", cur, primary, ctx)
   end
 end
 
@@ -864,24 +917,25 @@ end
 # reparented onto `trunk` before the rebase check runs. When false (used by
 # `git stack restack`), such a branch is left untouched, same as before.
 #
-# `index` and `branches` are pre-captured snapshots threaded through the
-# recursion so config parsing and existence checks don't spawn work per node --
-# safe because neither restack nor sync creates or deletes branch refs
-# mid-traversal (sync only rewrites `stackParent` config, and rebase updates
-# a branch's history in place without removing the ref).
-def restack_subtree(branch, index, visited, trunk, heal_orphans, branches)
+# `ctx` is a pre-captured StackContext (built with `build_topology`, no
+# ahead/behind counts) threaded through the recursion so config parsing and
+# existence checks don't spawn work per node -- safe because neither restack nor
+# sync creates or deletes branch refs mid-traversal (sync only rewrites
+# `stackParent` config, and rebase updates a branch's history in place without
+# removing the ref).
+def restack_subtree(branch, visited, trunk, heal_orphans, ctx)
   return if visited.include?(branch)
   visited.add(branch)
 
-  parent = parent_from(index, branch)
+  parent = ctx.parent_of(branch)
 
-  if heal_orphans && !parent.empty? && !branches.include?(parent)
+  if heal_orphans && !parent.empty? && !ctx.branch?(parent)
     info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
     die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
     parent = trunk
   end
 
-  if !parent.empty? && branches.include?(parent)
+  if !parent.empty? && ctx.branch?(parent)
     behind = commit_count(branch, parent)
     if behind > 0
       info "restacking #{cyan(branch)} onto #{cyan(parent)}"
@@ -896,8 +950,8 @@ def restack_subtree(branch, index, visited, trunk, heal_orphans, branches)
     end
   end
 
-  children_from(index, branch).each do |child|
-    restack_subtree(child, index, visited, trunk, heal_orphans, branches)
+  ctx.children_of(branch).each do |child|
+    restack_subtree(child, visited, trunk, heal_orphans, ctx)
   end
   # An explicit nil: with the recursive `each` as the bare trailing
   # expression, the return type refers back to the method's own (not yet
@@ -911,9 +965,8 @@ def cmd_restack(_args)
   root = stack_root(original, trunks)
 
   info "restacking stack rooted at #{cyan(root)}"
-  index = stack_index(scan_stack_config)
-  branches = existing_branches
-  restack_subtree(root, index, Set.new, trunks[0], false, branches)
+  ctx = StackContext.build_topology
+  restack_subtree(root, Set.new, trunks[0], false, ctx)
 
   unless git_ok("checkout #{sh(original)}")
     die("restack completed, but returning to '#{original}' failed;\n" \
@@ -928,9 +981,8 @@ def cmd_sync(_args)
   root = stack_root(original, trunks)
 
   info "syncing stack rooted at #{cyan(root)}"
-  index = stack_index(scan_stack_config)
-  branches = existing_branches
-  restack_subtree(root, index, Set.new, trunks[0], true, branches)
+  ctx = StackContext.build_topology
+  restack_subtree(root, Set.new, trunks[0], true, ctx)
 
   unless git_ok("checkout #{sh(original)}")
     die("sync completed, but returning to '#{original}' failed;\n" \
