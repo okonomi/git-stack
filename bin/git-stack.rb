@@ -778,6 +778,10 @@ def main(argv)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")
   end
+  # An explicit nil: as the bare trailing expression the case would be the
+  # return value, and its branches' mixed types (nil from most cmd_*
+  # handlers, Array[String] from cmd_tree) widen to untyped (slow path).
+  nil
 end
 
 main(ARGV)

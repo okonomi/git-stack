@@ -56,7 +56,7 @@ class Object
   def cmd_version: (Array[String]) -> nil
   def cmd_help: (Array[String]) -> nil
   def parse_global_flags: (Array[String]) -> String
-  def main: (Array[String]) -> untyped # spinel: widened to untyped (slow path)
+  def main: (Array[String]) -> nil
 end
 
 class OptionParser
