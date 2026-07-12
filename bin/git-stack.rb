@@ -115,6 +115,19 @@ def sh(arg)
   "'" + arg.gsub(/'/, "'\\''") + "'"
 end
 
+# Every git call goes through one of the three wrappers below. Pick by
+# answering two questions in order:
+#
+#   1. Do you need the command's OUTPUT, or just whether it SUCCEEDED?
+#        output   -> git_out  (returns the trimmed stdout as a String)
+#        success  -> a bool wrapper; go to question 2
+#   2. (bool only) Should git's output be shown to the user, or swallowed?
+#        swallow  -> git_ok   (quiet; the common case for internal checks)
+#        show     -> git_run  (git's own messages reach the terminal)
+#
+# git_run is the rare one -- reach for it only when git's own message is the
+# point (currently just `checkout!`, for "Switched to branch").
+
 # Run `git <subcmd>`, discarding its output; return true on success (exit 0).
 def git_ok(subcmd)
   system("git #{subcmd} >/dev/null 2>&1")
