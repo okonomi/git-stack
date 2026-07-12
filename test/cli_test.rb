@@ -137,6 +137,14 @@ show("feat-d2 behind feat-d", "git rev-list --count feat-d2..feat-d")
 section "version shows the program version"
 run("version")
 
+section "global flags are parsed with optparse"
+run("-v")
+run("--version")
+run("-h")
+
+section "an unknown flag is rejected"
+run("--bogus")
+
 section "create records the parent and checks out the branch"
 new_repo
 run("create feat-a")

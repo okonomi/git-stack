@@ -44,6 +44,49 @@ $ git stack version
 git stack 0.1.0
 [exit 0]
 
+### global flags are parsed with optparse
+$ git stack -v
+git stack 0.1.0
+[exit 0]
+$ git stack --version
+git stack 0.1.0
+[exit 0]
+$ git stack -h
+git stack -- manage stacked branches with plain git
+
+USAGE
+    git stack <command> [args]
+
+COMMANDS
+    init [branch...]      Set (or auto-detect) the trunk branch(es).
+    create <name>         Create <name> stacked on the current branch. (alias: b)
+    tree                  Show the stack as a tree. (aliases: ls, list)
+    up [child]            Check out the branch stacked on the current one.
+    down                  Check out the current branch's parent.
+    parent [branch]       Show or set the parent of the current branch.
+    track [parent]        Track the current branch on top of [parent] (or trunk).
+    untrack               Stop tracking the current branch in a stack.
+    restack               Rebase the whole stack so each branch sits on its parent.
+    sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
+    version               Show the git-stack version and the Spinel build revision.
+    help                  Show this help.
+
+EXAMPLE
+    git checkout main
+    git stack create feature-a      # main -> feature-a
+    git stack create feature-b      # feature-a -> feature-b
+    git stack tree                  # inspect the stack
+    # ... amend feature-a ...
+    git stack restack               # replay feature-b on the new feature-a
+
+Parent relationships are stored in git config (branch.<name>.stackParent).
+[exit 0]
+
+### an unknown flag is rejected
+$ git stack --bogus
+error: invalid option: --bogus
+[exit 1]
+
 ### create records the parent and checks out the branch
 $ git stack create feat-a
 created feat-a on top of main
