@@ -226,7 +226,13 @@ def trunk_branches
   return list unless list.empty?
 
   trunk = detect_trunk
-  set_trunks([trunk])
+  # `.to_s` (identity for the String this always is) gives the array literal
+  # a concrete String element type. Seeding it with a user-defined method's
+  # return -- still an unresolved inference variable at this point -- passes
+  # that transiently-untyped element through set_trunks' block into sh's
+  # parameter, locking sh onto the boxed untyped slow path (same failure mode
+  # as paint's, see there).
+  set_trunks([trunk.to_s])
   [trunk]
 end
 
@@ -245,7 +251,9 @@ def primary_trunk
   return first unless first.empty?
 
   detected = detect_trunk
-  set_trunks([detected])
+  # `.to_s` for the same reason as in trunk_branches: keep sh off the
+  # untyped slow path.
+  set_trunks([detected.to_s])
   detected
 end
 

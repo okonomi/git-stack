@@ -9,7 +9,7 @@ class Object
   def red: (String) -> String
   def die: (String) -> void
   def info: (String) -> nil
-  def sh: (untyped) -> String # spinel: widened to untyped (slow path)
+  def sh: (String) -> String
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def checkout!: (String) -> nil
