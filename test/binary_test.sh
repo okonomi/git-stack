@@ -16,8 +16,12 @@
 # different message, a new line, a NoMethodError, a changed exit code -- fails.
 #
 # The `tree` command is exercised against the multiple-sibling stack on
-# purpose: sibling ordering is the only path that reaches `sorted_names`, which
-# is exactly where an unsupported runtime method would hide.
+# purpose: sibling ordering is the only path that reaches the `.sort` calls in
+# `StackContext#children_of` and `#walk_order`, which is exactly where an
+# unsupported runtime method would hide. Those `.sort`s are also load-bearing
+# for type inference -- Spinel only dispatches `sort` on a concrete
+# `Array[String]`, never on a poly array -- so this fixture doubles as the
+# runtime proof that the element type stayed narrow.
 #
 # This is the binary counterpart to test/cli_test.rb's CRuby snapshot; it adds
 # a check, it does not replace one. It does NOT cover `version`, whose output
@@ -57,6 +61,8 @@ run() {
 gsq() { (cd "$repo" && NO_COLOR=1 "$GIT_STACK" "$@") >/dev/null 2>&1; }
 
 # Deterministic repository state, one labelled line.
+# $2 is an unquoted git subcommand, split into words on purpose.
+# shellcheck disable=SC2086
 show() { printf '%s: %s\n' "$1" "$(git -C "$repo" ${2} 2>/dev/null | tr -d '\n')"; }
 
 git_q() { git -C "$repo" "$@" >/dev/null 2>&1; }
@@ -82,7 +88,7 @@ new_repo() {
 #
 #   main (trunk)
 #     feat-a
-#       feat-b            \ two siblings on feat-a -> reaches sorted_names
+#       feat-b            \ two siblings on feat-a -> reaches the sibling `.sort`
 #         feat-b1         / nested one level deeper
 #       feat-c
 #     feat-x-child        (orphan: parent feat-x was merged into main + deleted)
