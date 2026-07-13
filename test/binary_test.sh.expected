@@ -55,3 +55,15 @@ $ git stack tree
   * feat-x-child (1 commit(s))
 [exit 0]
 feat-x-child parent: main
+
+### sync recovers a branch whose parent was squash-merged and deleted
+$ git stack sync
+syncing stack rooted at feature-b
+'feature-b': parent 'feature-a' no longer exists; reparenting onto trunk 'main'
+restacking feature-b onto main
+done.
+[exit 0]
+feature-b parent: main
+feature-b behind main: 0
+feature-b commits above main: 1
+feature-b stackBase == main tip: yes

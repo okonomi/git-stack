@@ -131,3 +131,32 @@ git_q checkout -q feat-x-child
 run sync
 run tree
 show "feat-x-child parent" "config --get branch.feat-x-child.stackParent"
+
+# Squash-merge recovery on the SHIPPED binary. `restack`'s `git rebase --onto
+# <parent> <stackBase>` is what makes this work; a plain rebase would re-apply
+# feature-a's two now-squashed commits and conflict. This is the one path that
+# exercises stackBase end-to-end on the compiled artifact, so it lives here too
+# and not only in the CRuby snapshot. A fresh repo keeps it independent of the
+# shared fixture above; feature-a gets TWO commits so the squash matches neither
+# original patch-id (a single-commit squash would be dropped even by a plain
+# rebase, hiding the bug).
+section "sync recovers a branch whose parent was squash-merged and deleted"
+new_repo
+gsq create feature-a; commit a.txt a1
+commit a.txt a2
+gsq create feature-b; commit b.txt b1
+git_q checkout -q main
+git_q merge --squash feature-a
+git_q commit -qm squash-feature-a
+git_q branch -D feature-a
+git_q checkout -q feature-b
+run sync
+show "feature-b parent"          "config --get branch.feature-b.stackParent"
+show "feature-b behind main"     "rev-list --count feature-b..main"
+show "feature-b commits above main" "rev-list --count main..feature-b"
+if [ "$(git -C "$repo" config --get branch.feature-b.stackBase)" \
+   = "$(git -C "$repo" rev-parse main)" ]; then
+  printf 'feature-b stackBase == main tip: yes\n'
+else
+  printf 'feature-b stackBase == main tip: no\n'
+fi

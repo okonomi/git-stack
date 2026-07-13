@@ -79,7 +79,10 @@ EXAMPLE
     # ... amend feature-a ...
     git stack restack               # replay feature-b on the new feature-a
 
-Parent relationships are stored in git config (branch.<name>.stackParent).
+Stack metadata is stored in git config: branch.<name>.stackParent (the
+parent branch) and branch.<name>.stackBase (the commit the branch's own
+work begins at, so restack can `git rebase --onto <parent> <base>` and
+survive a parent that was squash-merged and deleted).
 [exit 0]
 
 ### an unknown flag is rejected
@@ -147,7 +150,7 @@ restacking stack rooted at feat-a
 restacking feat-b onto feat-a
 error: conflict while rebasing 'feat-b' onto 'feat-a'.
 Resolve it manually with:
-    git checkout feat-b && git rebase feat-a
+    git checkout feat-b && git rebase --onto feat-a 74bb18bafa0c345a53729c0ffced01a2dd511047
 then re-run 'git stack restack'.
 [exit 1]
 rebase in progress: 0
@@ -211,7 +214,7 @@ syncing stack rooted at feat-b
 restacking feat-b onto main
 error: conflict while rebasing 'feat-b' onto 'main'.
 Resolve it manually with:
-    git checkout feat-b && git rebase main
+    git checkout feat-b && git rebase --onto main 74bb18bafa0c345a53729c0ffced01a2dd511047
 then re-run 'git stack sync'.
 [exit 1]
 
@@ -224,3 +227,30 @@ $ git stack tree
   main (trunk)
   * feat-b (1 commit(s))
 [exit 0]
+
+### sync recovers a branch whose parent was squash-merged and deleted
+$ git stack sync
+syncing stack rooted at feature-b
+'feature-b': parent 'feature-a' no longer exists; reparenting onto trunk 'main'
+restacking feature-b onto main
+done.
+[exit 0]
+feature-b stackParent: main
+feature-b behind main: 0
+feature-b commits above main: 1
+feature-b contains a1: 0
+feature-b contains a2: 0
+feature-b contains b1: 1
+feature-b stackBase == main tip: yes
+
+### restack falls back to merge-base when stackBase is unrecorded
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains a2: 1
+feat-b contains b1: 1
+feat-b stackBase == feat-a tip (re-recorded): yes

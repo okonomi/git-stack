@@ -70,11 +70,22 @@ spin install                     # copies it to ~/.local/bin
 
 ## How it works
 
-The parent of each branch is stored in your repository's git config:
+Each branch records two things in your repository's git config: its parent, and
+the commit its parent sat at when the branch was stacked (its *base*):
 
 ```
 branch.<name>.stackParent = <parent-branch>
+branch.<name>.stackBase   = <sha>
 ```
+
+The base marks where the branch's own commits begin, so `restack` replays
+exactly those commits with `git rebase --onto <parent> <base>`. This is what
+lets a stack survive a parent that was **squash-merged** into trunk and then
+deleted: a plain `git rebase` would re-apply the parent's already-merged commits
+(after squashing, their patch-ids no longer match, so git can't drop them) and
+conflict, while `--onto` replays only the commits above the recorded base. If a
+branch has no recorded base (e.g. it predates this feature), `restack` falls
+back to the live merge-base of the branch and its parent.
 
 The bottom of every stack rests on a **trunk** (`main`/`master`), stored
 as `stack.trunk`. Because everything lives in git config, there is no extra

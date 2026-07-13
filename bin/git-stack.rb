@@ -3,10 +3,19 @@
 #
 # git-stack -- manage stacked branches with plain git.
 #
-# A "stack" is a chain of branches where each branch records a parent.
-# The parent relationship is stored in git config as:
+# A "stack" is a chain of branches where each branch records a parent and the
+# commit its parent sat at when the branch was stacked. Both are stored in git
+# config as:
 #
 #     branch.<name>.stackParent = <parent-branch>
+#     branch.<name>.stackBase   = <sha>
+#
+# stackBase pins where the branch's own commits begin, so `restack` replays
+# exactly those commits with `git rebase --onto <parent> <base>`. This matters
+# when a parent is squash-merged into trunk and deleted: a plain rebase would
+# re-apply the parent's already-merged commits (their patch-ids no longer match
+# after squashing, so git can't drop them) and conflict, whereas `--onto` skips
+# everything below the recorded base.
 #
 # The bottom of every stack rests on a trunk (main/master, and optionally
 # others like a git-flow `develop`). Trunks are stored as the multi-valued
@@ -304,6 +313,38 @@ end
 
 def clear_parent(branch)
   git_ok("config --unset branch.#{sh(branch)}.stackParent")
+end
+
+# The recorded stack base of `branch`: the SHA its parent sat at when the
+# branch was stacked. "" when none is recorded (a branch predating stackBase,
+# or one whose merge-base could not be determined at reparent time).
+def get_base(branch)
+  git_out("config --get branch.#{sh(branch)}.stackBase")
+end
+
+# Record `sha` as the stack base of `branch` -- the point its own commits
+# begin, replayed from by `git rebase --onto`. Return true on success.
+def set_base(branch, sha)
+  git_ok("config branch.#{sh(branch)}.stackBase #{sh(sha)}")
+end
+
+def clear_base(branch)
+  git_ok("config --unset branch.#{sh(branch)}.stackBase")
+end
+
+# Record the stack base when (re)parenting an EXISTING branch (`parent`/`track`).
+# Unlike `create`, the branch may already have diverged from its new parent, so
+# the base is the merge-base of `branch` and `parent`, not the parent's tip.
+# When they share no common ancestor (unrelated histories) leave stackBase unset
+# and warn -- `restack` then falls back to a fresh merge-base at replay time.
+def record_reparent_base(branch, parent)
+  base = git_out("merge-base #{sh(branch)} #{sh(parent)}")
+  if base.empty?
+    info "warning: no common ancestor of '#{branch}' and '#{parent}'; stack base not recorded"
+    return
+  end
+  set_base(branch, base)
+  nil
 end
 
 # One scan of git config listing every `branch.<name>.stackParent` entry.
@@ -868,6 +909,9 @@ def cmd_create(args)
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
+  # The base is the parent's tip: a freshly created branch has no commits of its
+  # own yet, so its stack begins exactly where the parent currently sits.
+  set_base(name, git_out("rev-parse #{sh(parent)}"))
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
@@ -905,6 +949,7 @@ def cmd_parent(args)
   end
   validate_new_parent!(branch, new_parent, trunk_branches, "setting it as parent")
   die("failed to set parent of '#{branch}'") unless set_parent(branch, new_parent)
+  record_reparent_base(branch, new_parent)
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
@@ -915,12 +960,14 @@ def cmd_track(args)
   parent = trunks[0] if parent.empty?
   validate_new_parent!(branch, parent, trunks, "tracking it")
   die("failed to track '#{branch}'") unless set_parent(branch, parent)
+  record_reparent_base(branch, parent)
   info "tracking '#{branch}' on top of '#{parent}'"
 end
 
 def cmd_untrack(_args)
   branch = current_branch
   clear_parent(branch)
+  clear_base(branch)
   info "'#{branch}' is no longer tracked in a stack"
 end
 
@@ -955,6 +1002,30 @@ def cmd_up(args)
     info "  #{PROG} up #{child}"
   end
   exit 1
+end
+
+# Resolve the base commit to feed `git rebase --onto <parent> <base> <branch>`
+# for one branch. The base is the commit the branch's own work begins at -- the
+# point below which commits belong to the parent and must NOT be replayed.
+#
+# Prefers the recorded stackBase, but only when it still names a real commit
+# that is an ancestor of `branch`: a base that was rewritten, or never an
+# ancestor, would replay the wrong range. Otherwise (empty, stale, or not an
+# ancestor) it falls back to the current merge-base of `branch` and `parent`.
+#
+# Returns "" only when even the merge-base is unavailable (unrelated histories,
+# or a vanished parent during orphan heal), signalling the caller to fall back
+# to a plain `git rebase <parent> <branch>` for backward compatibility.
+def resolve_stack_base(branch, parent)
+  base = get_base(branch)
+  if !base.empty? &&
+     git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
+     git_ok("merge-base --is-ancestor #{sh(base)} #{sh(branch)}")
+    return base
+  end
+  return "" if parent.empty?
+
+  git_out("merge-base #{sh(branch)} #{sh(parent)}")
 end
 
 # Rebase the whole stack rooted at `root` onto itself, each branch onto its
@@ -997,16 +1068,38 @@ def restack_subtree(root, trunk, heal_orphans, ctx)
 
     if !parent.empty? && ctx.branch?(parent)
       behind = commit_count(branch, parent)
-      if behind > 0
+      if behind == 0
+        # Already on the parent's tip: nothing to replay. Self-heal the recorded
+        # base to the parent's tip so a later parent advance replays from the
+        # right point (this also back-fills branches that predate stackBase).
+        set_base(branch, git_out("rev-parse #{sh(parent)}"))
+      else
         info "restacking #{cyan(branch)} onto #{cyan(parent)}"
-        unless git_ok("rebase #{sh(parent)} #{sh(branch)}")
+        # Replay only the branch's own commits (those above `base`) onto the
+        # parent's tip. A plain `git rebase <parent>` would instead replay every
+        # commit in `parent..branch`, re-applying a squash-merged parent's work
+        # and conflicting; `--onto` with the recorded base avoids that.
+        base = resolve_stack_base(branch, parent)
+        if base.empty?
+          # No usable base and no merge-base to derive one from: fall back to a
+          # plain rebase (backward compat for branches with no recorded base).
+          info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
+          ok = git_ok("rebase #{sh(parent)} #{sh(branch)}")
+        else
+          ok = git_ok("rebase --onto #{sh(parent)} #{sh(base)} #{sh(branch)}")
+        end
+        unless ok
           git_ok("rebase --abort")
           verb = heal_orphans ? "sync" : "restack"
+          recover = base.empty? ? "git rebase #{parent}" : "git rebase --onto #{parent} #{base}"
           die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
               "Resolve it manually with:\n" \
-              "    git checkout #{branch} && git rebase #{parent}\n" \
+              "    git checkout #{branch} && #{recover}\n" \
               "then re-run '#{PROG} #{verb}'.")
         end
+        # Rebase succeeded: the branch now sits on the parent's tip, so that
+        # becomes its new base.
+        set_base(branch, git_out("rev-parse #{sh(parent)}"))
       end
     end
   end
@@ -1088,7 +1181,10 @@ def cmd_help(_args)
         # ... amend feature-a ...
         #{PROG} restack               # replay feature-b on the new feature-a
 
-    Parent relationships are stored in git config (branch.<name>.stackParent).
+    Stack metadata is stored in git config: branch.<name>.stackParent (the
+    parent branch) and branch.<name>.stackBase (the commit the branch's own
+    work begins at, so restack can `git rebase --onto <parent> <base>` and
+    survive a parent that was squash-merged and deleted).
   HELP
 end
 

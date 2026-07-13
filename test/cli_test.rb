@@ -34,6 +34,16 @@
 # git-stack.
 $root = `pwd`.strip
 
+# Pin author/committer dates so every fixture commit hashes reproducibly. The
+# conflict-recovery message now prints a base SHA (`git rebase --onto <parent>
+# <base>`), and the snapshot must match byte-for-byte across runs -- and between
+# the CRuby oracle here and the Spinel build under `spin test`. Every git
+# commit below runs through `system`, which inherits this process's environment,
+# so setting it once fixes them all. (Spinel supports ENV assignment and
+# propagates it to the subshell, same as CRuby.)
+ENV["GIT_AUTHOR_DATE"] = "2001-02-03T04:05:06 +0000"
+ENV["GIT_COMMITTER_DATE"] = "2001-02-03T04:05:06 +0000"
+
 $gs = ENV["GIT_STACK"]
 $gs = "ruby #{$root}/bin/git-stack.rb" if $gs.nil? || $gs == ""
 # Disable colour so the transcript is stable regardless of the terminal.
@@ -302,3 +312,49 @@ setup("git checkout -q feat-b")
 run("tree")
 gsq("sync")
 run("tree")
+
+# The reason `restack` uses `git rebase --onto <parent> <stackBase>` instead of a
+# plain `git rebase <parent>`: when a parent is squash-merged into trunk and
+# deleted, its several commits become ONE new commit whose patch-id matches none
+# of the originals, so a plain rebase re-applies them and conflicts. feature-a
+# has TWO commits here on purpose -- a single-commit squash would share a1's
+# patch-id and be dropped even by a plain rebase, hiding the bug.
+section "sync recovers a branch whose parent was squash-merged and deleted"
+new_repo
+gsq("create feature-a"); commit("a.txt", "a1")
+commit("a.txt", "a2") # second commit on feature-a, so the squash differs from any one commit
+gsq("create feature-b"); commit("b.txt", "b1")
+# squash-merge feature-a into main and delete it (as a squash-merge PR would):
+# main gains one combined commit, and feature-a's own commits are gone from any ref.
+setup("git checkout -q main")
+setup("git merge --squash feature-a >/dev/null 2>&1 && git commit -qm squash-feature-a")
+setup("git branch -D feature-a")
+setup("git checkout -q feature-b")
+run("sync")
+show("feature-b stackParent", "git config --get branch.feature-b.stackParent")
+show("feature-b behind main", "git rev-list --count feature-b..main")
+show("feature-b commits above main", "git rev-list --count main..feature-b")
+puts "feature-b contains a1: #{`cd #{$repo} && git log --oneline feature-b | grep -c ' a1$' || true`.strip}"
+puts "feature-b contains a2: #{`cd #{$repo} && git log --oneline feature-b | grep -c ' a2$' || true`.strip}"
+puts "feature-b contains b1: #{`cd #{$repo} && git log --oneline feature-b | grep -c ' b1$' || true`.strip}"
+show("feature-b stackBase == main tip",
+     'test "$(git config --get branch.feature-b.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
+
+# A branch that predates stackBase (its config has stackParent but no stackBase)
+# must still restack correctly: `restack` falls back to the live merge-base of
+# the branch and its parent, then re-records the base.
+section "restack falls back to merge-base when stackBase is unrecorded"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git config --unset branch.feat-b.stackBase") # simulate a pre-stackBase branch
+# advance feat-a so feat-b falls behind and a real restack happens
+setup("git checkout -q feat-a"); commit("a2.txt", "a2")
+setup("git checkout -q feat-b")
+run("restack")
+show("feat-b behind feat-a", "git rev-list --count feat-b..feat-a")
+show("feat-b commits above feat-a", "git rev-list --count feat-a..feat-b")
+puts "feat-b contains a2: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' a2$' || true`.strip}"
+puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
+show("feat-b stackBase == feat-a tip (re-recorded)",
+     'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse feat-a)" && echo yes || echo no')
