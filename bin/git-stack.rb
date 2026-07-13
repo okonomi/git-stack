@@ -383,11 +383,31 @@ def children_of(parent)
   StackContext.build_topology.children_of(parent)
 end
 
-# The parent used for display and navigation: the recorded parent, or the
-# trunk when none is recorded.
-def effective_parent(branch, trunk)
-  parent = get_parent(branch)
+# The single home of the "a branch with no recorded parent rests on the trunk"
+# rule. Every path that resolves an effective parent funnels through here: the
+# single-command `parent`/`down` (`effective_parent`, one `git` subprocess) and
+# the in-memory tree/count traversal (`StackContext#effective_parent_of`, off the
+# pre-captured config snapshot). Keeping it in one place is the whole point --
+# display, counts, and navigation can no longer drift on what a branch's parent
+# effectively is (the rule used to sit, copied, in three separate spots).
+#
+# Threading one rule through both the subprocess wrappers and the StackContext
+# methods unifies their branch-name parameters with its result, which pulls the
+# `git`-wrapper family (`sh`, `checkout!`, `branch_exists?`, `ahead_behind`) and
+# `StackContext#branch?` onto Spinel's untyped slow path. Those five signatures
+# are pinned back to concrete types by the hand-written seed in rbs/ (fed to the
+# compiler via `--rbs`, which `spin` and the CI golden check pass) -- so the
+# binary stays on the fast path and the emitted golden gains no new untyped. See
+# rbs/git-stack.rbs.
+def effective_parent_rule(parent, trunk)
   parent.empty? ? trunk : parent
+end
+
+# The parent used for display and navigation, resolved with one `git` subprocess:
+# the recorded parent, or the trunk when none is recorded. The single-command
+# path for `parent`/`down`.
+def effective_parent(branch, trunk)
+  effective_parent_rule(get_parent(branch), trunk)
 end
 
 # Walk down from `branch` to the root of its stack (the branch whose parent is
@@ -461,75 +481,6 @@ end
 # 12 keeps a batch comfortably small (~2 KB worst case) while still turning one
 # git call into a dozen branches' worth of counts.
 AHEAD_BEHIND_CHUNK = 12
-
-# Precompute [behind, ahead] for every branch against its effective parent in a
-# HANDFUL of batched `git for-each-ref` calls, instead of one `git rev-list` per
-# tree node (an O(N) subprocess blow-up -- the dominant cost of a large tree,
-# since every other lookup was already collapsed into a single `git` call).
-#
-# `git for-each-ref`'s `%(ahead-behind:<base>)` atom reports "<ahead> <behind>"
-# for every listed ref against <base> in one graph walk. Each branch rests on
-# its own parent, so we process branches in chunks of AHEAD_BEHIND_CHUNK: one
-# call per chunk, listing that chunk's refs with one atom per distinct parent in
-# it, then reading back each branch's own parent column. That is ~N/12 git calls
-# instead of N -- and, crucially, bounds each call's output so it never trips the
-# ~4 KB backtick cap that a single all-branches-by-all-parents call (O(N^2)
-# output) would blow past on a stack of more than a couple dozen branches.
-#
-# Returns one `"<branch>\t<behind>\t<ahead>"` line per branch, parsed back by
-# `ahead_behind_index` into the StackContext's `@ab` and read via
-# `StackContext#ahead_behind_of`. Tabs are safe separators: git refnames cannot
-# contain control characters, and the atom's own output is just two
-# space-separated numbers.
-#
-# The atom requires git 2.41+. On older git `for-each-ref` fails, a chunk yields
-# nothing, and `print_tree_row` falls back to the per-node `ahead_behind` for its
-# branches -- so the tree still renders correctly (just without the batching
-# win). A branch whose name breaks the atom's `)`-terminated argument fails the
-# same closed way, only for its own chunk.
-def scan_ahead_behind(scan, branches, trunk)
-  # "<branch>\t<parent>" lines for branches whose effective parent exists as a
-  # branch. Held as one string and processed with the same string-slicing idiom
-  # as `scan` itself -- deliberately NOT as an Array[String], whose element
-  # reads Spinel widens to untyped (and that widening bleeds into the emitted
-  # Set signatures; see test/git-stack.rbs.expected).
-  pairs = ""
-  scan.split("\n").each do |line|
-    next if line.empty?
-
-    space = line.index(" ")
-    next if space.nil?
-
-    key = line[0...space]
-    value = line[(space + 1)..-1]
-    parent = value.empty? ? trunk : value
-    next if parent.empty? || !branches.include?(parent)
-
-    name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
-    next unless branches.include?(name)
-
-    pairs = "#{pairs}#{name}\t#{parent}\n"
-  end
-
-  # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
-  # call's captured output stays well under Spinel's ~4 KB backtick cap.
-  result = ""
-  count = 0
-  group = ""
-  pairs.split("\n").each do |pl|
-    next if pl.empty?
-
-    group = "#{group}#{pl}\n"
-    count += 1
-    if count == AHEAD_BEHIND_CHUNK
-      result = "#{result}#{ahead_behind_chunk(group)}"
-      group = ""
-      count = 0
-    end
-  end
-  result = "#{result}#{ahead_behind_chunk(group)}" unless group.empty?
-  result
-end
 
 # One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
 # "<branch>\t<parent>" lines. Runs a single `git for-each-ref` listing those
@@ -646,11 +597,17 @@ end
 # restack / sync recursions in place of the loose `index` / `branches` /
 # `ab_index` triple those used to pass around by hand.
 #
-# It bundles the four pieces of git state a traversal reads repeatedly:
+# It bundles the git state a traversal reads repeatedly:
 #
 #   @parents   branch -> recorded parent          (from the config scan)
 #   @branches  the set of existing local branches  (existing_branches)
 #   @ab        branch -> "<behind>\t<ahead>"       (ahead_behind_index)
+#   @trunk     the primary trunk a parentless branch falls back to (`build`'s arg)
+#
+# `@trunk` is what lets the in-memory traversal resolve a parentless branch to
+# the trunk through the shared `effective_parent_rule`, the same rule the
+# single-command `parent`/`down` path uses -- so the tree's display, its
+# ahead/behind counts, and navigation never disagree on a branch's parent.
 #
 # The child relationship (branch -> its child branches) is NOT a field: it is
 # purely `@parents` inverted, and holding it as a field forced an array-valued
@@ -674,17 +631,19 @@ class StackContext
     @parents = {}
     @branches = Set.new
     @ab = {}
-    # Explicit nil: without it the trailing `@ab = {}` assignment would be the
+    @trunk = ""
+    # Explicit nil: without it the trailing `@trunk = ""` assignment would be the
     # initializer's value and Spinel widens it to the untyped slow path.
     nil
   end
 
-  # Full snapshot including ahead/behind counts, for `tree`.
+  # Full snapshot including ahead/behind counts, for `tree`. The `scan` is parsed
+  # exactly once (into `@parents`); the ahead/behind walk then builds its branch
+  # pairs from `@parents`, not by re-parsing the raw config a second time.
   def self.build(trunk)
     ctx = new
-    scan = scan_stack_config
-    ctx.load(scan)
-    ctx.load_ahead_behind(scan, trunk)
+    ctx.load(scan_stack_config)
+    ctx.load_ahead_behind(trunk)
     ctx
   end
 
@@ -716,10 +675,13 @@ class StackContext
     nil
   end
 
-  # Populate the ahead/behind index from a batched `git for-each-ref` walk
-  # (see scan_ahead_behind). Reuses the `scan` already captured by `build`.
-  def load_ahead_behind(scan, trunk)
-    @ab = ahead_behind_index(scan_ahead_behind(scan, @branches, trunk))
+  # Record the fallback trunk and populate the ahead/behind index from a batched
+  # `git for-each-ref` walk (see `scan_ahead_behind`). `@trunk` is set first
+  # because `scan_ahead_behind` reads it (through `effective_parent_of`) to know
+  # where a parentless branch rests.
+  def load_ahead_behind(trunk)
+    @trunk = trunk
+    @ab = ahead_behind_index(scan_ahead_behind)
     nil
   end
 
@@ -727,6 +689,82 @@ class StackContext
   def parent_of(branch)
     parent = @parents[branch]
     parent.nil? ? "" : parent
+  end
+
+  # The effective parent of `branch` for display, navigation, and counts: its
+  # recorded parent, or `@trunk` when none is recorded. The in-memory entry point
+  # to the shared `effective_parent_rule` -- `print_tree_row` and
+  # `scan_ahead_behind` both resolve through here, so the tree's display and its
+  # counts read a branch's parent the exact same way the single-command path does
+  # (see `effective_parent_rule` for the seed that keeps this off the slow path).
+  def effective_parent_of(branch)
+    effective_parent_rule(parent_of(branch), @trunk)
+  end
+
+  # Precompute [behind, ahead] for every branch against its effective parent in a
+  # HANDFUL of batched `git for-each-ref` calls, instead of one `git rev-list` per
+  # tree node (an O(N) subprocess blow-up -- the dominant cost of a large tree,
+  # since every other lookup was already collapsed into a single `git` call).
+  #
+  # It reads the `@parents` snapshot `load` already built rather than re-parsing
+  # the raw config scan a second time: one `"<branch>\t<parent>"` line per branch
+  # whose effective parent exists as a branch, each resolved through the same
+  # `effective_parent_of` the per-node tree render uses, so the counts computed
+  # here and the parent shown there can never disagree.
+  #
+  # `git for-each-ref`'s `%(ahead-behind:<base>)` atom reports "<ahead> <behind>"
+  # for every listed ref against <base> in one graph walk. Each branch rests on
+  # its own parent, so we process branches in chunks of AHEAD_BEHIND_CHUNK: one
+  # call per chunk, listing that chunk's refs with one atom per distinct parent in
+  # it, then reading back each branch's own parent column. That is ~N/12 git calls
+  # instead of N -- and, crucially, bounds each call's output so it never trips the
+  # ~4 KB backtick cap that a single all-branches-by-all-parents call (O(N^2)
+  # output) would blow past on a stack of more than a couple dozen branches.
+  #
+  # Returns one `"<branch>\t<behind>\t<ahead>"` line per branch, parsed back by
+  # `ahead_behind_index` into `@ab` and read via `ahead_behind_of`. Tabs are safe
+  # separators: git refnames cannot contain control characters, and the atom's own
+  # output is just two space-separated numbers.
+  #
+  # The atom requires git 2.41+. On older git `for-each-ref` fails, a chunk yields
+  # nothing, and `print_tree_row` falls back to the per-node `ahead_behind` for its
+  # branches -- so the tree still renders correctly (just without the batching
+  # win). A branch whose name breaks the atom's `)`-terminated argument fails the
+  # same closed way, only for its own chunk.
+  def scan_ahead_behind
+    # "<branch>\t<parent>" lines for branches whose effective parent exists as a
+    # branch. Held as one string and processed with the same string-slicing idiom
+    # as the config scan itself -- deliberately NOT as an Array[String], whose
+    # element reads Spinel widens to untyped (and that widening bleeds into the
+    # emitted Set signatures; see test/git-stack.rbs.expected).
+    pairs = ""
+    @parents.each do |name, value|
+      next unless @branches.include?(name)
+
+      parent = effective_parent_of(name)
+      next if parent.empty? || !@branches.include?(parent)
+
+      pairs = "#{pairs}#{name}\t#{parent}\n"
+    end
+
+    # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
+    # call's captured output stays well under Spinel's ~4 KB backtick cap.
+    result = ""
+    count = 0
+    group = ""
+    pairs.split("\n").each do |pl|
+      next if pl.empty?
+
+      group = "#{group}#{pl}\n"
+      count += 1
+      if count == AHEAD_BEHIND_CHUNK
+        result = "#{result}#{ahead_behind_chunk(group)}"
+        group = ""
+        count = 0
+      end
+    end
+    result = "#{result}#{ahead_behind_chunk(group)}" unless group.empty?
+    result
   end
 
   # `@parents` inverted: a `parent -> "<child>\n<child>\n..."` index built on
@@ -835,11 +873,13 @@ end
 # One node of the traversal, no recursion of its own: `cmd_tree` drives the
 # order with `ctx.order` and calls this per line. `ctx` is the pre-built
 # StackContext, so every parent / branch-existence / ahead-behind lookup is in
-# memory and rendering the whole tree costs no `git` per node.
-def print_tree_row(branch, depth, cur, trunk, ctx)
+# memory and rendering the whole tree costs no `git` per node. The fallback
+# trunk lives in `ctx`, so the effective parent is resolved through
+# `effective_parent_of` (the same rule the counts were computed against) rather
+# than a trunk threaded in alongside.
+def print_tree_row(branch, depth, cur, ctx)
   extra = ""
-  parent = ctx.parent_of(branch)
-  parent = trunk if parent.empty?
+  parent = ctx.effective_parent_of(branch)
   if !parent.empty? && ctx.branch?(parent)
     # Counts come from the single batched `git for-each-ref` (see
     # scan_ahead_behind), looked up in memory. The sentinel guards the git-too-
@@ -865,7 +905,7 @@ end
 # `tree` calls this once per trunk (base 0, and skipping the depth-0 root, which
 # it prints itself with the trunk styling) and once per orphan root (base 1, so
 # an orphaned stack renders at the same indent a trunk's children would).
-def print_order(root, base, skip_root, cur, trunk, ctx)
+def print_order(root, base, skip_root, cur, ctx)
   ctx.order(root).split("\n").each do |line|
     next if line.empty?
 
@@ -876,7 +916,7 @@ def print_order(root, base, skip_root, cur, trunk, ctx)
     branch = line[(tab + 1)..-1]
     next if skip_root && depth == 0
 
-    print_tree_row(branch, depth + base, cur, trunk, ctx)
+    print_tree_row(branch, depth + base, cur, ctx)
   end
   nil
 end
@@ -930,13 +970,13 @@ def cmd_tree(_args)
   # the trunk row is printed with its own (cyan, "(trunk)") styling.
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
-    print_order(trunk, 0, true, cur, primary, ctx)
+    print_order(trunk, 0, true, cur, ctx)
   end
 
   # Orphaned stacks render as extra roots, indented one level (base 1) so they
   # line up with the stack roots that rest on a trunk.
   ctx.orphan_roots.each do |root|
-    print_order(root, 1, false, cur, primary, ctx)
+    print_order(root, 1, false, cur, ctx)
   end
 end
 

@@ -1,0 +1,23 @@
+# Hand-written type seed fed to Spinel via `--rbs` (see spin build and the CI
+# golden check). Unlike test/git-stack.rbs.expected -- which is the *emitted*
+# golden and must never live under rbs/, or it would seed itself -- this file is
+# an input: signatures we assert so the analyzer keeps these methods on the
+# concrete fast path.
+#
+# The single shared `effective_parent_rule` (bin/git-stack.rb) threads one
+# parent-resolution rule through both the subprocess wrappers and the
+# StackContext traversal. That unifies these methods' branch-name parameters
+# with the rule's result and, left to inference alone, widens them to Spinel's
+# untyped slow path. Each takes a branch (or parent) name -- always a String --
+# so pinning them here is a faithful assertion, not a fib to the compiler; it
+# keeps the compiled binary unboxed and the emitted golden free of new untyped.
+class Object
+  def sh: (String) -> String
+  def checkout!: (String) -> nil
+  def branch_exists?: (String) -> bool
+  def ahead_behind: (String, String) -> Array[Integer]
+end
+
+class StackContext
+  def branch?: (String) -> bool
+end
