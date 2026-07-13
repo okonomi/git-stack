@@ -42,11 +42,10 @@ class Object
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
-  def scan_ahead_behind: (String, Set, String) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
-  def print_tree_row: (String, Integer, String, String, StackContext) -> nil
-  def print_order: (String, Integer, bool, String, String, StackContext) -> nil
+  def print_tree_row: (String, Integer, String, StackContext) -> nil
+  def print_order: (String, Integer, bool, String, StackContext) -> nil
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
@@ -134,10 +133,13 @@ class StackContext
   @parents: Hash[String, String]
   @branches: Set
   @ab: Hash[String, String]
+  @trunk: String
   def initialize: () -> nil
   def load: (String) -> nil
-  def load_ahead_behind: (String, String) -> nil
+  def load_ahead_behind: (String) -> nil
   def parent_of: (String) -> String
+  def effective_parent_of: (String) -> String
+  def scan_ahead_behind: () -> String
   def child_index: () -> Hash[String, String]
   def children_of: (String) -> Array[String]
   def order: (String) -> String
