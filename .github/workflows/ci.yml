@@ -24,8 +24,9 @@ jobs:
       - name: Diff transcript against snapshot
         run: ruby test/cli_test.rb | diff -u test/cli_test.rb.expected -
 
-  # Full check: compile the CLI and the test with Spinel and run `spin test`,
-  # exercising the actual native binary that ships. Spinel is built from
+  # Full check: compile the CLI and the test with Spinel, run `spin test`, then
+  # build the native binary and exercise it directly over a fixture repo so the
+  # actual shipped artifact is validated at run time. Spinel is built from
   # source (it is not packaged), mirroring the SessionStart hook.
   spinel:
     name: Compiled test (Spinel)
@@ -71,6 +72,25 @@ jobs:
           export PATH="$SPINEL_PREFIX/bin:$PATH"
           spin --version
           spin test
+
+      # Runtime check on the *shipped* artifact. `spin test`'s harness shells
+      # out to `ruby bin/git-stack.rb`, and the cruby job runs the script under
+      # CRuby -- so neither ever executes the compiled binary. A method the
+      # Spinel runtime does not support (e.g. Array#sort) compiles clean and
+      # passes both snapshots, then dies with NoMethodError only on the real
+      # binary. Build it and drive it over a fixture repo (trunk / nesting /
+      # multiple siblings / an orphan), diffing the transcript against the
+      # committed snapshot. Regenerate after an intentional change with:
+      #
+      #   spin build && test/binary_test.sh > test/binary_test.sh.expected
+      #
+      # `tree` runs against the multi-sibling stack on purpose: sibling
+      # ordering is the only path that reaches sorted_names, where an
+      # unsupported runtime method would otherwise slip through unseen.
+      - name: Run compiled binary against fixture
+        run: |
+          spin build
+          test/binary_test.sh | diff -u test/binary_test.sh.expected -
 
       # Golden-file check on Spinel's inferred types: the snapshot is the
       # committed output of `spinel --emit-rbs bin/git-stack.rb`. A diff here

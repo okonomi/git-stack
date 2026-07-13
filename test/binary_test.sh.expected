@@ -1,0 +1,57 @@
+
+### tree renders siblings, nesting, and the orphan
+$ git stack tree
+* main (trunk)
+    feat-a (needs restack: 1 behind)
+      feat-b (1 commit(s))
+        feat-b1 (1 commit(s))
+      feat-c (1 commit(s))
+    feat-x-child (parent 'feat-x' missing; run `git stack sync`)
+[exit 0]
+
+### parent reports the recorded parent
+$ git stack parent
+feat-a
+[exit 0]
+
+### restack replays the sibling subtrees onto an advanced parent
+$ git stack tree
+  main (trunk)
+    feat-a (needs restack: 1 behind)
+    * feat-b (needs restack: 1 behind)
+        feat-b1 (1 commit(s))
+      feat-c (needs restack: 1 behind)
+    feat-x-child (parent 'feat-x' missing; run `git stack sync`)
+[exit 0]
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-a onto main
+restacking feat-b onto feat-a
+restacking feat-b1 onto feat-b
+restacking feat-c onto feat-a
+done.
+[exit 0]
+$ git stack tree
+  main (trunk)
+    feat-a (2 commit(s))
+    * feat-b (1 commit(s))
+        feat-b1 (1 commit(s))
+      feat-c (1 commit(s))
+    feat-x-child (parent 'feat-x' missing; run `git stack sync`)
+[exit 0]
+
+### sync heals the orphan onto the trunk
+$ git stack sync
+syncing stack rooted at feat-x-child
+'feat-x-child': parent 'feat-x' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+$ git stack tree
+  main (trunk)
+    feat-a (2 commit(s))
+      feat-b (1 commit(s))
+        feat-b1 (1 commit(s))
+      feat-c (1 commit(s))
+  * feat-x-child (1 commit(s))
+[exit 0]
+feat-x-child parent: main
