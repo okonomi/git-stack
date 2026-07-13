@@ -85,8 +85,9 @@ jobs:
       #   spin build && test/binary_test.sh > test/binary_test.sh.expected
       #
       # `tree` runs against the multi-sibling stack on purpose: sibling
-      # ordering is the only path that reaches sorted_names, where an
-      # unsupported runtime method would otherwise slip through unseen.
+      # ordering is the only path that reaches the `.sort` calls in
+      # StackContext#children_of / #walk_order, where an unsupported runtime
+      # method would otherwise slip through unseen.
       - name: Run compiled binary against fixture
         run: |
           spin build
