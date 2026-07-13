@@ -29,6 +29,10 @@ class Object
   def get_parent: (String) -> String
   def set_parent: (String, String) -> bool
   def clear_parent: (String) -> bool
+  def get_base: (String) -> String
+  def set_base: (String, String) -> bool
+  def clear_base: (String) -> bool
+  def record_reparent_base: (String, String) -> nil
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String) -> Array[String]
@@ -52,6 +56,7 @@ class Object
   def cmd_untrack: (Array[String]) -> nil
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
+  def resolve_stack_base: (String, String) -> String
   def restack_subtree: (String, String, bool, StackContext) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
