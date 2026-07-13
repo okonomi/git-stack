@@ -36,6 +36,7 @@ class Object
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String) -> Array[String]
+  def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, String) -> String
   def stack_root: (String, Array[String]) -> String
   def would_cycle?: (String, String, Array[String]) -> bool

@@ -383,18 +383,31 @@ def children_of(parent)
   StackContext.build_topology.children_of(parent)
 end
 
-# The parent used for display and navigation, resolved with one `git` subprocess:
-# the recorded parent, or the trunk when none is recorded. This is the
-# single-command path (`parent`/`down`); the tree/restack recursions apply the
-# same "empty means trunk" rule in memory, off their config snapshot, through
-# `StackContext#effective_parent_of` -- where the two sites that used to disagree
-# (the tree's display and its counts) now both resolve. The two live apart on
-# purpose: one shells out per call, the other reads a pre-captured snapshot, and
-# tying them into one method drags the whole `git`-wrapper family (`sh`,
-# `checkout!`, `branch_exists?`) onto Spinel's untyped slow path.
-def effective_parent(branch, trunk)
-  parent = get_parent(branch)
+# The single home of the "a branch with no recorded parent rests on the trunk"
+# rule. Every path that resolves an effective parent funnels through here: the
+# single-command `parent`/`down` (`effective_parent`, one `git` subprocess) and
+# the in-memory tree/count traversal (`StackContext#effective_parent_of`, off the
+# pre-captured config snapshot). Keeping it in one place is the whole point --
+# display, counts, and navigation can no longer drift on what a branch's parent
+# effectively is (the rule used to sit, copied, in three separate spots).
+#
+# Threading one rule through both the subprocess wrappers and the StackContext
+# methods unifies their branch-name parameters with its result, which pulls the
+# `git`-wrapper family (`sh`, `checkout!`, `branch_exists?`, `ahead_behind`) and
+# `StackContext#branch?` onto Spinel's untyped slow path. Those five signatures
+# are pinned back to concrete types by the hand-written seed in rbs/ (fed to the
+# compiler via `--rbs`, which `spin` and the CI golden check pass) -- so the
+# binary stays on the fast path and the emitted golden gains no new untyped. See
+# rbs/git-stack.rbs.
+def effective_parent_rule(parent, trunk)
   parent.empty? ? trunk : parent
+end
+
+# The parent used for display and navigation, resolved with one `git` subprocess:
+# the recorded parent, or the trunk when none is recorded. The single-command
+# path for `parent`/`down`.
+def effective_parent(branch, trunk)
+  effective_parent_rule(get_parent(branch), trunk)
 end
 
 # Walk down from `branch` to the root of its stack (the branch whose parent is
@@ -591,10 +604,10 @@ end
 #   @ab        branch -> "<behind>\t<ahead>"       (ahead_behind_index)
 #   @trunk     the primary trunk a parentless branch falls back to (`build`'s arg)
 #
-# `@trunk` lets a single `effective_parent_of` own the "no recorded parent means
-# the trunk" rule for the whole in-memory traversal, so the tree's display and
-# its ahead/behind counts resolve a branch's parent the exact same way (the
-# single-command `parent`/`down` path keeps its own copy in `effective_parent`).
+# `@trunk` is what lets the in-memory traversal resolve a parentless branch to
+# the trunk through the shared `effective_parent_rule`, the same rule the
+# single-command `parent`/`down` path uses -- so the tree's display, its
+# ahead/behind counts, and navigation never disagree on a branch's parent.
 #
 # The child relationship (branch -> its child branches) is NOT a field: it is
 # purely `@parents` inverted, and holding it as a field forced an array-valued
@@ -679,22 +692,13 @@ class StackContext
   end
 
   # The effective parent of `branch` for display, navigation, and counts: its
-  # recorded parent, or `@trunk` when none is recorded. The one in-memory home of
-  # the "empty parent means trunk" rule -- `print_tree_row` and `scan_ahead_behind`
-  # both resolve through here, so the tree's display and its counts can no longer
-  # disagree on a branch's parent (they each carried their own copy of the rule
-  # before). The single-command path keeps its own copy in `effective_parent`;
-  # see there for why the two aren't merged.
-  #
-  # The `.to_s` (identity for the String this always returns) keeps this method's
-  # return type from tying a constraint cycle: the result flows into
-  # `print_tree_row`'s `parent` -- and on into `branch?` and `ahead_behind` --
-  # while `scan_ahead_behind` is a second caller, and without the pin that pair of
-  # uses widens the whole family onto the untyped slow path (the same idiom, and
-  # same failure mode, as `paint`/`trunk_branches`).
+  # recorded parent, or `@trunk` when none is recorded. The in-memory entry point
+  # to the shared `effective_parent_rule` -- `print_tree_row` and
+  # `scan_ahead_behind` both resolve through here, so the tree's display and its
+  # counts read a branch's parent the exact same way the single-command path does
+  # (see `effective_parent_rule` for the seed that keeps this off the slow path).
   def effective_parent_of(branch)
-    parent = parent_of(branch)
-    (parent.empty? ? @trunk : parent).to_s
+    effective_parent_rule(parent_of(branch), @trunk)
   end
 
   # Precompute [behind, ahead] for every branch against its effective parent in a
