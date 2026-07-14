@@ -73,6 +73,36 @@ jobs:
           spin --version
           spin test
 
+      # Type-health gate. `spinel-doctor` statically flags the exact class of
+      # bug the fixture binary run and the golden RBS file were bolted on to
+      # defend against: a method the Spinel runtime can't service on an
+      # `untyped`/`unknown` receiver (Array#sort and its poly-array siblings --
+      # uniq/select/reject/compact/flatten/take/zip/index/reduce/sort_by), which
+      # compiles clean and passes `spin test` yet dies with NoMethodError only on
+      # the shipped binary. doctor's `unresolved` leg reports those from a compile
+      # pass, so it fires without a fixture having to happen to walk the hazardous
+      # path. It exits non-zero on any error-severity finding (unresolved /
+      # unsupported / build / behavior); `inference` widenings are info-only and
+      # do NOT fail the step, so a merely-intended type shift stays silent here --
+      # catching a *regression* to `untyped` remains the golden RBS check's job
+      # below, which is why both still run. Point it at the CLI and the test:
+      # `spin test` compiles the test with Spinel too, so it can carry the same
+      # hazard.
+      #
+      # `spinel-doctor` is installed beside `spin` by `make install` at the
+      # pinned SPINEL_REF (its Makefile installs TOOL_NAMES = doctor reduce
+      # flatten), so it is already on PATH under $SPINEL_PREFIX/bin -- no extra
+      # copy step needed. The guard turns a future ref that drops it into a loud
+      # failure instead of a silently-skipped "command not found".
+      - name: Type-health check (spinel-doctor)
+        run: |
+          command -v spinel-doctor >/dev/null || {
+            echo "spinel-doctor not on PATH: the pinned Spinel build no longer ships it (see SPINEL_REF)" >&2
+            exit 1
+          }
+          spinel-doctor bin/git-stack.rb
+          spinel-doctor test/cli_test.rb
+
       # Runtime check on the *shipped* artifact. `spin test`'s harness shells
       # out to `ruby bin/git-stack.rb`, and the cruby job runs the script under
       # CRuby -- so neither ever executes the compiled binary. A method the
@@ -100,6 +130,14 @@ jobs:
       # diff here means a source change shifted inference -- an `untyped (slow
       # path)` line appearing is a type regression; anything else means refresh
       # the snapshot with:
+      #
+      # Kept even though spinel-doctor now runs above: doctor lists the same
+      # widenings but only at *info* severity (it never fails on them), so a
+      # regression to `untyped` that doctor's error legs don't independently flag
+      # -- e.g. a poly array Spinel resolves without an `unresolved` warning --
+      # would slip past doctor and is caught only by this golden diff. The two
+      # are complementary; revisit retiring this file only if doctor grows an
+      # error-severity signal for untyped widening.
       #
       #   spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=test/git-stack.rbs.expected
       #
