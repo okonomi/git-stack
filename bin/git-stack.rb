@@ -482,18 +482,33 @@ end
 # git call into a dozen branches' worth of counts.
 AHEAD_BEHIND_CHUNK = 12
 
-# One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
-# "<branch>\t<parent>" lines. Runs a single `git for-each-ref` listing those
-# branches, with one `%(ahead-behind:<parent>)` atom per distinct parent in the
-# group, then reads back each branch's own parent column. Returns
-# "<branch>\t<behind>\t<ahead>" lines (empty on git older than 2.41, where the
-# atom is unknown and the call fails -- print_tree_row then falls back per node).
-#
-# Everything here is string slicing plus `.each` block variables and counters;
-# there is intentionally no Array[String] indexing (see scan_ahead_behind).
-def ahead_behind_chunk(group)
-  # Distinct parents (atom columns, newline-joined) and the batch's ref list.
+# The distinct parents in `group` (up to AHEAD_BEHIND_CHUNK "<branch>\t<parent>"
+# lines), newline-joined -- one entry per `%(ahead-behind:<parent>)` atom column
+# the batch's for-each-ref will emit. Kept newline-PACKED as a String, scanned
+# with `.each` block variables and never indexed as an Array[String] (whose
+# element reads Spinel widens to untyped; see scan_ahead_behind).
+def ahead_behind_bases(group)
   bases = ""
+  group.split("\n").each do |pl|
+    next if pl.empty?
+
+    tab = pl.index("\t")
+    next if tab.nil?
+
+    parent = pl[(tab + 1)..-1]
+    known = false
+    bases.split("\n").each do |b|
+      known = true if b == parent
+    end
+    bases = "#{bases}#{parent}\n" unless known
+  end
+  bases
+end
+
+# The `refs/heads/...` argument tail for the batch's for-each-ref: every branch
+# named in `group`, shell-quoted and space-joined. Same string-packed, never
+# Array[String]-indexed idiom as ahead_behind_bases (see scan_ahead_behind).
+def ahead_behind_refs(group)
   refs = ""
   group.split("\n").each do |pl|
     next if pl.empty?
@@ -502,27 +517,19 @@ def ahead_behind_chunk(group)
     next if tab.nil?
 
     branch = pl[0...tab]
-    parent = pl[(tab + 1)..-1]
     refs = "#{refs} refs/heads/#{sh(branch)}"
-
-    known = false
-    bases.split("\n").each do |b|
-      known = true if b == parent
-    end
-    bases = "#{bases}#{parent}\n" unless known
   end
-  return "" if refs.empty?
+  refs
+end
 
-  fmt = "%(refname:short)"
-  bases.split("\n").each do |b|
-    next if b.empty?
-
-    fmt = "#{fmt}\t%(ahead-behind:#{b})"
-  end
-
-  out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
+# Read one batch's for-each-ref `output` back into "<branch>\t<behind>\t<ahead>"
+# lines. Each row is "<branch>\t<col0>\t<col1>..."; the branch's own parent (from
+# `group`) selects which `bases` column carries its "<ahead> <behind>" pair. All
+# string slicing plus `.each` block variables -- no Array[String] indexing (see
+# scan_ahead_behind).
+def ahead_behind_readback(output, group, bases)
   result = ""
-  out.split("\n").each do |row|
+  output.split("\n").each do |row|
     next if row.empty?
 
     tab = row.index("\t")
@@ -567,6 +574,28 @@ def ahead_behind_chunk(group)
     result = "#{result}#{branch}\t#{ab[1].to_i}\t#{ab[0].to_i}\n"
   end
   result
+end
+
+# One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
+# "<branch>\t<parent>" lines. Runs a single `git for-each-ref` listing those
+# branches, with one `%(ahead-behind:<parent>)` atom per distinct parent in the
+# group, then reads back each branch's own parent column. Returns
+# "<branch>\t<behind>\t<ahead>" lines (empty on git older than 2.41, where the
+# atom is unknown and the call fails -- print_tree_row then falls back per node).
+def ahead_behind_chunk(group)
+  refs = ahead_behind_refs(group)
+  return "" if refs.empty?
+
+  bases = ahead_behind_bases(group)
+  fmt = "%(refname:short)"
+  bases.split("\n").each do |b|
+    next if b.empty?
+
+    fmt = "#{fmt}\t%(ahead-behind:#{b})"
+  end
+
+  out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
+  ahead_behind_readback(out, group, bases)
 end
 
 # Parse a `scan_ahead_behind` result string once into a name -> "behind\tahead"

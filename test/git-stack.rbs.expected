@@ -43,6 +43,9 @@ class Object
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
+  def ahead_behind_bases: (String) -> String
+  def ahead_behind_refs: (String) -> String
+  def ahead_behind_readback: (String, String, String) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
   def print_tree_row: (String, Integer, String, StackContext) -> nil
