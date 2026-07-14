@@ -645,8 +645,9 @@ class StackContext
     @branches = Set.new
     @ab = {}
     @trunk = ""
-    # Explicit nil: without it the trailing `@trunk = ""` assignment would be the
-    # initializer's value and Spinel widens it to the untyped slow path.
+    # Explicit nil: without it the trailing `@trunk = ""` assignment would be
+    # the initializer's value and Spinel infers `initialize` as returning
+    # String. Pinning it to nil keeps the emitted signature `() -> nil`.
     nil
   end
 
