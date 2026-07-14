@@ -264,34 +264,18 @@ def trunk_branches
   return list unless list.empty?
 
   trunk = detect_trunk
-  # `.to_s` (identity for the String this always is) gives the array literal
-  # a concrete String element type. Seeding it with a user-defined method's
-  # return -- still an unresolved inference variable at this point -- passes
-  # that transiently-untyped element through set_trunks' block into sh's
-  # parameter, locking sh onto the boxed untyped slow path (same failure mode
-  # as paint's, see there).
-  set_trunks([trunk.to_s])
+  set_trunks([trunk])
   [trunk]
 end
 
 # The primary trunk -- the default base a branch falls back to (the first
 # configured trunk).
-#
-# The first value is picked with an accumulator loop rather than indexing
-# `trunk_branches` with `[0]`: this result flows into `checkout` and
-# `git config`, and Spinel mistypes an array element read there as a
-# compile-time constant, breaking the native build.
 def primary_trunk
-  first = ""
-  configured_trunks.each do |trunk|
-    first = trunk if first.empty?
-  end
-  return first unless first.empty?
+  trunks = configured_trunks
+  return trunks[0] unless trunks.empty?
 
   detected = detect_trunk
-  # `.to_s` for the same reason as in trunk_branches: keep sh off the
-  # untyped slow path.
-  set_trunks([detected.to_s])
+  set_trunks([detected])
   detected
 end
 
