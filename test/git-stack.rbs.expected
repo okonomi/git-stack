@@ -112,6 +112,8 @@ class Set
   def select!: () -> Set
   def reject!: () -> Set
   def merge: (untyped) -> Set # spinel: widened to untyped (slow path)
+  def replace: (untyped) -> Set # spinel: widened to untyped (slow path)
+  def reset: () -> Set
   def subtract: (untyped) -> Set # spinel: widened to untyped (slow path)
   def &: (untyped) -> Set # spinel: widened to untyped (slow path)
   def |: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -125,9 +127,10 @@ class Set
   def <=>: (untyped) -> untyped # spinel: widened to untyped (slow path)
   def disjoint?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def intersect?: (untyped) -> bool # spinel: widened to untyped (slow path)
-  def classify: () -> void
+  def classify: () -> Hash[untyped, untyped] # spinel: widened to untyped (slow path)
   def divide: () -> Set
   def flatten: () -> Set
+  def flatten!: () -> Set
   def inspect: () -> String
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
