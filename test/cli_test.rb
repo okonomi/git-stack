@@ -236,6 +236,69 @@ gsq("create feat-a")
 run("untrack")
 show("branch.feat-a.stackParent", "git config --get branch.feat-a.stackParent")
 
+section "drop splices the bottom branch out, reparenting children onto trunk"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+# drop from trunk so HEAD is not one of the branches being spliced/restacked
+setup("git checkout -q main")
+run("drop feat-a")
+show("feat-a stackParent (untracked)", "git config --get branch.feat-a.stackParent")
+show("feat-a still exists", "git show-ref --verify --quiet refs/heads/feat-a && echo yes || echo no")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+show("feat-c stackParent", "git config --get branch.feat-c.stackParent")
+show("HEAD", "git branch --show-current")
+
+section "drop a middle branch reconnects children to the grandparent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+run("drop feat-b")
+show("feat-c stackParent", "git config --get branch.feat-c.stackParent")
+show("feat-b stackParent (untracked)", "git config --get branch.feat-b.stackParent")
+show("HEAD", "git branch --show-current")
+
+section "drop reparents every child of a branch with multiple children"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q main")
+run("drop feat-a")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-c stackParent", "git config --get branch.feat-c.stackParent")
+
+section "drop --delete removes the branch ref after splicing"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+run("drop feat-a --delete")
+show("feat-a exists", "git show-ref --verify --quiet refs/heads/feat-a && echo yes || echo no")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("HEAD", "git branch --show-current")
+
+section "drop refuses a trunk and a non-existent branch"
+new_repo
+gsq("create feat-a")
+run("drop main")
+run("drop nope")
+
+section "drop with no argument splices the current branch"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+run("drop")
+show("feat-a stackParent (untracked)", "git config --get branch.feat-a.stackParent")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("HEAD", "git branch --show-current")
+
 section "parent rejects an indirect cycle"
 new_repo
 gsq("create feat-a")

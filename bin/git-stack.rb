@@ -942,6 +942,30 @@ def arg0(args)
   args.empty? ? "" : args[0]
 end
 
+# True when `flag` (e.g. "--delete") appears anywhere in `args`. Command-level
+# flags reach a subcommand mixed in with its positional arguments (see
+# COMMAND_FLAGS / parse_global_flags), so a command reads them by name rather
+# than by position.
+def has_flag?(args, flag)
+  found = false
+  args.each do |a|
+    found = true if a == flag
+  end
+  found
+end
+
+# The first non-flag argument in `args`, or "" when there is none -- so a lone
+# `drop --delete` (no branch named) still falls back to the current branch. A
+# flag like `--delete` may appear before or after the branch name, so the branch
+# can't just be `args[0]`.
+def first_operand(args)
+  name = ""
+  args.each do |a|
+    name = a if name.empty? && !a.start_with?("-")
+  end
+  name
+end
+
 def cmd_init(args)
   if args.empty?
     trunks = trunk_branches
@@ -1192,6 +1216,76 @@ def cmd_sync(_args)
   info green("done.")
 end
 
+# Splice `branch` out of the stack graph: reconnect each of its children to
+# `branch`'s own parent, untrack `branch`, and restack the moved subtrees. This
+# is the first-class "the bottom of my stack merged, re-base the rest" move --
+# run *while the merged branch still exists*, so its recorded parent (the true
+# grandparent) is still readable and the children reconnect exactly, rather than
+# the delete-then-`sync` order which only ever heals onto trunk.
+#
+# Non-destructive by default: it rewrites stack *config* only and never deletes
+# the branch ref (that stays an explicit `git branch -d`). `--delete` is opt-in
+# sugar for `git branch -D` after a successful splice. It also does no merge
+# detection -- invoking `drop` IS the assertion that the branch is done.
+#
+# Contrast with `untrack`, which orphans the children; `drop` reconnects them to
+# the grandparent. That is the whole difference.
+def cmd_drop(args)
+  delete = has_flag?(args, "--delete")
+  operand = first_operand(args)
+  branch = operand.empty? ? current_branch : operand
+  trunks = trunk_branches
+  die("cannot drop trunk '#{branch}'") if is_trunk?(branch, trunks)
+  die("branch '#{branch}' does not exist") unless branch_exists?(branch)
+
+  original = current_branch_or_empty
+
+  # Where the children reconnect: the dropped branch's own parent, or the
+  # primary trunk when it sat directly on a trunk (no recorded parent).
+  parent = get_parent(branch)
+  parent = primary_trunk if parent.empty?
+
+  # Capture the children BEFORE rewriting config -- `branch.<child>.stackParent`
+  # is about to change. Each child is reparented exactly as `parent`/`track` do
+  # it: set_parent then record_reparent_base, which re-anchors stackBase to
+  # merge-base(child, parent) so `restack`'s `--onto` replays from the right
+  # point (leaving the old base pointing into the dropped parent's history would
+  # replay the wrong range, and break outright if that ref is later deleted).
+  moved = children_of(branch)
+  moved.each do |child|
+    die("failed to reparent '#{child}' onto '#{parent}'") unless set_parent(child, parent)
+    record_reparent_base(child, parent)
+  end
+
+  # Untrack the dropped branch. Its ref is left intact -- deleting it stays an
+  # explicit, separate act unless `--delete` was passed.
+  clear_parent(branch)
+  clear_base(branch)
+  info "dropped #{green(branch)}; reparented children onto #{cyan(parent)}"
+
+  # Restack each moved subtree onto its new parent. Rebuild the topology first
+  # so it reflects the config rewrites above.
+  ctx = StackContext.build_topology
+  moved.each do |child|
+    restack_subtree(child, trunks[0], false, ctx)
+  end
+
+  if delete
+    # You can't delete the branch you're standing on; step onto its former
+    # parent first (the restack above may have already moved HEAD to a child).
+    git_ok("checkout #{sh(parent)}") if current_branch_or_empty == branch
+    die("dropped '#{branch}' but failed to delete its ref") unless git_ok("branch -D #{sh(branch)}")
+    info "deleted branch #{green(branch)}"
+  end
+
+  # Return to where we started when that branch still exists -- the restack may
+  # have left HEAD on a moved child, and `--delete` may have removed `original`.
+  if !original.empty? && original != current_branch_or_empty && branch_exists?(original)
+    git_ok("checkout #{sh(original)}")
+  end
+  nil
+end
+
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
   # Only the Spinel-compiled binary was "built with" Spinel; run as a plain
@@ -1222,6 +1316,7 @@ def cmd_help(_args)
         parent [branch]       Show or set the parent of the current branch.
         track [parent]        Track the current branch on top of [parent] (or trunk).
         untrack               Stop tracking the current branch in a stack.
+        drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
         restack               Rebase the whole stack so each branch sits on its parent.
         sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
         version               Show the git-stack version and the Spinel build revision.
@@ -1243,6 +1338,13 @@ def cmd_help(_args)
 end
 
 # --- dispatch ---------------------------------------------------------------
+
+# Command-level flags a subcommand consumes itself (as opposed to the global
+# -h/-v). They ride through `parse_global_flags` untouched by its unknown-flag
+# check so the command can read them out of its own args; currently only
+# `drop --delete`. Kept explicit so a genuine typo like `--delet` is still
+# rejected, and the tolerated set is visible in one place.
+COMMAND_FLAGS = ["--delete"].freeze
 
 # Parse the global flags (-h/--help, -v/--version) out of `argv` with
 # OptionParser, returning the command they map to ("help"/"version"), or ""
@@ -1272,12 +1374,29 @@ def parse_global_flags(argv)
 end
 
 def main(argv)
-  cmd = parse_global_flags(argv)
+  # Lift command-level flags (COMMAND_FLAGS, e.g. `drop --delete`) out before
+  # global parsing: CRuby's `parse!` raises on any long option the parser
+  # doesn't register, so an unregistered `--delete` would be reported as an
+  # invalid *global* option before it ever reached the subcommand. Pulling them
+  # aside here leaves `parse_global_flags` to handle only -h/-v (and still
+  # reject genuine typos), then they are re-attached to the subcommand's args.
+  flags = []
+  cleaned = []
+  argv.each do |a|
+    if COMMAND_FLAGS.include?(a)
+      flags << a
+    else
+      cleaned << a
+    end
+  end
+
+  cmd = parse_global_flags(cleaned)
   rest = []
   if cmd.empty?
-    cmd = argv.empty? ? "help" : argv[0]
-    rest = argv.empty? ? [] : argv[1..-1]
+    cmd = cleaned.empty? ? "help" : cleaned[0]
+    rest = cleaned.empty? ? [] : cleaned[1..-1]
   end
+  flags.each { |f| rest << f }
 
   repo_optional = cmd == "version" || cmd == "help"
   require_repo unless repo_optional
@@ -1291,6 +1410,7 @@ def main(argv)
   when "parent"               then cmd_parent(rest)
   when "track"                then cmd_track(rest)
   when "untrack"              then cmd_untrack(rest)
+  when "drop"                 then cmd_drop(rest)
   when "restack"              then cmd_restack(rest)
   when "sync"                 then cmd_sync(rest)
   when "version"              then cmd_version(rest)

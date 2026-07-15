@@ -51,6 +51,8 @@ class Object
   def print_tree_row: (String, Integer, String, StackContext) -> nil
   def print_order: (String, Integer, bool, String, StackContext) -> nil
   def arg0: (Array[String]) -> String
+  def has_flag?: (Array[String], String) -> bool
+  def first_operand: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
   def cmd_tree: (Array[String]) -> Array[String]
@@ -63,6 +65,7 @@ class Object
   def restack_subtree: (String, String, bool, StackContext) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
+  def cmd_drop: (Array[String]) -> nil
   def cmd_version: (Array[String]) -> nil
   def cmd_help: (Array[String]) -> nil
   def parse_global_flags: (Array[String]) -> String

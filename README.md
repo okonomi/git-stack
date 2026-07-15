@@ -120,6 +120,7 @@ stack down when they reach any trunk. The **first** trunk you register is the
 | `git stack parent [branch]` | Show or set the parent of the current branch.                 |
 | `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
+| `git stack drop [branch]` | Splice `[branch]` (or the current branch) out of the stack, reconnecting its children to its parent. (`--delete` also removes the branch) |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack sync`          | Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
@@ -148,14 +149,46 @@ git stack restack               # replay feature-b on the new feature-a
 git stack up                    # back up to feature-b
 ```
 
-Once a branch merges, delete it and let `sync` clean up what was stacked on it:
+Once a branch merges, `drop` it: this reconnects whatever was stacked on it to
+its parent and restacks — *while the merged branch still exists*, so the
+reconnection is exact:
 
 ```sh
 git checkout main && git pull
-git branch -d feature-a         # already merged, safe to delete
+
+git stack drop feature-a        # reparents feature-b onto main and restacks it
+git branch -d feature-a         # delete the merged branch when you're ready
+                                # (or `git stack drop feature-a --delete`)
+```
+
+`drop` touches the **stack graph only** — it never deletes the branch ref unless
+you pass `--delete`, keeping every destructive act explicit and in your hands.
+It does no merge detection either: invoking `drop` *is* your assertion that the
+branch is done.
+
+The order matters. Reconnecting *before* deleting is what lets `drop` re-anchor a
+child onto its true grandparent. Dropping `feature-b` from
+`main → feature-a → feature-b → feature-c` reconnects `feature-c` onto
+**`feature-a`**, because `feature-b`'s recorded parent is still readable at drop
+time:
+
+```sh
+git stack drop feature-b        # feature-c is reparented onto feature-a
+```
+
+Contrast with `git stack untrack`, which just orphans the children, and with
+`git stack sync`, which heals *after* a parent was already deleted and only ever
+reconnects onto trunk (the grandparent link is gone by then). `sync` is still the
+right tool when a branch was deleted out from under a stack — for example by a
+PR merge that auto-deleted the remote branch — and you're repairing the orphans
+after the fact:
+
+```sh
+git checkout main && git pull
+git branch -d feature-a         # merged and deleted first
 
 git checkout feature-b
-git stack sync                  # reparents feature-b onto main and restacks it
+git stack sync                  # reparents the orphaned feature-b onto main
 ```
 
 `git stack tree` flags branches that have drifted from their parent:
