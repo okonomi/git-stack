@@ -66,6 +66,7 @@ COMMANDS
     parent [branch]       Show or set the parent of the current branch.
     track [parent]        Track the current branch on top of [parent] (or trunk).
     untrack               Stop tracking the current branch in a stack.
+    drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
     restack               Rebase the whole stack so each branch sits on its parent.
     sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
     version               Show the git-stack version and the Spinel build revision.
@@ -169,6 +170,57 @@ $ git stack untrack
 'feat-a' is no longer tracked in a stack
 [exit 0]
 branch.feat-a.stackParent: 
+
+### drop splices the bottom branch out, reparenting children onto trunk
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a stackParent (untracked): 
+feat-a still exists: yes
+feat-b stackParent: main
+feat-b behind main: 0
+feat-c stackParent: feat-b
+HEAD: main
+
+### drop a middle branch reconnects children to the grandparent
+$ git stack drop feat-b
+dropped feat-b; reparented children onto feat-a
+[exit 0]
+feat-c stackParent: feat-a
+feat-b stackParent (untracked): 
+HEAD: feat-a
+
+### drop reparents every child of a branch with multiple children
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-b stackParent: main
+feat-c stackParent: main
+
+### drop --delete removes the branch ref after splicing
+$ git stack drop feat-a --delete
+dropped feat-a; reparented children onto main
+deleted branch feat-a
+[exit 0]
+feat-a exists: no
+feat-b stackParent: main
+HEAD: main
+
+### drop refuses a trunk and a non-existent branch
+$ git stack drop main
+error: cannot drop trunk 'main'
+[exit 1]
+$ git stack drop nope
+error: branch 'nope' does not exist
+[exit 1]
+
+### drop with no argument splices the current branch
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a stackParent (untracked): 
+feat-b stackParent: main
+HEAD: feat-a
 
 ### parent rejects an indirect cycle
 $ git stack parent feat-b
