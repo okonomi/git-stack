@@ -866,6 +866,18 @@ class StackContext
     [fields[0].to_i, fields[1].to_i]
   end
 
+  # Every tracked branch that still exists as a ref: the candidates `sync`'s
+  # prune pass tests for a merge. A name in the config scan whose ref is gone
+  # is skipped (git removes a branch's config when it deletes the ref, so this
+  # is belt-and-suspenders). Sorted so the merge scan is deterministic.
+  def tracked_branches
+    names = []
+    @parents.each do |name, value|
+      names << name if @branches.include?(name)
+    end
+    names.sort
+  end
+
   # Branches whose recorded parent is non-empty but no longer a real branch
   # (its parent was merged and deleted). Treated as extra roots by `tree` so
   # they're always visible instead of silently disappearing; `git stack sync`
@@ -931,6 +943,193 @@ def print_order(root, base, skip_root, cur, ctx)
     next if skip_root && depth == 0
 
     print_tree_row(branch, depth + base, cur, ctx)
+  end
+  nil
+end
+
+# --- merge detection (sync) -------------------------------------------------
+#
+# `sync`'s prune pass asks, for each tracked branch, "has this been merged?" so
+# it can delete the branch and reparent whatever was stacked on it. Detection is
+# tiered, git-first: two pure-git signals always run, and an optional `gh` one is
+# gated behind config so a pure-git install behaves identically with or without
+# GitHub's CLI.
+
+# True when the `gh` CLI is on PATH (tier C is a no-op without it).
+def gh_available?
+  system("gh --version >/dev/null 2>&1")
+  # Read on its own line: Spinel drops the boolean when a bare `system` is a
+  # method's trailing expression (same reason git_run does this).
+  $? == 0
+end
+
+# True when origin points at github.com (where `gh pr view` can answer).
+def origin_is_github?
+  git_out("remote get-url origin").include?("github.com")
+end
+
+# Whether the optional `gh`-backed tier C runs. Off unless `stack.mergeDetection`
+# is set to a truthy value AND `gh` is installed AND origin is GitHub -- so a
+# plain pure-git install (the key unset) never shells out to `gh`.
+def gh_merge_detection_enabled?
+  val = git_out("config --get stack.mergeDetection")
+  return false if val.empty?
+
+  enabled = val == "gh" || val == "true" || val == "on" || val == "yes" || val == "1"
+  return false unless enabled
+  return false unless gh_available?
+
+  origin_is_github?
+end
+
+# Tier C: GitHub reports the branch's PR as merged. Only consulted when
+# `gh_merge_detection_enabled?` -- a backstop for repos with auto-delete-head-
+# branches off, where tier B never fires.
+def pr_merged?(branch)
+  `gh pr view #{sh(branch)} --json state -q .state 2>/dev/null`.strip == "MERGED"
+end
+
+# Tier A (pure git): the branch is a STRICT ancestor of some local trunk -- every
+# one of its commits is already in trunk, and trunk has moved on past it. That is
+# exactly a merge-commit / fast-forward / rebase-merge whose tip still lives, the
+# same test that makes `git branch -d` safe. The strictness (trunk not also an
+# ancestor of the branch) excludes an empty freshly-created branch sitting on its
+# trunk tip -- it is an ancestor, but not a merged one.
+#
+# Tested against the LOCAL trunk, not origin/<trunk>: a branch that is merely
+# behind an advanced origin without being merged would otherwise look "merged"
+# (an empty branch is an ancestor of any advanced ref). So tier A catches a
+# reachable merge only once trunk itself carries it; the squash/auto-delete case,
+# where trunk need not, is tier B's job.
+def reachable_merged?(branch, trunks)
+  merged = false
+  trunks.each do |t|
+    next if t == branch
+    next unless branch_exists?(t)
+
+    if git_ok("merge-base --is-ancestor #{sh(branch)} #{sh(t)}") &&
+       !git_ok("merge-base --is-ancestor #{sh(t)} #{sh(branch)}")
+      merged = true
+    end
+  end
+  merged
+end
+
+# Tier B (pure git): the branch's upstream tracking ref is gone. After
+# `git fetch --prune`, `%(upstream:track)` reads `[gone]` for a branch whose
+# origin counterpart was deleted -- which is what GitHub does on merge when
+# "automatically delete head branches" is on. This is the primary signal for the
+# common squash/rebase-merge setup, where the branch tip never lands in trunk and
+# tier A cannot see it.
+def upstream_gone?(branch)
+  git_out("for-each-ref --format='%(upstream:track)' refs/heads/#{sh(branch)}") == "[gone]"
+end
+
+# The tier that flags `branch` as merged, as a short human reason for the
+# transcript ("" when none does). Checked A -> B -> C so the first match wins and
+# the reported reason is deterministic. `gh` is the once-computed tier-C gate.
+def merge_reason(branch, trunks, gh)
+  return "merged into trunk" if reachable_merged?(branch, trunks)
+  return "upstream gone" if upstream_gone?(branch)
+  return "PR merged" if gh && pr_merged?(branch)
+
+  ""
+end
+
+# Scan every tracked branch and return a `name -> reason` map of the merged ones.
+# The `gh` gate is resolved once up front, not per branch. Trunks are never
+# candidates (they are the base, not a stacked branch).
+def detect_merged(ctx, trunks)
+  gh = gh_merge_detection_enabled?
+  merged = {}
+  ctx.tracked_branches.each do |branch|
+    next if is_trunk?(branch, trunks)
+
+    reason = merge_reason(branch, trunks, gh)
+    merged[branch] = reason unless reason.empty?
+  end
+  merged
+end
+
+# Prune one confirmed-merged branch `m`: reparent everything stacked on it onto
+# its recorded parent (the grandparent of those children), then delete it.
+#
+# Reading the grandparent BEFORE the delete is the crux -- `git branch -D` drops
+# the branch's own config, so `m`'s `stackParent` (and the grandparent it names)
+# is only knowable while `m` still exists. A parent that is empty or itself a
+# trunk resolves to the primary trunk, so a merged BOTTOM branch's children land
+# on trunk and a merged MIDDLE branch's children land on the real grandparent.
+#
+# The children's recorded stackBase is deliberately LEFT ALONE: it already points
+# at `m`'s tip, where each child's own commits begin, so `restack` replays only
+# those onto the grandparent. Recomputing it to merge-base(child, grandparent)
+# would drag `m`'s already-merged commits back into the replay and conflict --
+# the very squash-merge hazard stackBase exists to avoid. Only a child with no
+# recorded base at all is back-filled, from `m`'s tip while it is still readable.
+def prune_one_merged(m, reason, trunks, primary)
+  gp = get_parent(m)
+  gp = primary if gp.empty? || is_trunk?(gp, trunks)
+  info "'#{m}' is merged (#{reason}); reparenting its children onto '#{gp}' and deleting it"
+
+  mtip = git_out("rev-parse #{sh(m)}")
+  children_of(m).each do |c|
+    next if c == m
+
+    set_parent(c, gp)
+    set_base(c, mtip) if get_base(c).empty? && !mtip.empty?
+  end
+
+  # We are about to delete `m`; step off it first if it is checked out (git
+  # refuses to delete the current branch). Confirmed merged, so `-D` is safe
+  # even for a squash/rebase merge whose tip isn't an ancestor of trunk, where
+  # `git branch -d` would refuse ("not fully merged").
+  git_ok("checkout #{sh(primary)}") if current_branch_or_empty == m
+  git_ok("branch -D #{sh(m)}")
+  # `-D` already clears the branch's config section; these are belt-and-suspenders
+  # for any git that leaves a stale key behind.
+  clear_parent(m)
+  clear_base(m)
+  nil
+end
+
+# Walk the subtree rooted at `root` in `ctx.order` (ancestors before descendants)
+# and prune each merged node encountered. Top-down order matters: a merged parent
+# is handled first, reparenting its children onto the grandparent, so a merged
+# child then reads its (already updated) parent live from config and cascades
+# correctly. The order lines come from the pre-prune snapshot; parents are read
+# live as we go, and the cycle guard lives in `ctx.order`.
+def prune_merged_in_order(root, merged, trunks, primary, ctx)
+  ctx.order(root).split("\n").each do |line|
+    next if line.empty?
+
+    tab = line.index("\t")
+    next if tab.nil?
+
+    branch = line[(tab + 1)..-1]
+    reason = merged[branch]
+    next if reason.nil?
+    next unless branch_exists?(branch)
+
+    prune_one_merged(branch, reason, trunks, primary)
+  end
+  nil
+end
+
+# The whole prune pass: detect merged branches, then reparent-and-delete them
+# across the forest (every trunk's stacks plus any orphan roots). No-op when
+# nothing is merged.
+def prune_merged(ctx, trunks, primary)
+  merged = detect_merged(ctx, trunks)
+  return if merged.empty?
+
+  # `.to_s` on the `trunks.each` block variable keeps prune_merged_in_order's
+  # `root` a concrete String (Spinel types that block variable as untyped; the
+  # orphan_roots block variable is already String).
+  trunks.each do |trunk|
+    prune_merged_in_order(trunk.to_s, merged, trunks, primary, ctx)
+  end
+  ctx.orphan_roots.each do |root|
+    prune_merged_in_order(root, merged, trunks, primary, ctx)
   end
   nil
 end
@@ -1177,17 +1376,52 @@ def cmd_restack(_args)
 end
 
 def cmd_sync(_args)
-  original = current_branch
   trunks = trunk_branches
-  root = stack_root(original, trunks)
+  primary = trunks[0]
+  # Remembered up front, but only restored at the end if it still exists: the
+  # branch we're on may be one the prune pass deletes. current_branch_or_empty
+  # (not current_branch) so sync also runs from a detached HEAD.
+  original = current_branch_or_empty
 
-  info "syncing stack rooted at #{cyan(root)}"
+  # Refresh remote-tracking refs before detecting anything. This prunes the stale
+  # origin/<branch> refs that tier-B (`upstream_gone?`) keys on, and is a no-op
+  # when there is no origin. Quiet -- git's own progress isn't part of the flow.
+  if git_ok("remote get-url origin")
+    info "fetching from origin"
+    git_ok("fetch --prune origin")
+  end
+
+  # Prune pass: detect merged branches, reparent their children onto the merged
+  # branch's recorded parent (its children's grandparent), and delete the merged
+  # ref -- before the restack, and reading each grandparent while its branch still
+  # exists (see prune_one_merged). This is what removes the old manual
+  # `git branch -d` + reparent dance.
   ctx = StackContext.build_topology
-  restack_subtree(root, trunks[0], true, ctx)
+  prune_merged(ctx, trunks, primary)
 
-  unless git_ok("checkout #{sh(original)}")
-    die("sync completed, but returning to '#{original}' failed;\n" \
-        "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
+  # Restack the whole forest, not just the stack we happen to be standing in:
+  # every trunk's stacks, plus any orphan roots left by a manual delete outside
+  # sync (still healed onto trunk via restack's heal_orphans path). Rebuilt from a
+  # fresh snapshot because the prune pass removed refs and rewrote parents. Being
+  # forest-wide is what makes sync work from any checkout -- e.g. straight from
+  # `main` after pulling.
+  ctx = StackContext.build_topology
+  trunks.each do |trunk|
+    restack_subtree(trunk, primary, true, ctx)
+  end
+  ctx.orphan_roots.each do |root|
+    restack_subtree(root, primary, true, ctx)
+  end
+
+  # Return to where we started when it survived; otherwise (it was merged and
+  # deleted, or we were detached) land on the primary trunk.
+  if !original.empty? && branch_exists?(original)
+    unless git_ok("checkout #{sh(original)}")
+      die("sync completed, but returning to '#{original}' failed;\n" \
+          "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
+    end
+  else
+    git_ok("checkout #{sh(primary)}")
   end
   info green("done.")
 end
@@ -1223,7 +1457,7 @@ def cmd_help(_args)
         track [parent]        Track the current branch on top of [parent] (or trunk).
         untrack               Stop tracking the current branch in a stack.
         restack               Rebase the whole stack so each branch sits on its parent.
-        sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
+        sync                  Detect & delete merged branches, reparent what was stacked on them, then restack every stack.
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 

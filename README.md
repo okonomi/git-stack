@@ -121,7 +121,7 @@ stack down when they reach any trunk. The **first** trunk you register is the
 | `git stack track [parent]`  | Track the current branch on top of `[parent]` (or trunk).     |
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
-| `git stack sync`          | Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. |
+| `git stack sync`          | Detect & delete merged branches, reparent what was stacked on them, then restack every stack. |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 
 ## Walkthrough
@@ -148,15 +148,40 @@ git stack restack               # replay feature-b on the new feature-a
 git stack up                    # back up to feature-b
 ```
 
-Once a branch merges, delete it and let `sync` clean up what was stacked on it:
+Once `feature-a` merges, a single `sync` cleans up after it — from any branch,
+even straight from `main`:
 
 ```sh
 git checkout main && git pull
-git branch -d feature-a         # already merged, safe to delete
-
-git checkout feature-b
-git stack sync                  # reparents feature-b onto main and restacks it
+git stack sync                  # detects the merge, deletes feature-a,
+                                # reparents feature-b onto main, and restacks
 ```
+
+`sync` finds merged branches for you, so there's no manual `git branch -d`
+(which fails anyway on a squash- or rebase-merged branch — its commits were
+rewritten, so its tip isn't an ancestor of trunk). It then deletes each merged
+branch, reparents whatever was stacked on it onto that branch's own parent (so a
+merged *middle* branch's children land on their grandparent, not just trunk), and
+restacks every stack in the repo — not only the one you're standing in.
+
+### How `sync` detects a merge
+
+It works from plain git, with an optional GitHub assist:
+
+- **Reachable merge** — the branch's tip is an ancestor of a trunk (a merge
+  commit, fast-forward, or rebase-merge whose tip still lives). Pure git.
+- **Upstream gone** — after `git fetch --prune`, the branch's upstream tracking
+  ref reads `[gone]`, i.e. its remote counterpart was deleted. This is what
+  GitHub does on merge when *"automatically delete head branches"* is on, and is
+  the primary signal for squash- and rebase-merged branches (whose tip never
+  lands in trunk). Pure git.
+- **PR merged** *(optional)* — `gh pr view <branch>` reports the PR as `MERGED`.
+  A backstop for repos with auto-delete off. Off by default; enable it with
+  `git config stack.mergeDetection gh` (requires the `gh` CLI and a GitHub
+  origin). The two pure-git signals above are unaffected either way.
+
+`sync` runs `git fetch --prune` up front so the upstream-gone check is accurate;
+it's a no-op when there's no `origin`.
 
 `git stack tree` flags branches that have drifted from their parent:
 

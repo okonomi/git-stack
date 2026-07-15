@@ -101,6 +101,32 @@ def commit(file, msg) # commit <file> <message>
   setup("echo #{msg} > #{file} && git add #{file} && git commit -qm #{msg}")
 end
 
+# A fresh repo wired to a throwaway bare remote, with `main` pushed and tracked.
+# The proactive `sync` scenarios need a real upstream so tier-B merge detection
+# (`%(upstream:track)` == `[gone]` after `git fetch --prune`) has something to
+# read; `push_tracked` below pushes each stacked branch so deleting its remote
+# counterpart later models GitHub's auto-delete-head-branch on merge.
+$remote = ""
+def new_repo_with_remote
+  new_repo
+  $remote = `mktemp -d`.strip
+  setup("git init -q --bare #{$remote}")
+  setup("git remote add origin #{$remote}")
+  setup("git push -q -u origin main")
+end
+
+# Push `branch` and set it to track origin/<branch> (so a later remote-side
+# delete makes its upstream read `[gone]`).
+def push_tracked(branch)
+  setup("git push -q -u origin #{branch}")
+end
+
+# Delete a branch's counterpart on the remote, as a merge with
+# "automatically delete head branches" enabled does.
+def delete_remote(branch)
+  setup("git push -q origin --delete #{branch}")
+end
+
 # --- scenarios --------------------------------------------------------------
 
 section "init auto-detects the trunk"
@@ -339,6 +365,90 @@ puts "feature-b contains a2: #{`cd #{$repo} && git log --oneline feature-b | gre
 puts "feature-b contains b1: #{`cd #{$repo} && git log --oneline feature-b | grep -c ' b1$' || true`.strip}"
 show("feature-b stackBase == main tip",
      'test "$(git config --get branch.feature-b.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
+
+# --- proactive sync: detect & prune merged branches -------------------------
+#
+# The sections above delete the merged branch by hand before `sync`. These drive
+# the proactive path: `sync` itself detects the merge, reparents whatever was
+# stacked on it, and deletes it -- no manual `git branch -d`.
+
+# Tier A (pure git, no remote): a bottom branch merged into main with a real
+# merge commit. Its tip is now an ancestor of main, so `sync` detects the merge,
+# reparents its child onto main (the grandparent -> trunk), and deletes it.
+section "sync detects a reachable-merged bottom branch and prunes it (tier A)"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git merge --no-ff -q --no-edit feat-a") # force a merge commit so main moves past feat-a
+setup("git checkout -q feat-b")
+run("sync")
+show("branch.feat-b.stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-a still present", "git branch --list feat-a")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+show("HEAD", "git branch --show-current")
+
+# Tier B (upstream gone): a squash-merged bottom branch. Its tip never lands in
+# main, so tier A can't see it; instead its remote counterpart is deleted (as a
+# squash-merge PR with auto-delete does), `git fetch --prune` drops origin/feat-a,
+# and `%(upstream:track)` reads `[gone]`. feature-a has TWO commits so the squash
+# differs from any single one -- the stackBase replay is what keeps feat-b clean.
+section "sync detects a squash-merged bottom branch via upstream-gone (tier B)"
+new_repo_with_remote
+gsq("create feat-a"); commit("a.txt", "a1"); commit("a2.txt", "a2"); push_tracked("feat-a")
+gsq("create feat-b"); commit("b.txt", "b1"); push_tracked("feat-b")
+# squash-merge feat-a into main and auto-delete its remote branch
+setup("git checkout -q main")
+setup("git merge --squash feat-a >/dev/null 2>&1 && git commit -qm squash-feat-a")
+setup("git push -q origin main")
+delete_remote("feat-a")
+setup("git checkout -q feat-b")
+run("sync")
+show("branch.feat-b.stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-a still present", "git branch --list feat-a")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+show("feat-b commits above main", "git rev-list --count main..feat-b")
+puts "feat-b contains a1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' a1$' || true`.strip}"
+puts "feat-b contains a2: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' a2$' || true`.strip}"
+puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
+
+# A merged MIDDLE branch: main -> feat-a -> feat-b -> feat-c, and feat-b's PR
+# merges (remote branch auto-deleted). feat-c must reparent onto feat-b's recorded
+# parent feat-a -- the grandparent -- read from config BEFORE feat-b is deleted,
+# not onto trunk. feat-a and feat-c keep their remotes, so only feat-b is pruned.
+section "sync reparents a merged middle branch's child onto the grandparent"
+new_repo_with_remote
+gsq("create feat-a"); commit("a.txt", "a1"); push_tracked("feat-a")
+gsq("create feat-b"); commit("b.txt", "b1"); push_tracked("feat-b")
+gsq("create feat-c"); commit("c.txt", "c1"); push_tracked("feat-c")
+delete_remote("feat-b") # feat-b's PR merged + head branch auto-deleted
+setup("git checkout -q feat-c")
+run("sync")
+show("branch.feat-c.stackParent", "git config --get branch.feat-c.stackParent")
+show("feat-b still present", "git branch --list feat-b")
+show("feat-a still present", "git branch --list feat-a")
+show("feat-c behind feat-a", "git rev-list --count feat-c..feat-a")
+puts "feat-c contains c1: #{`cd #{$repo} && git log --oneline feat-c | grep -c ' c1$' || true`.strip}"
+
+# Forest-wide and checkout-independent: two stacks on main, run from `main`
+# itself (not inside either stack). feat-a merges; sync prunes it, reparents its
+# child, and restacks BOTH stacks -- including the unrelated second one that only
+# fell behind the advanced trunk.
+section "sync runs forest-wide from main across multiple stacks"
+new_repo
+gsq("create s1a"); commit("s1a.txt", "s1a1")
+gsq("create s1b"); commit("s1b.txt", "s1b1")
+setup("git checkout -q main")
+gsq("create s2a"); commit("s2a.txt", "s2a1")
+setup("git checkout -q main")
+setup("git merge --no-ff -q --no-edit s1a") # merge commit moves main past s1a, and past both stacks' bases
+setup("git checkout -q main")       # run sync from the trunk, not inside a stack
+run("sync")
+show("s1b parent", "git config --get branch.s1b.stackParent")
+show("s1a still present", "git branch --list s1a")
+show("s1b behind main", "git rev-list --count s1b..main")
+show("s2a behind main", "git rev-list --count s2a..main")
+show("HEAD", "git branch --show-current")
 
 # A branch that predates stackBase (its config has stackParent but no stackBase)
 # must still restack correctly: `restack` falls back to the live merge-base of

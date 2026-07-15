@@ -50,6 +50,17 @@ class Object
   def ahead_behind_index: (String) -> Hash[String, String]
   def print_tree_row: (String, Integer, String, StackContext) -> nil
   def print_order: (String, Integer, bool, String, StackContext) -> nil
+  def gh_available?: () -> bool
+  def origin_is_github?: () -> bool
+  def gh_merge_detection_enabled?: () -> bool
+  def pr_merged?: (String) -> bool
+  def reachable_merged?: (String, Array[String]) -> bool
+  def upstream_gone?: (String) -> bool
+  def merge_reason: (String, Array[String], bool) -> String
+  def detect_merged: (StackContext, Array[String]) -> Hash[String, String]
+  def prune_one_merged: (String, String, Array[String], String) -> nil
+  def prune_merged_in_order: (String, Hash[String, String], Array[String], String, StackContext) -> nil
+  def prune_merged: (StackContext, Array[String], String) -> nil
   def arg0: (Array[String]) -> String
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
@@ -112,8 +123,6 @@ class Set
   def select!: () -> Set
   def reject!: () -> Set
   def merge: (untyped) -> Set # spinel: widened to untyped (slow path)
-  def replace: (untyped) -> Set # spinel: widened to untyped (slow path)
-  def reset: () -> Set
   def subtract: (untyped) -> Set # spinel: widened to untyped (slow path)
   def &: (untyped) -> Set # spinel: widened to untyped (slow path)
   def |: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -127,10 +136,9 @@ class Set
   def <=>: (untyped) -> untyped # spinel: widened to untyped (slow path)
   def disjoint?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def intersect?: (untyped) -> bool # spinel: widened to untyped (slow path)
-  def classify: () -> Hash[untyped, untyped] # spinel: widened to untyped (slow path)
+  def classify: () -> Hash[String, untyped] # spinel: widened to untyped (slow path)
   def divide: () -> Set
   def flatten: () -> Set
-  def flatten!: () -> Set
   def inspect: () -> String
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
@@ -153,6 +161,7 @@ class StackContext
   def walk_order: (String, Integer, Hash[String, String], Set, String) -> String
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
+  def tracked_branches: () -> Array[String]
   def orphan_roots: () -> Array[String]
   def self.build: (String) -> StackContext
   def self.build_topology: () -> StackContext

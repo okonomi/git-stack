@@ -42,7 +42,6 @@ $ git stack tree
 
 ### sync heals the orphan onto the trunk
 $ git stack sync
-syncing stack rooted at feat-x-child
 'feat-x-child': parent 'feat-x' no longer exists; reparenting onto trunk 'main'
 done.
 [exit 0]
@@ -58,7 +57,6 @@ feat-x-child parent: main
 
 ### sync recovers a branch whose parent was squash-merged and deleted
 $ git stack sync
-syncing stack rooted at feature-b
 'feature-b': parent 'feature-a' no longer exists; reparenting onto trunk 'main'
 restacking feature-b onto main
 done.
