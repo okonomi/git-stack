@@ -108,6 +108,34 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
+# `origin/HEAD` is a symbolic ref like any other, so these three point it at a
+# remote-tracking ref directly rather than cloning: detect_trunk only ever reads
+# `git symbolic-ref refs/remotes/origin/HEAD`, and a real remote would make the
+# snapshot depend on a second throwaway repo's path.
+
+section "init prefers the remote's default branch over main"
+new_repo
+setup("git branch develop main")
+setup("git update-ref refs/remotes/origin/develop develop")
+setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop")
+run("init")
+show("stack.trunk", "git config --get stack.trunk")
+
+section "init ignores the remote's default branch when it has no local ref"
+new_repo
+setup("git update-ref refs/remotes/origin/gone main")
+setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone")
+run("init")
+show("stack.trunk", "git config --get stack.trunk")
+
+section "init dies when the remote's default branch is the only candidate"
+new_repo
+setup("git branch -m main feature")
+setup("git update-ref refs/remotes/origin/gone feature")
+setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone")
+run("init")
+show("stack.trunk", "git config --get stack.trunk")
+
 section "init records multiple trunks and lists them"
 new_repo
 setup("git branch develop main")

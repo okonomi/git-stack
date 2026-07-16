@@ -5,6 +5,24 @@ trunk(s): main
 [exit 0]
 stack.trunk: main
 
+### init prefers the remote's default branch over main
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
+### init ignores the remote's default branch when it has no local ref
+$ git stack init
+trunk(s): main
+[exit 0]
+stack.trunk: main
+
+### init dies when the remote's default branch is the only candidate
+$ git stack init
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk: 
+
 ### init records multiple trunks and lists them
 $ git stack init main develop
 trunk set to main, develop

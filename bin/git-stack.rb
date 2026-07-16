@@ -243,9 +243,22 @@ end
 
 # Auto-detect a single trunk: prefer the remote's default branch, then
 # main/master. Dies when none can be determined.
+#
+# Every candidate must exist as a LOCAL branch, `origin/HEAD`'s included. A
+# trunk is a local branch everywhere else in this file -- `is_trunk?` compares
+# plain branch names, `StackContext#branch?` checks refs/heads, restack rebases
+# onto it, and `init` validates its argument with the same `branch_exists?` --
+# so a name with no local ref is not a usable trunk, it is a dead end: it would
+# be persisted by `trunk_branches`, rendered by `tree` as a trunk row for a
+# branch that isn't there, and then rejected by every `track`/`parent` that
+# validates against it. `origin/HEAD` naming a branch the local clone doesn't
+# have is ordinary (it points at the remote's default; the local ref is gone
+# once that branch is merged and cleaned up, or was never checked out), so this
+# falls through to main/master rather than trusting it.
 def detect_trunk
   head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
-  return head.sub(/^origin\//, "") unless head.empty?
+  name = head.sub(/^origin\//, "")
+  return name if !name.empty? && branch_exists?(name)
   return "main" if branch_exists?("main")
   return "master" if branch_exists?("master")
 
