@@ -803,12 +803,20 @@ class StackContext
   # none do). Reads one row of the freshly built child index and splits it into
   # a concrete `Array[String]`; the `.sort` both orders siblings deterministically
   # and pins the element type (a poly array would raise on `sort` at run time).
+  #
+  # The row is a String (child_index packs each value as one), but a `.to_s`
+  # guards the split: newer Spinel can widen `child_index` to `Hash[String,
+  # untyped]`, handing back a boxed poly whose `.split` result types as
+  # `unknown` -- and `.each` on `unknown` is a compile-time-baked
+  # `NoMethodError` ("undefined method 'each' for unknown"). `.to_s` re-narrows
+  # it to a concrete String so the split stays `Array[String]`. It is a no-op
+  # under the pinned Spinel, where the value is already a String.
   def children_of(branch)
     row = child_index[branch]
     return [] if row.nil?
 
     names = []
-    row.split("\n").each do |name|
+    row.to_s.split("\n").each do |name|
       names << name unless name.empty?
     end
     names.sort
@@ -837,7 +845,13 @@ class StackContext
     row = index[branch]
     return acc if row.nil?
 
-    row.split("\n").sort.each do |child|
+    # `.to_s` before the split for the same reason as `children_of`: newer
+    # Spinel can widen this index to `Hash[String, untyped]`, and `.split` on
+    # the boxed poly it hands back types as `unknown`, which bakes a
+    # `NoMethodError` ("undefined method 'each' for unknown") at the `.each`.
+    # Re-narrowing to a String keeps the split `Array[String]`; no-op under the
+    # pinned Spinel.
+    row.to_s.split("\n").sort.each do |child|
       next if child.empty?
 
       acc = walk_order(child, depth + 1, index, visited, acc)
