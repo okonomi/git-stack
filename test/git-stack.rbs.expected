@@ -33,12 +33,14 @@ class Object
   def set_base: (String, String) -> bool
   def clear_base: (String) -> bool
   def record_reparent_base: (String, String) -> nil
+  def reparent!: (String, String, String) -> nil
+  def untrack!: (String) -> nil
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String) -> Array[String]
   def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, String) -> String
-  def stack_root: (String, Array[String]) -> String
+  def stack_root: (StackContext, String, Array[String]) -> String
   def would_cycle?: (String, String, Array[String]) -> bool
   def validate_new_parent!: (String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
@@ -62,7 +64,8 @@ class Object
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
-  def restack_subtree: (String, String, bool, StackContext) -> nil
+  def restack_subtree: (String, String, bool, String, StackContext) -> nil
+  def run_stack_rebase: (bool) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_drop: (Array[String]) -> nil
@@ -142,18 +145,20 @@ end
 class StackContext
   @parents: Hash[String, String]
   @branches: Set
+  @children: Hash[String, String]
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil
   def load: (String) -> nil
+  def index_children: () -> nil
   def load_ahead_behind: (String) -> nil
   def parent_of: (String) -> String
   def effective_parent_of: (String) -> String
   def scan_ahead_behind: () -> String
-  def child_index: () -> Hash[String, String]
   def children_of: (String) -> Array[String]
   def order: (String) -> String
-  def walk_order: (String, Integer, Hash[String, String], Set, String) -> String
+  def order_branches: (String) -> Array[String]
+  def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
   def orphan_roots: () -> Array[String]
