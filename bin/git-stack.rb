@@ -245,17 +245,12 @@ end
 # main/master. Dies when none can be determined.
 def detect_trunk
   head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
-  if !head.empty?
-    trunk = head.sub(/^origin\//, "")
-  elsif branch_exists?("main")
-    trunk = "main"
-  elsif branch_exists?("master")
-    trunk = "master"
-  else
-    die("cannot determine trunk branch; run '#{PROG} init <branch>'")
-    trunk = "" # unreachable: die exits
-  end
-  trunk
+  return head.sub(/^origin\//, "") unless head.empty?
+  return "main" if branch_exists?("main")
+  return "master" if branch_exists?("master")
+
+  die("cannot determine trunk branch; run '#{PROG} init <branch>'")
+  "" # unreachable: die exits, but every path must still yield a String
 end
 
 # Every trunk, auto-detecting and caching one on first use.
@@ -268,15 +263,12 @@ def trunk_branches
   [trunk]
 end
 
-# The primary trunk -- the default base a branch falls back to (the first
-# configured trunk).
+# The primary trunk -- the default base a branch falls back to: the first
+# configured trunk, auto-detected and cached on first use exactly as
+# `trunk_branches` does it (this reads that list rather than repeating its
+# detect-and-persist fallback, so the two can't disagree on what the trunk is).
 def primary_trunk
-  trunks = configured_trunks
-  return trunks[0] unless trunks.empty?
-
-  detected = detect_trunk
-  set_trunks([detected])
-  detected
+  trunk_branches[0]
 end
 
 # True when `branch` is one of the configured trunks.
@@ -328,6 +320,28 @@ def record_reparent_base(branch, parent)
     return
   end
   set_base(branch, base)
+  nil
+end
+
+# Point `branch` at `parent` and re-anchor its stack base, as one step. These
+# two always belong together: a branch left pointing at a new parent with a base
+# from the old one replays the wrong range at restack time (and breaks outright
+# if the old base's history is later deleted). `err` is the message to die with
+# when the parent can't be recorded, so each command keeps its own wording.
+#
+# `restack_subtree` deliberately does NOT come through here -- it records the
+# base itself, from the parent's tip, after a successful rebase.
+def reparent!(branch, parent, err)
+  die(err) unless set_parent(branch, parent)
+  record_reparent_base(branch, parent)
+  nil
+end
+
+# Drop every stack key for `branch`. Parent and base are cleared as a unit, so a
+# branch can never keep a base pointing into a stack it no longer belongs to.
+def untrack!(branch)
+  clear_parent(branch)
+  clear_base(branch)
   nil
 end
 
@@ -397,15 +411,20 @@ end
 # Walk down from `branch` to the root of its stack (the branch whose parent is
 # the trunk or is untracked). Returns the root branch name.
 #
+# Reads the pre-captured `ctx` instead of spawning `git config` + `git show-ref`
+# per level (the two-subprocess-per-node pattern `branch_exists?` warns against):
+# its callers build a StackContext for the traversal that follows anyway, and it
+# already holds the parent map and branch set this walk needs.
+#
 # `seen` guards against cyclic parent chains (e.g. A -> B -> A) left over from
 # older versions or hand-edited config, so we terminate instead of hanging.
-def stack_root(branch, trunks)
+def stack_root(ctx, branch, trunks)
   seen = Set.new
   loop do
     seen.add(branch)
-    parent = get_parent(branch)
+    parent = ctx.parent_of(branch)
     break if parent.empty? || is_trunk?(parent, trunks)
-    break unless branch_exists?(parent)
+    break unless ctx.branch?(parent)
     break if seen.include?(parent)
 
     branch = parent
@@ -612,9 +631,10 @@ end
 #
 # It bundles the git state a traversal reads repeatedly:
 #
-#   @parents   branch -> recorded parent          (from the config scan)
-#   @branches  the set of existing local branches  (existing_branches)
-#   @ab        branch -> "<behind>\t<ahead>"       (ahead_behind_index)
+#   @parents   branch -> recorded parent           (from the config scan)
+#   @branches  the set of existing local branches   (existing_branches)
+#   @children  parent -> "<child>\n<child>\n..."    (`@parents` inverted)
+#   @ab        branch -> "<behind>\t<ahead>"        (ahead_behind_index)
 #   @trunk     the primary trunk a parentless branch falls back to (`build`'s arg)
 #
 # `@trunk` is what lets the in-memory traversal resolve a parentless branch to
@@ -622,14 +642,17 @@ end
 # single-command `parent`/`down` path uses -- so the tree's display, its
 # ahead/behind counts, and navigation never disagree on a branch's parent.
 #
-# The child relationship (branch -> its child branches) is NOT a field: it is
-# purely `@parents` inverted, and holding it as a field forced an array-valued
-# `Hash[String, Array[String]]`, which Spinel has no tag for and widens to
-# `Hash[String, untyped]` -- the pollution that then bled through `children_of`
-# into every traversal. It is rebuilt on demand inside `child_index` as a
-# newline-packed `Hash[String, String]` (a concrete type, like `@ab`), read
-# back with `.split("\n").sort` into a fresh `Array[String]`. `order` walks it
-# to yield a stack's traversal order; `children_of` reads one node's row.
+# `@children` is newline-PACKED, and that packing is what makes it a field at
+# all: the child relationship is `@parents` inverted, and holding it as the
+# `Hash[String, Array[String]]` an array value would force widens to
+# `Hash[String, untyped]` (Spinel has no tag for it) -- pollution that used to
+# bleed through `children_of` into every traversal. Packed, it is a concrete
+# `Hash[String, String]`, exactly like `@ab`, so it is built once by
+# `index_children` at `load` time rather than re-inverted on every `order` /
+# `children_of` call. Callers read a row back with `.split("\n")` into a fresh
+# `Array[String]`; that split is where the concrete element type is
+# (re)introduced. `order` walks it to yield a stack's traversal order;
+# `children_of` reads one node's row.
 #
 # Every lookup is in memory, so a whole traversal costs the two or three `git`
 # calls `build` makes up front rather than a subprocess per node. Splitting the
@@ -643,6 +666,7 @@ class StackContext
   def initialize
     @parents = {}
     @branches = Set.new
+    @children = {}
     @ab = {}
     @trunk = ""
     # Explicit nil: without it the trailing `@trunk = ""` assignment would be
@@ -685,6 +709,21 @@ class StackContext
       value = line[(space + 1)..-1]
       name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
       @parents[name] = value
+    end
+    index_children
+    nil
+  end
+
+  # Invert `@parents` into the packed `@children` index, once per context. The
+  # traversal looks up a node's children at every step, so this is built here
+  # rather than re-derived per `order` / `children_of` call (`tree` alone drives
+  # one walk per trunk and one per orphan root).
+  def index_children
+    @parents.each do |name, value|
+      next if value.empty?
+
+      row = @children[value]
+      @children[value] = row.nil? ? "#{name}\n" : "#{row}#{name}\n"
     end
     nil
   end
@@ -781,38 +820,20 @@ class StackContext
     result
   end
 
-  # `@parents` inverted: a `parent -> "<child>\n<child>\n..."` index built on
-  # demand from the config snapshot. Kept newline-PACKED as a
-  # `Hash[String, String]` -- a concrete type Spinel emits verbatim -- rather
-  # than the `Hash[String, Array[String]]` an array value would force (Spinel
-  # has no tag for that and widens the whole hash, and everything reading it,
-  # to untyped). Callers split a row back into a fresh `Array[String]`; that
-  # `.split("\n")` is where the concrete element type is (re)introduced.
-  def child_index
-    index = {}
-    @parents.each do |name, value|
-      next if value.empty?
-
-      row = index[value]
-      index[value] = row.nil? ? "#{name}\n" : "#{row}#{name}\n"
-    end
-    index
-  end
-
   # Sorted list of branches that record `branch` as their parent (empty when
-  # none do). Reads one row of the freshly built child index and splits it into
+  # none do). Reads one row of the packed `@children` index and splits it into
   # a concrete `Array[String]`; the `.sort` both orders siblings deterministically
   # and pins the element type (a poly array would raise on `sort` at run time).
   #
-  # The row is a String (child_index packs each value as one), but a `.to_s`
-  # guards the split: newer Spinel can widen `child_index` to `Hash[String,
+  # The row is a String (`index_children` packs each value as one), but a `.to_s`
+  # guards the split: newer Spinel can widen `@children` to `Hash[String,
   # untyped]`, handing back a boxed poly whose `.split` result types as
   # `unknown` -- and `.each` on `unknown` is a compile-time-baked
   # `NoMethodError` ("undefined method 'each' for unknown"). `.to_s` re-narrows
   # it to a concrete String so the split stays `Array[String]`. It is a no-op
   # under the pinned Spinel, where the value is already a String.
   def children_of(branch)
-    row = child_index[branch]
+    row = @children[branch]
     return [] if row.nil?
 
     names = []
@@ -829,20 +850,39 @@ class StackContext
   # flat, so the indent (tree) or nothing (restack) is a single `Integer` depth
   # instead of a threaded prefix string, and the cycle guard lives here once.
   def order(root)
-    walk_order(root, 0, child_index, Set.new, "")
+    walk_order(root, 0, Set.new, "")
+  end
+
+  # The same pre-order walk as `order`, with the depth dropped: just the branch
+  # names, `root` first. For the callers that traverse a subtree but never
+  # render it (`restack_subtree`), so the packed `"<depth>\t<branch>"` line
+  # format has exactly one decoder (`print_order`) instead of two that must
+  # agree. The split introduces the concrete element type, as in `children_of`.
+  def order_branches(root)
+    names = []
+    order(root).split("\n").each do |line|
+      next if line.empty?
+
+      tab = line.index("\t")
+      next if tab.nil?
+
+      names << line[(tab + 1)..-1]
+    end
+    names
   end
 
   # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
-  # reading children from the packed `index`. `visited` guards against cyclic
-  # parent chains (A -> B -> A from hand-edited config) so the walk terminates
-  # and emits each branch at most once. `acc` is threaded and returned rather
-  # than mutated in place; the interpolation keeps its type a concrete String.
-  def walk_order(branch, depth, index, visited, acc)
+  # reading children from the packed `@children` index. `visited` guards against
+  # cyclic parent chains (A -> B -> A from hand-edited config) so the walk
+  # terminates and emits each branch at most once. `acc` is threaded and returned
+  # rather than mutated in place; the interpolation keeps its type a concrete
+  # String.
+  def walk_order(branch, depth, visited, acc)
     return acc if visited.include?(branch)
     visited.add(branch)
     acc = "#{acc}#{depth}\t#{branch}\n"
 
-    row = index[branch]
+    row = @children[branch]
     return acc if row.nil?
 
     # `.to_s` before the split for the same reason as `children_of`: newer
@@ -854,7 +894,7 @@ class StackContext
     row.to_s.split("\n").sort.each do |child|
       next if child.empty?
 
-      acc = walk_order(child, depth + 1, index, visited, acc)
+      acc = walk_order(child, depth + 1, visited, acc)
     end
     acc
   end
@@ -961,11 +1001,7 @@ end
 # COMMAND_FLAGS / parse_global_flags), so a command reads them by name rather
 # than by position.
 def has_flag?(args, flag)
-  found = false
-  args.each do |a|
-    found = true if a == flag
-  end
-  found
+  args.include?(flag)
 end
 
 # The first non-flag argument in `args`, or "" when there is none -- so a lone
@@ -1040,8 +1076,7 @@ def cmd_parent(args)
     return
   end
   validate_new_parent!(branch, new_parent, trunk_branches, "setting it as parent")
-  die("failed to set parent of '#{branch}'") unless set_parent(branch, new_parent)
-  record_reparent_base(branch, new_parent)
+  reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
@@ -1051,15 +1086,13 @@ def cmd_track(args)
   parent = arg0(args)
   parent = trunks[0] if parent.empty?
   validate_new_parent!(branch, parent, trunks, "tracking it")
-  die("failed to track '#{branch}'") unless set_parent(branch, parent)
-  record_reparent_base(branch, parent)
+  reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
 
 def cmd_untrack(_args)
   branch = current_branch
-  clear_parent(branch)
-  clear_base(branch)
+  untrack!(branch)
   info "'#{branch}' is no longer tracked in a stack"
 end
 
@@ -1121,11 +1154,18 @@ def resolve_stack_base(branch, parent)
 end
 
 # Rebase the whole stack rooted at `root` onto itself, each branch onto its
-# parent, in `ctx.order(root)` order (each parent before its children).
+# parent, in `ctx.order_branches(root)` order (each parent before its children).
 #
-# The traversal order is fixed up front by `ctx.order`, which also carries the
-# cycle guard (a hand-edited A -> B -> A chain terminates and visits each branch
-# once), so this is a flat loop over its lines rather than a recursion.
+# The traversal order is fixed up front by `ctx.order_branches`, which also
+# carries the cycle guard (a hand-edited A -> B -> A chain terminates and visits
+# each branch once), so this is a flat loop over branch names rather than a
+# recursion.
+#
+# `verb` is the subcommand to name when a rebase conflicts ("then re-run '#{PROG}
+# <verb>'"). It is passed in rather than derived from `heal_orphans`, which is a
+# behaviour knob and not the caller's identity: `drop` heals nothing yet must
+# still send the user to `restack`, since its splice is already committed to
+# config and re-running `drop` would be wrong.
 #
 # A branch with no recorded parent is untracked and is left untouched -- we do
 # *not* fall back to rebasing it onto the trunk.
@@ -1142,14 +1182,8 @@ end
 # per node -- safe because neither restack nor sync creates or deletes branch
 # refs mid-traversal (sync only rewrites `stackParent` config, and rebase
 # updates a branch's history in place without removing the ref).
-def restack_subtree(root, trunk, heal_orphans, ctx)
-  ctx.order(root).split("\n").each do |line|
-    next if line.empty?
-
-    tab = line.index("\t")
-    next if tab.nil?
-
-    branch = line[(tab + 1)..-1]
+def restack_subtree(root, trunk, heal_orphans, verb, ctx)
+  ctx.order_branches(root).each do |branch|
     parent = ctx.parent_of(branch)
 
     if heal_orphans && !parent.empty? && !ctx.branch?(parent)
@@ -1182,7 +1216,6 @@ def restack_subtree(root, trunk, heal_orphans, ctx)
         end
         unless ok
           git_ok("rebase --abort")
-          verb = heal_orphans ? "sync" : "restack"
           recover = base.empty? ? "git rebase #{parent}" : "git rebase --onto #{parent} #{base}"
           die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
               "Resolve it manually with:\n" \
@@ -1198,36 +1231,38 @@ def restack_subtree(root, trunk, heal_orphans, ctx)
   nil
 end
 
-def cmd_restack(_args)
+# The shared body of `restack` and `sync`: restack the stack the current branch
+# belongs to, then return to it. The two commands are the same walk over the same
+# stack and differ only in whether a branch whose parent was deleted is healed
+# onto trunk first -- so `heal_orphans` is the only thing they pass, and the
+# wording follows from it.
+def run_stack_rebase(heal_orphans)
+  verb = heal_orphans ? "sync" : "restack"
+  gerund = heal_orphans ? "syncing" : "restacking"
   original = current_branch
   trunks = trunk_branches
-  root = stack_root(original, trunks)
-
-  info "restacking stack rooted at #{cyan(root)}"
+  # Built before the root walk, which reads the stack's topology out of it
+  # rather than re-deriving it with a subprocess per level.
   ctx = StackContext.build_topology
-  restack_subtree(root, trunks[0], false, ctx)
+  root = stack_root(ctx, original, trunks)
+
+  info "#{gerund} stack rooted at #{cyan(root)}"
+  restack_subtree(root, trunks[0], heal_orphans, verb, ctx)
 
   unless git_ok("checkout #{sh(original)}")
-    die("restack completed, but returning to '#{original}' failed;\n" \
+    die("#{verb} completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
   info green("done.")
+  nil
+end
+
+def cmd_restack(_args)
+  run_stack_rebase(false)
 end
 
 def cmd_sync(_args)
-  original = current_branch
-  trunks = trunk_branches
-  root = stack_root(original, trunks)
-
-  info "syncing stack rooted at #{cyan(root)}"
-  ctx = StackContext.build_topology
-  restack_subtree(root, trunks[0], true, ctx)
-
-  unless git_ok("checkout #{sh(original)}")
-    die("sync completed, but returning to '#{original}' failed;\n" \
-        "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
-  end
-  info green("done.")
+  run_stack_rebase(true)
 end
 
 # Splice `branch` out of the stack graph: reconnect each of its children to
@@ -1257,7 +1292,7 @@ def cmd_drop(args)
   # Where the children reconnect: the dropped branch's own parent, or the
   # primary trunk when it sat directly on a trunk (no recorded parent).
   parent = get_parent(branch)
-  parent = primary_trunk if parent.empty?
+  parent = trunks[0] if parent.empty?
 
   # Capture the children BEFORE rewriting config -- `branch.<child>.stackParent`
   # is about to change. Each child is reparented exactly as `parent`/`track` do
@@ -1267,21 +1302,21 @@ def cmd_drop(args)
   # replay the wrong range, and break outright if that ref is later deleted).
   moved = children_of(branch)
   moved.each do |child|
-    die("failed to reparent '#{child}' onto '#{parent}'") unless set_parent(child, parent)
-    record_reparent_base(child, parent)
+    reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
   end
 
   # Untrack the dropped branch. Its ref is left intact -- deleting it stays an
   # explicit, separate act unless `--delete` was passed.
-  clear_parent(branch)
-  clear_base(branch)
+  untrack!(branch)
   info "dropped #{green(branch)}; reparented children onto #{cyan(parent)}"
 
   # Restack each moved subtree onto its new parent. Rebuild the topology first
   # so it reflects the config rewrites above.
   ctx = StackContext.build_topology
   moved.each do |child|
-    restack_subtree(child, trunks[0], false, ctx)
+    # "restack", not "drop", on conflict: the splice above is already written to
+    # config, so the move to recover with is a restack of the moved subtree.
+    restack_subtree(child, trunks[0], false, "restack", ctx)
   end
 
   if delete
