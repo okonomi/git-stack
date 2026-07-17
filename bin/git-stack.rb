@@ -190,19 +190,14 @@ def branch_exists?(name)
   git_ok("show-ref --verify --quiet refs/heads/#{sh(name)}")
 end
 
-# Count of commits reachable from `to` but not `from` (git rev-list from..to).
-def commit_count(range_from, range_to)
-  git_out("rev-list --count #{sh(range_from)}..#{sh(range_to)}").to_i
-end
-
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
-# `git rev-list --left-right --count` call instead of two separate
-# `commit_count` calls.
+# `git rev-list --left-right --count` call: behind is how many commits parent
+# has that branch lacks, ahead how many branch has that parent lacks.
 #
 # `tree` no longer calls this per node -- it batches every node's counts into
 # one `git for-each-ref` (see scan_ahead_behind) and only falls back here on
 # git too old for that atom. It is still the per-branch path for `restack`'s
-# up-to-date check (via commit_count) and remains correct for one-off use.
+# up-to-date check and remains correct for one-off use.
 def ahead_behind(parent, branch)
   out = git_out("rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
   parts = out.split("\t")
@@ -1238,12 +1233,22 @@ def restack_subtree(root, trunk, heal_orphans, verb, ctx)
     end
 
     if !parent.empty? && ctx.branch?(parent)
-      behind = commit_count(branch, parent)
+      behind, ahead = ahead_behind(parent, branch)
       if behind == 0
-        # Already on the parent's tip: nothing to replay. Self-heal the recorded
-        # base to the parent's tip so a later parent advance replays from the
-        # right point (this also back-fills branches that predate stackBase).
-        set_base(branch, git_out("rev-parse #{sh(parent)}"))
+        # Already on the parent's tip: nothing to replay (this also back-fills
+        # the base for branches that predate stackBase).
+        nil
+      elsif ahead == 0
+        # The branch has no commits of its own above the parent -- it is a strict
+        # ancestor of the parent, so its work already sits there and the parent has
+        # since advanced past it (e.g. the branch was merged into trunk, then trunk
+        # moved on). There is nothing to replay: a `rebase --onto <parent> <base>`
+        # would re-apply the `base..branch` commits that the parent already
+        # contains and conflict against them. Fast-forward the branch to the parent
+        # instead.
+        info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
+        ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
+        die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
       else
         info "restacking #{cyan(branch)} onto #{cyan(parent)}"
         # Replay only the branch's own commits (those above `base`) onto the
@@ -1267,10 +1272,13 @@ def restack_subtree(root, trunk, heal_orphans, verb, ctx)
               "    git checkout #{branch} && #{recover}\n" \
               "then re-run '#{PROG} #{verb}'.")
         end
-        # Rebase succeeded: the branch now sits on the parent's tip, so that
-        # becomes its new base.
-        set_base(branch, git_out("rev-parse #{sh(parent)}"))
       end
+      # Every surviving arm leaves the branch sitting on the parent's tip (the
+      # no-op arm was already there; fast-forward and rebase just moved it), so
+      # re-anchor the recorded base there. A later parent advance then replays
+      # from the right point. Both moving arms `die` on failure, so reaching here
+      # means the branch really is on the tip.
+      set_base(branch, git_out("rev-parse #{sh(parent)}"))
     end
   end
   nil

@@ -431,6 +431,27 @@ puts "feature-b contains b1: #{`cd #{$repo} && git log --oneline feature-b | gre
 show("feature-b stackBase == main tip",
      'test "$(git config --get branch.feature-b.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
 
+# A branch whose own commits already sit in its parent, with the parent advanced
+# past it (a base branch merged into trunk, then trunk moved on): it has commits
+# in `base..branch` but none above the parent, so `rebase --onto <parent> <base>`
+# would re-apply commits the parent already has and conflict. sync must instead
+# fast-forward it to the parent -- never enter a rebase.
+section "sync fast-forwards a branch fully merged into its parent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+# Fold feat-a into main (fast-forward), then advance main so feat-a is a strict
+# ancestor of main with no commits of its own above it.
+setup("git checkout -q main")
+setup("git merge -q --ff-only feat-a")
+commit("m.txt", "m1")
+setup("git checkout -q feat-a")
+run("sync")
+show("feat-a behind main", "git rev-list --count feat-a..main")
+show("feat-a commits above main", "git rev-list --count main..feat-a")
+show("feat-a stackBase == main tip",
+     'test "$(git config --get branch.feat-a.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
+show("HEAD", "git branch --show-current")
+
 # A branch that predates stackBase (its config has stackParent but no stackBase)
 # must still restack correctly: `restack` falls back to the live merge-base of
 # the branch and its parent, then re-records the base.
