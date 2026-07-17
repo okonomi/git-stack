@@ -18,7 +18,6 @@ class Object
   def current_branch_or_empty: () -> String
   def current_branch: () -> String
   def branch_exists?: (String) -> bool
-  def commit_count: (String, String) -> Integer
   def ahead_behind: (String, String) -> Array[Integer]
   def configured_trunks: () -> Array[String]
   def set_trunks: (Array[String]) -> Array[String]

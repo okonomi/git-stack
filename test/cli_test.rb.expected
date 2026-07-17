@@ -313,6 +313,17 @@ feature-b contains a2: 0
 feature-b contains b1: 1
 feature-b stackBase == main tip: yes
 
+### sync fast-forwards a branch fully merged into its parent
+$ git stack sync
+syncing stack rooted at feat-a
+fast-forwarding feat-a to main
+done.
+[exit 0]
+feat-a behind main: 0
+feat-a commits above main: 0
+feat-a stackBase == main tip: yes
+HEAD: feat-a
+
 ### restack falls back to merge-base when stackBase is unrecorded
 $ git stack restack
 restacking stack rooted at feat-a
