@@ -731,7 +731,17 @@ class StackContext
   # traversal looks up a node's children at every step, so this is built here
   # rather than re-derived per `order` / `children_of` call (`tree` alone drives
   # one walk per trunk and one per orphan root).
+  #
+  # Rebuilds from empty rather than appending to whatever is there: the rows are
+  # accumulated with `"#{row}#{name}\n"`, so without the reset a second `load`
+  # (or a bare second call) would append every child a second time and
+  # `children_of` would answer ["a", "a", "b", "b"] -- enough for `cmd_up` to
+  # report "multiple children" for a branch that has one. The `child_index` this
+  # replaced built a fresh local hash per call and could not drift that way;
+  # keeping it derived-not-accumulated preserves that, since a field outlives the
+  # call that filled it.
   def index_children
+    @children = {}
     @parents.each do |name, value|
       next if value.empty?
 
@@ -866,20 +876,45 @@ class StackContext
     walk_order(root, 0, Set.new, "")
   end
 
+  # The two readers of one packed order line ("<depth>\t<branch>", see `order`).
+  # `order_branches` wants the name, `print_order` wants both, so the tab layout
+  # is known here and nowhere else -- the format has one owner rather than two
+  # call sites that must keep agreeing about where the separator sits.
+  #
+  # A line with no tab has no branch, so `order_line_branch` answers "" for it.
+  # That covers the empty trailing line every `"...\n"` split yields as well as a
+  # malformed one, and both callers already skip on an empty name -- so it
+  # doubles as their guard instead of each repeating an `empty?`/`nil?` pair.
+  def order_line_branch(line)
+    tab = line.index("\t")
+    return "" if tab.nil?
+
+    line[(tab + 1)..-1]
+  end
+
+  # The depth from one packed order line; 0 for a line with no tab, which
+  # `order_line_branch` has already rejected by the time this is read.
+  def order_line_depth(line)
+    tab = line.index("\t")
+    return 0 if tab.nil?
+
+    line[0...tab].to_i
+  end
+
   # The same pre-order walk as `order`, with the depth dropped: just the branch
-  # names, `root` first. For the callers that traverse a subtree but never
-  # render it (`restack_subtree`), so the packed `"<depth>\t<branch>"` line
-  # format has exactly one decoder (`print_order`) instead of two that must
-  # agree. The split introduces the concrete element type, as in `children_of`.
+  # names, `root` first. For the callers that traverse a subtree but never render
+  # it (`restack_subtree`).
+  #
+  # It decodes what `order` just encoded, which is deliberate: the alternative is
+  # a second walk of `@children` to maintain alongside `walk_order`, and one walk
+  # that tree and restack share cannot disagree with itself about traversal order
+  # or the cycle guard. The `<<` of a `String` slice introduces the concrete
+  # element type, as in `children_of`.
   def order_branches(root)
     names = []
     order(root).split("\n").each do |line|
-      next if line.empty?
-
-      tab = line.index("\t")
-      next if tab.nil?
-
-      names << line[(tab + 1)..-1]
+      name = order_line_branch(line)
+      names << name unless name.empty?
     end
     names
   end
@@ -988,13 +1023,10 @@ end
 # an orphaned stack renders at the same indent a trunk's children would).
 def print_order(root, base, skip_root, cur, ctx)
   ctx.order(root).split("\n").each do |line|
-    next if line.empty?
+    branch = ctx.order_line_branch(line)
+    next if branch.empty?
 
-    tab = line.index("\t")
-    next if tab.nil?
-
-    depth = line[0...tab].to_i
-    branch = line[(tab + 1)..-1]
+    depth = ctx.order_line_depth(line)
     next if skip_root && depth == 0
 
     print_tree_row(branch, depth + base, cur, ctx)
@@ -1247,11 +1279,17 @@ end
 # The shared body of `restack` and `sync`: restack the stack the current branch
 # belongs to, then return to it. The two commands are the same walk over the same
 # stack and differ only in whether a branch whose parent was deleted is healed
-# onto trunk first -- so `heal_orphans` is the only thing they pass, and the
-# wording follows from it.
-def run_stack_rebase(heal_orphans)
-  verb = heal_orphans ? "sync" : "restack"
-  gerund = heal_orphans ? "syncing" : "restacking"
+# onto trunk first -- `heal_orphans` is that difference, and the only one.
+#
+# `verb`/`gerund` are the calling command's own name, passed in rather than
+# derived from `heal_orphans` -- exactly the separation `restack_subtree` makes
+# for its own `verb`, and for the same reason: the flag is a behaviour knob, not
+# the caller's identity, and the two are not the caller's to conflate. Deriving
+# them here would also spell each command's name twice, in ternaries that a later
+# third mode could leave disagreeing ("syncing stack rooted at X" followed by
+# "restack completed, but returning to..."). Each command now states both forms
+# once, together.
+def run_stack_rebase(heal_orphans, verb, gerund)
   original = current_branch
   trunks = trunk_branches
   # Built before the root walk, which reads the stack's topology out of it
@@ -1271,11 +1309,11 @@ def run_stack_rebase(heal_orphans)
 end
 
 def cmd_restack(_args)
-  run_stack_rebase(false)
+  run_stack_rebase(false, "restack", "restacking")
 end
 
 def cmd_sync(_args)
-  run_stack_rebase(true)
+  run_stack_rebase(true, "sync", "syncing")
 end
 
 # Splice `branch` out of the stack graph: reconnect each of its children to
@@ -1298,13 +1336,20 @@ def cmd_drop(args)
   branch = operand.empty? ? current_branch : operand
   trunks = trunk_branches
   die("cannot drop trunk '#{branch}'") if is_trunk?(branch, trunks)
-  die("branch '#{branch}' does not exist") unless branch_exists?(branch)
+
+  # One snapshot answers every read the splice needs -- does `branch` exist, what
+  # is its parent, what are its children -- instead of a `show-ref`, a `git
+  # config`, and a whole throwaway context (the top-level `children_of` builds
+  # one) spawning their own subprocesses for state a single scan already holds.
+  # It is deliberately NOT reused past the rewrites below; those invalidate it.
+  ctx = StackContext.build_topology
+  die("branch '#{branch}' does not exist") unless ctx.branch?(branch)
 
   original = current_branch_or_empty
 
   # Where the children reconnect: the dropped branch's own parent, or the
   # primary trunk when it sat directly on a trunk (no recorded parent).
-  parent = get_parent(branch)
+  parent = ctx.parent_of(branch)
   parent = trunks[0] if parent.empty?
 
   # Capture the children BEFORE rewriting config -- `branch.<child>.stackParent`
@@ -1313,7 +1358,7 @@ def cmd_drop(args)
   # merge-base(child, parent) so `restack`'s `--onto` replays from the right
   # point (leaving the old base pointing into the dropped parent's history would
   # replay the wrong range, and break outright if that ref is later deleted).
-  moved = children_of(branch)
+  moved = ctx.children_of(branch)
   moved.each do |child|
     reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
   end

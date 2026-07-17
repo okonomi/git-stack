@@ -65,7 +65,7 @@ class Object
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
   def restack_subtree: (String, String, bool, String, StackContext) -> nil
-  def run_stack_rebase: (bool) -> nil
+  def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_drop: (Array[String]) -> nil
@@ -157,6 +157,8 @@ class StackContext
   def scan_ahead_behind: () -> String
   def children_of: (String) -> Array[String]
   def order: (String) -> String
+  def order_line_branch: (String) -> String
+  def order_line_depth: (String) -> Integer
   def order_branches: (String) -> Array[String]
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
