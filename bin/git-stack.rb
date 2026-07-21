@@ -331,6 +331,16 @@ def record_reparent_base(branch, parent)
   nil
 end
 
+# Record the stack base when `branch` is known to be sitting exactly on
+# `parent`'s tip -- freshly created on it (`create`), or just replayed onto it
+# (`restack`). The counterpart to `record_reparent_base`, which handles the
+# already-diverged case with a merge-base; here the tip IS the point the
+# branch's own commits begin, so no merge-base walk is needed.
+def record_tip_base(branch, parent)
+  set_base(branch, git_out("rev-parse #{sh(parent)}"))
+  nil
+end
+
 # Point `branch` at `parent` and re-anchor its stack base, as one step. These
 # two always belong together: a branch left pointing at a new parent with a base
 # from the old one replays the wrong range at restack time (and breaks outright
@@ -442,28 +452,34 @@ end
 
 # True if making `new_parent` the parent of `branch` would create a cycle --
 # that is, `branch` already lies on `new_parent`'s chain of ancestors.
-def would_cycle?(branch, new_parent, trunks)
+#
+# Walks the pre-captured `ctx` rather than spawning `git config` + `git show-ref`
+# per level -- the two-subprocess-per-node pattern `branch_exists?` warns
+# against, and the same one `stack_root` was moved off. The whole walk now costs
+# the two `git` calls `build_topology` makes up front, whatever its depth.
+def would_cycle?(ctx, branch, new_parent, trunks)
   seen = Set.new
   cur = new_parent
   loop do
     return true if cur == branch
     break if cur.empty? || is_trunk?(cur, trunks)
     break if seen.include?(cur)
-    break unless branch_exists?(cur)
+    break unless ctx.branch?(cur)
 
     seen.add(cur)
-    cur = get_parent(cur)
+    cur = ctx.parent_of(cur)
   end
   false
 end
 
 # Validate that `candidate` can become the parent of `branch`: it must exist,
 # must not be `branch` itself, and must not create a cycle. `verb` customizes
-# the cycle-error wording for the calling command.
-def validate_new_parent!(branch, candidate, trunks, verb)
-  die("branch '#{candidate}' does not exist") unless branch_exists?(candidate)
+# the cycle-error wording for the calling command. `ctx` answers both the
+# existence check and the whole ancestor walk from one snapshot.
+def validate_new_parent!(ctx, branch, candidate, trunks, verb)
+  die("branch '#{candidate}' does not exist") unless ctx.branch?(candidate)
   die("a branch cannot be its own parent") if candidate == branch
-  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunks)
+  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(ctx, branch, candidate, trunks)
 end
 
 # --- tree rendering ---------------------------------------------------------
@@ -483,6 +499,32 @@ def tree_name(branch, cur, default_code)
   paint(default_code, branch)
 end
 
+# Several of the indexes below are kept as newline-packed strings of
+# `"<left>\t<right>"` lines (see StackContext for why packing beats an
+# `Array`/nested `Hash` here): the ahead/behind pairs `"<branch>\t<parent>"`, a
+# for-each-ref row `"<branch>\t<cols...>"`, and an order line
+# `"<depth>\t<branch>"`. These two readers are where that layout is known --
+# every consumer asks for a side by name instead of re-deriving the separator's
+# position, so changing the format is a one-place edit rather than a six-site
+# one.
+#
+# A line with no tab has no fields, so both answer "". Every caller already
+# skips on an empty side, which doubles as their malformed-line guard (and
+# covers the empty trailing line a `"...\n"` split yields).
+def tab_head(line)
+  tab = line.index("\t")
+  return "" if tab.nil?
+
+  line[0...tab]
+end
+
+def tab_tail(line)
+  tab = line.index("\t")
+  return "" if tab.nil?
+
+  line[(tab + 1)..-1]
+end
+
 # How many branches per batched `git for-each-ref` in scan_ahead_behind.
 #
 # Each batch's captured output must stay well under Spinel's ~4 KB backtick
@@ -500,18 +542,13 @@ AHEAD_BEHIND_CHUNK = 12
 # element reads Spinel widens to untyped; see scan_ahead_behind).
 def ahead_behind_bases(group)
   bases = ""
+  seen = Set.new
   group.split("\n").each do |pl|
-    next if pl.empty?
+    parent = tab_tail(pl)
+    next if parent.empty? || seen.include?(parent)
 
-    tab = pl.index("\t")
-    next if tab.nil?
-
-    parent = pl[(tab + 1)..-1]
-    known = false
-    bases.split("\n").each do |b|
-      known = true if b == parent
-    end
-    bases = "#{bases}#{parent}\n" unless known
+    seen.add(parent)
+    bases = "#{bases}#{parent}\n"
   end
   bases
 end
@@ -522,57 +559,62 @@ end
 def ahead_behind_refs(group)
   refs = ""
   group.split("\n").each do |pl|
-    next if pl.empty?
+    branch = tab_head(pl)
+    next if branch.empty?
 
-    tab = pl.index("\t")
-    next if tab.nil?
-
-    branch = pl[0...tab]
     refs = "#{refs} refs/heads/#{sh(branch)}"
   end
   refs
 end
 
+# branch -> the for-each-ref column carrying that branch's counts, for one
+# batch. `bases` lists the distinct parents in the order `ahead_behind_chunk`
+# appends their `%(ahead-behind:)` atoms, so a parent's position in it IS its
+# column number; `group` then maps each branch to its parent.
+#
+# Built once per batch rather than re-derived per output row: it is the whole of
+# what the readback needs to know about `group` and `bases`, and computing it up
+# front means the row loop is a single hash lookup instead of two nested scans
+# reconstructing the same branch -> parent -> column chain in two encodings.
+def ahead_behind_columns(group, bases)
+  parent_col = {}
+  n = 0
+  bases.split("\n").each do |b|
+    next if b.empty?
+
+    parent_col[b] = n
+    n += 1
+  end
+
+  cols = {}
+  group.split("\n").each do |pl|
+    branch = tab_head(pl)
+    next if branch.empty?
+
+    col = parent_col[tab_tail(pl)]
+    cols[branch] = col unless col.nil?
+  end
+  cols
+end
+
 # Read one batch's for-each-ref `output` back into "<branch>\t<behind>\t<ahead>"
-# lines. Each row is "<branch>\t<col0>\t<col1>..."; the branch's own parent (from
-# `group`) selects which `bases` column carries its "<ahead> <behind>" pair. All
-# string slicing plus `.each` block variables -- no Array[String] indexing (see
+# lines. Each row is "<branch>\t<col0>\t<col1>..."; `cols` (from
+# `ahead_behind_columns`) says which column is this branch's. All string slicing
+# plus `.each` block variables -- no Array[String] indexing (see
 # scan_ahead_behind).
-def ahead_behind_readback(output, group, bases)
+def ahead_behind_readback(output, cols)
   result = ""
   output.split("\n").each do |row|
-    next if row.empty?
+    branch = tab_head(row)
+    next if branch.empty?
 
-    tab = row.index("\t")
-    next if tab.nil?
-
-    branch = row[0...tab]
-    rest = row[(tab + 1)..-1]
-
-    # This branch's parent (from the group), then that parent's column number.
-    parent = ""
-    group.split("\n").each do |pl|
-      ptab = pl.index("\t")
-      next if ptab.nil?
-
-      parent = pl[(ptab + 1)..-1] if pl[0...ptab] == branch
-    end
-    next if parent.empty?
-
-    idx = -1
-    n = 0
-    bases.split("\n").each do |b|
-      next if b.empty?
-
-      idx = n if b == parent
-      n += 1
-    end
-    next if idx < 0
+    idx = cols[branch]
+    next if idx.nil?
 
     # The idx-th tab-separated ahead-behind column ("<ahead> <behind>").
     col = ""
     c = 0
-    rest.split("\t").each do |f|
+    tab_tail(row).split("\t").each do |f|
       col = f if c == idx
       c += 1
     end
@@ -606,7 +648,7 @@ def ahead_behind_chunk(group)
   end
 
   out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
-  ahead_behind_readback(out, group, bases)
+  ahead_behind_readback(out, ahead_behind_columns(group, bases))
 end
 
 # Parse a `scan_ahead_behind` result string once into a name -> "behind\tahead"
@@ -872,28 +914,22 @@ class StackContext
   end
 
   # The two readers of one packed order line ("<depth>\t<branch>", see `order`).
-  # `order_branches` wants the name, `print_order` wants both, so the tab layout
-  # is known here and nowhere else -- the format has one owner rather than two
-  # call sites that must keep agreeing about where the separator sits.
+  # `order_branches` wants the name, `print_order` wants both. Both go through
+  # the shared `tab_head`/`tab_tail`, so this pair names which side of an order
+  # line means what and nothing here knows where the separator sits.
   #
   # A line with no tab has no branch, so `order_line_branch` answers "" for it.
   # That covers the empty trailing line every `"...\n"` split yields as well as a
   # malformed one, and both callers already skip on an empty name -- so it
   # doubles as their guard instead of each repeating an `empty?`/`nil?` pair.
   def order_line_branch(line)
-    tab = line.index("\t")
-    return "" if tab.nil?
-
-    line[(tab + 1)..-1]
+    tab_tail(line)
   end
 
-  # The depth from one packed order line; 0 for a line with no tab, which
-  # `order_line_branch` has already rejected by the time this is read.
+  # The depth from one packed order line; 0 for a line with no tab (`""`.to_i),
+  # which `order_line_branch` has already rejected by the time this is read.
   def order_line_depth(line)
-    tab = line.index("\t")
-    return 0 if tab.nil?
-
-    line[0...tab].to_i
+    tab_head(line).to_i
   end
 
   # The same pre-order walk as `order`, with the depth dropped: just the branch
@@ -928,12 +964,9 @@ class StackContext
     row = @children[branch]
     return acc if row.nil?
 
-    # `.to_s` before the split for the same reason as `children_of`: newer
-    # Spinel can widen this index to `Hash[String, untyped]`, and `.split` on
-    # the boxed poly it hands back types as `unknown`, which bakes a
-    # `NoMethodError` ("undefined method 'each' for unknown") at the `.each`.
-    # Re-narrowing to a String keeps the split `Array[String]`; no-op under the
-    # pinned Spinel.
+    # `.to_s` before the split for the reason spelled out in `children_of`: it
+    # re-narrows a `@children` value Spinel may have widened, keeping the split
+    # an `Array[String]`. No-op under the pinned Spinel.
     row.to_s.split("\n").sort.each do |child|
       next if child.empty?
 
@@ -1079,7 +1112,7 @@ def cmd_create(args)
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
   # The base is the parent's tip: a freshly created branch has no commits of its
   # own yet, so its stack begins exactly where the parent currently sits.
-  set_base(name, git_out("rev-parse #{sh(parent)}"))
+  record_tip_base(name, parent)
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
@@ -1115,7 +1148,7 @@ def cmd_parent(args)
     puts effective_parent(branch, primary_trunk)
     return
   end
-  validate_new_parent!(branch, new_parent, trunk_branches, "setting it as parent")
+  validate_new_parent!(StackContext.build_topology, branch, new_parent, trunk_branches, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1125,7 +1158,7 @@ def cmd_track(args)
   trunks = trunk_branches
   parent = arg0(args)
   parent = trunks[0] if parent.empty?
-  validate_new_parent!(branch, parent, trunks, "tracking it")
+  validate_new_parent!(StackContext.build_topology, branch, parent, trunks, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1209,6 +1242,35 @@ def resolve_stack_base(branch, parent)
   mb
 end
 
+# Replay `branch`'s own commits onto `parent`'s tip, or die with the manual
+# recovery command. Only the branch's commits (those above its stack base) are
+# replayed: a plain `git rebase <parent>` would instead replay every commit in
+# `parent..branch`, re-applying a squash-merged parent's work and conflicting;
+# `--onto` with the recorded base avoids that. When no base can be resolved at
+# all we do fall back to the plain rebase, for branches predating stackBase.
+#
+# `verb` is the subcommand to send the user back to after resolving a conflict
+# (see `restack_subtree`, whose loop this is the moving arm of).
+def replay_onto!(branch, parent, verb)
+  info "restacking #{cyan(branch)} onto #{cyan(parent)}"
+  base = resolve_stack_base(branch, parent)
+  if base.empty?
+    info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
+    ok = git_ok("rebase #{sh(parent)} #{sh(branch)}")
+  else
+    ok = git_ok("rebase --onto #{sh(parent)} #{sh(base)} #{sh(branch)}")
+  end
+  return nil if ok
+
+  git_ok("rebase --abort")
+  recover = base.empty? ? "git rebase #{parent}" : "git rebase --onto #{parent} #{base}"
+  die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
+      "Resolve it manually with:\n" \
+      "    git checkout #{branch} && #{recover}\n" \
+      "then re-run '#{PROG} #{verb}'.")
+  nil
+end
+
 # Rebase the whole stack rooted at `root` onto itself, each branch onto its
 # parent, in `ctx.order_branches(root)` order (each parent before its children).
 #
@@ -1250,51 +1312,31 @@ def restack_subtree(root, trunk, heal_orphans, verb, ctx)
 
     if !parent.empty? && ctx.branch?(parent)
       behind, ahead = ahead_behind(parent, branch)
-      if behind == 0
-        # Already on the parent's tip: nothing to replay (this also back-fills
-        # the base for branches that predate stackBase).
-        nil
-      elsif ahead == 0
-        # The branch has no commits of its own above the parent -- it is a strict
-        # ancestor of the parent, so its work already sits there and the parent has
-        # since advanced past it (e.g. the branch was merged into trunk, then trunk
-        # moved on). There is nothing to replay: a `rebase --onto <parent> <base>`
-        # would re-apply the `base..branch` commits that the parent already
-        # contains and conflict against them. Fast-forward the branch to the parent
-        # instead.
-        info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
-        ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
-        die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
-      else
-        info "restacking #{cyan(branch)} onto #{cyan(parent)}"
-        # Replay only the branch's own commits (those above `base`) onto the
-        # parent's tip. A plain `git rebase <parent>` would instead replay every
-        # commit in `parent..branch`, re-applying a squash-merged parent's work
-        # and conflicting; `--onto` with the recorded base avoids that.
-        base = resolve_stack_base(branch, parent)
-        if base.empty?
-          # No usable base and no merge-base to derive one from: fall back to a
-          # plain rebase (backward compat for branches with no recorded base).
-          info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
-          ok = git_ok("rebase #{sh(parent)} #{sh(branch)}")
+      # `behind == 0` means the branch is already on the parent's tip and there
+      # is nothing to move; it still falls through to the re-anchor below, which
+      # is what back-fills the base for branches predating stackBase.
+      if behind > 0
+        if ahead == 0
+          # The branch has no commits of its own above the parent -- it is a strict
+          # ancestor of the parent, so its work already sits there and the parent has
+          # since advanced past it (e.g. the branch was merged into trunk, then trunk
+          # moved on). There is nothing to replay: a `rebase --onto <parent> <base>`
+          # would re-apply the `base..branch` commits that the parent already
+          # contains and conflict against them. Fast-forward the branch to the parent
+          # instead.
+          info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
+          ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
+          die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
         else
-          ok = git_ok("rebase --onto #{sh(parent)} #{sh(base)} #{sh(branch)}")
-        end
-        unless ok
-          git_ok("rebase --abort")
-          recover = base.empty? ? "git rebase #{parent}" : "git rebase --onto #{parent} #{base}"
-          die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
-              "Resolve it manually with:\n" \
-              "    git checkout #{branch} && #{recover}\n" \
-              "then re-run '#{PROG} #{verb}'.")
+          replay_onto!(branch, parent, verb)
         end
       end
-      # Every surviving arm leaves the branch sitting on the parent's tip (the
-      # no-op arm was already there; fast-forward and rebase just moved it), so
-      # re-anchor the recorded base there. A later parent advance then replays
-      # from the right point. Both moving arms `die` on failure, so reaching here
-      # means the branch really is on the tip.
-      set_base(branch, git_out("rev-parse #{sh(parent)}"))
+      # Every path here leaves the branch sitting on the parent's tip (the
+      # nothing-to-do case was already there; fast-forward and replay just moved
+      # it), so re-anchor the recorded base there. A later parent advance then
+      # replays from the right point. Both moving paths `die` on failure, so
+      # reaching here means the branch really is on the tip.
+      record_tip_base(branch, parent)
     end
   end
   nil
@@ -1306,13 +1348,11 @@ end
 # onto trunk first -- `heal_orphans` is that difference, and the only one.
 #
 # `verb`/`gerund` are the calling command's own name, passed in rather than
-# derived from `heal_orphans` -- exactly the separation `restack_subtree` makes
-# for its own `verb`, and for the same reason: the flag is a behaviour knob, not
-# the caller's identity, and the two are not the caller's to conflate. Deriving
-# them here would also spell each command's name twice, in ternaries that a later
-# third mode could leave disagreeing ("syncing stack rooted at X" followed by
-# "restack completed, but returning to..."). Each command now states both forms
-# once, together.
+# derived from `heal_orphans` -- the same separation `restack_subtree` makes for
+# its own `verb`, and for the reason given there. Deriving them here would also
+# spell each command's name twice, in ternaries that a later third mode could
+# leave disagreeing ("syncing stack rooted at X" followed by "restack completed,
+# but returning to..."). Each command now states both forms once, together.
 def run_stack_rebase(heal_orphans, verb, gerund)
   original = current_branch
   trunks = trunk_branches
@@ -1373,6 +1413,16 @@ def cmd_drop(args)
 
   # Where the children reconnect: the dropped branch's own parent, or the
   # primary trunk when it sat directly on a trunk (no recorded parent).
+  #
+  # This is `effective_parent_rule` applied by hand, and the one place that does
+  # not call it -- so a change to that rule must be mirrored HERE. Routing it
+  # through the shared helper was tried and measured: a third call site unifies
+  # its parameters with `reparent!`'s chain and widens `paint`, `cyan`,
+  # `set_parent`, `record_reparent_base` and `reparent!` to untyped in the
+  # emitted golden -- exactly the slow path the rbs/ seed exists to keep this
+  # file off (see effective_parent_rule's own note). `ctx.effective_parent_of`
+  # is not the way out either: this context comes from `build_topology`, which
+  # records no trunk and would answer "".
   parent = ctx.parent_of(branch)
   parent = trunks[0] if parent.empty?
 
@@ -1524,8 +1574,12 @@ def main(argv)
   cmd = parse_global_flags(cleaned)
   rest = []
   if cmd.empty?
-    cmd = cleaned.empty? ? "help" : cleaned[0]
-    rest = cleaned.empty? ? [] : cleaned[1..-1]
+    if cleaned.empty?
+      cmd = "help"
+    else
+      cmd = cleaned[0]
+      rest = cleaned[1..-1]
+    end
   end
   flags.each { |f| rest << f }
 
