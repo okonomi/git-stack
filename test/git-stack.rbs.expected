@@ -129,8 +129,9 @@ class Set
   def |: (untyped) -> Set # spinel: widened to untyped (slow path)
   def -: (Set) -> Set
   def ^: (untyped) -> Set # spinel: widened to untyped (slow path)
-  def ==: (String) -> bool
-  def subset?: (String) -> bool
+  def ==: (untyped) -> bool # spinel: widened to untyped (slow path)
+  def hash: () -> Integer
+  def subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
@@ -144,12 +145,13 @@ class Set
   def inspect: () -> String
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
+  def self.check_enum: (untyped) -> untyped # spinel: widened to untyped (slow path)
 end
 
 class StackContext
-  @parents: Hash[String, String]
+  @parents: Hash[String, untyped]
   @branches: Set
-  @children: Hash[String, String]
+  @children: Hash[untyped, untyped]
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil

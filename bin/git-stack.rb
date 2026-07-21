@@ -62,8 +62,12 @@ SPINEL_REF = ""
 def color_enabled?
   return false unless ENV["NO_COLOR"].nil?
 
-  # Spinel resolves `.tty?` on the STDOUT constant, but not on the $stdout
-  # global (it dispatches on `unknown` and raises); use the constant.
+  # The constant, not the `$stdout` global. Spinel used to dispatch `.tty?` on
+  # `unknown` for the global and raise; as of 0b8527df4b87 it compiles and
+  # answers correctly, so this is no longer a workaround -- it is kept because
+  # the two are equivalent here and the not-a-tty path is the only one the
+  # snapshot tests (which always run piped) can cover. Switching would be an
+  # unverified change to colour detection for no gain.
   STDOUT.tty?
 end
 
