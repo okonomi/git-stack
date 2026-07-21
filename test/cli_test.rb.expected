@@ -335,3 +335,15 @@ feat-b commits above feat-a: 1
 feat-b contains a2: 1
 feat-b contains b1: 1
 feat-b stackBase == feat-a tip (re-recorded): yes
+
+### sync clamps a stale stackBase to the merge-base instead of re-applying parent commits
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains b1: 1
+feat-b contains s3: 1
+feat-b stackBase == feat-a tip (re-anchored): yes
