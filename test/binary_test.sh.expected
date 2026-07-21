@@ -67,3 +67,32 @@ feature-b parent: main
 feature-b behind main: 0
 feature-b commits above main: 1
 feature-b stackBase == main tip: yes
+
+### a stack past the 4 KB scan boundary renders and syncs intact
+branch-list scan exceeds the 4 KB backtick cap: yes
+stack-config scan exceeds the 4 KB backtick cap: yes
+$ git stack tree | grep zzz
+    zzz-stack-bottom 
+      zzz-stack-top 
+[exit 0]
+zzz rows in tree (expect 2): 2
+$ git stack sync
+syncing stack rooted at zzz-stack-bottom
+done.
+[exit 0]
+zzz-stack-top parent after sync: zzz-stack-bottom
+zzz-stack-bottom parent after sync: main
+
+### an orphan-looking stack past the branch-list cap is not 'healed' away
+branch-list scan exceeds the 4 KB backtick cap: yes
+stack-config scan (small and accurate here): branch.zzz-stack-bottom.stackparent mainbranch.zzz-stack-top.stackparent zzz-stack-bottom
+$ git stack tree | grep zzz
+    zzz-stack-bottom 
+      zzz-stack-top 
+[exit 0]
+zzz rows in tree (expect 2): 2
+$ git stack sync
+syncing stack rooted at zzz-stack-bottom
+done.
+[exit 0]
+zzz-stack-top parent after sync: zzz-stack-bottom

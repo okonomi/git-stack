@@ -11,13 +11,42 @@
 # untyped slow path. Each takes a branch (or parent) name -- always a String --
 # so pinning them here is a faithful assertion, not a fib to the compiler; it
 # keeps the compiled binary unboxed and the emitted golden free of new untyped.
+#
+# Everything below the first four entries was added when Spinel moved to
+# 0b8527df4b87, whose inference propagates that same unification further than
+# the previous pin did: without them the emitted golden carries ten widened
+# `class Object` signatures (`paint`, `green`, `set_trunks`, `is_trunk?`,
+# `clear_parent`, `clear_base`, `untrack!`, `stack_root`, `would_cycle?`,
+# `validate_new_parent!`) that were concrete before. They are the same kind of
+# assertion as the original four -- branch names, colour text, and the trunk
+# list, all String / Array[String] at every call site -- and with them the
+# golden is back to zero untyped in `class Object`.
 class Object
   def sh: (String) -> String
   def checkout!: (String) -> nil
   def branch_exists?: (String) -> bool
   def ahead_behind: (String, String) -> Array[Integer]
+  def paint: (String, String) -> String
+  def green: (String) -> String
+  def set_trunks: (Array[String]) -> Array[String]
+  def is_trunk?: (String, Array[String]) -> bool
+  def clear_parent: (String) -> bool
+  def clear_base: (String) -> bool
+  def untrack!: (String) -> nil
+  def stack_root: (StackContext, String, Array[String]) -> String
+  def would_cycle?: (StackContext, String, String, Array[String]) -> bool
+  def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil
 end
 
+# `parent_of` / `children_of` join `branch?` for the same reason. Note that the
+# seed reaches methods but NOT instance variables: `@parents` and `@children`
+# still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]` under this
+# Spinel (they were `Hash[String, String]` before). That widening is exactly
+# what `StackContext#children_of` and `#walk_order` predicted in their comments,
+# and it is why their `.to_s` guards before `.split` are now load-bearing rather
+# than defensive -- removing them costs six more untyped signatures.
 class StackContext
   def branch?: (String) -> bool
+  def parent_of: (String) -> String
+  def children_of: (String) -> Array[String]
 end

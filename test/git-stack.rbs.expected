@@ -13,6 +13,7 @@ class Object
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def git_run: (String) -> bool
+  def git_out_full: (String) -> String
   def checkout!: (String) -> nil
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
@@ -32,6 +33,7 @@ class Object
   def set_base: (String, String) -> bool
   def clear_base: (String) -> bool
   def record_reparent_base: (String, String) -> nil
+  def record_tip_base: (String, String) -> nil
   def reparent!: (String, String, String) -> nil
   def untrack!: (String) -> nil
   def scan_stack_config: () -> String
@@ -40,13 +42,16 @@ class Object
   def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, String) -> String
   def stack_root: (StackContext, String, Array[String]) -> String
-  def would_cycle?: (String, String, Array[String]) -> bool
-  def validate_new_parent!: (String, String, Array[String], String) -> nil
+  def would_cycle?: (StackContext, String, String, Array[String]) -> bool
+  def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
+  def tab_head: (String) -> String
+  def tab_tail: (String) -> String
   def ahead_behind_bases: (String) -> String
   def ahead_behind_refs: (String) -> String
-  def ahead_behind_readback: (String, String, String) -> String
+  def ahead_behind_columns: (String, String) -> Hash[String, Integer]
+  def ahead_behind_readback: (String, Hash[String, Integer]) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
   def print_tree_row: (String, Integer, String, StackContext) -> nil
@@ -63,6 +68,7 @@ class Object
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
+  def replay_onto!: (String, String, String) -> nil
   def restack_subtree: (String, String, bool, String, StackContext) -> nil
   def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
@@ -124,8 +130,9 @@ class Set
   def |: (untyped) -> Set # spinel: widened to untyped (slow path)
   def -: (Set) -> Set
   def ^: (untyped) -> Set # spinel: widened to untyped (slow path)
-  def ==: (String) -> bool
-  def subset?: (String) -> bool
+  def ==: (untyped) -> bool # spinel: widened to untyped (slow path)
+  def hash: () -> Integer
+  def subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
@@ -139,12 +146,13 @@ class Set
   def inspect: () -> String
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
+  def self.check_enum: (untyped) -> untyped # spinel: widened to untyped (slow path)
 end
 
 class StackContext
-  @parents: Hash[String, String]
+  @parents: Hash[String, untyped]
   @branches: Set
-  @children: Hash[String, String]
+  @children: Hash[untyped, untyped]
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil

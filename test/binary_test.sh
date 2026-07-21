@@ -57,6 +57,19 @@ run() {
   printf '[exit %d]\n' "$rc"
 }
 
+# git-stack, transcript filtered to the lines containing $1. For the large-repo
+# fixture, whose padding rows would otherwise bury the handful that matter.
+run_grep() {
+  local pat="$1"
+  shift
+  printf '$ git stack %s | grep %s\n' "$*" "$pat"
+  local out rc
+  out="$(cd "$repo" && NO_COLOR=1 "$GIT_STACK" "$@" 2>&1)"
+  rc=$?
+  printf '%s\n' "$out" | grep -- "$pat"
+  printf '[exit %d]\n' "$rc"
+}
+
 # git-stack, run quietly to build up state a later command reveals.
 gsq() { (cd "$repo" && NO_COLOR=1 "$GIT_STACK" "$@") >/dev/null 2>&1; }
 
@@ -160,3 +173,91 @@ if [ "$(git -C "$repo" config --get branch.feature-b.stackBase)" \
 else
   printf 'feature-b stackBase == main tip: no\n'
 fi
+
+# Both scans that grow with the repository -- the local branch list and the
+# stack-config dump -- are read through `git_out_full` rather than a backtick,
+# because a Spinel-compiled binary's backtick keeps only the first ~4 KB and
+# drops the rest with no error. Past that cut every branch answered "does not
+# exist": `tree` printed live parents as missing AND duplicated their rows (a
+# branch became an orphan root as well as a real child), and `sync` -- which
+# that very output tells the user to run -- then reparented those healthy
+# branches onto trunk, silently destroying the recorded stack.
+#
+# This is invisible to test/cli_test.rb: CRuby's backticks do not truncate, so
+# only the compiled binary can show it. The padding branches are long-named and
+# tracked so BOTH captures blow past 4 KB, and the stack under test is named
+# `zzz-` so it sorts entirely beyond the cut -- `for-each-ref` emits refnames in
+# sorted order, so truncation always drops the alphabetically last branches.
+section "a stack past the 4 KB scan boundary renders and syncs intact"
+new_repo
+pad="aaa-padding-branch-with-a-deliberately-long-name-to-fill-the-scan-buffer"
+i=0
+while [ "$i" -lt 70 ]; do
+  git_q branch "$pad-$i"
+  git_q config "branch.$pad-$i.stackParent" main
+  i=$((i + 1))
+done
+git_q branch zzz-stack-bottom
+git_q config branch.zzz-stack-bottom.stackParent main
+git_q branch zzz-stack-top
+git_q config branch.zzz-stack-top.stackParent zzz-stack-bottom
+
+# Assert the fixture is actually big enough to matter, without baking in an
+# exact byte count that a rename would invalidate.
+over_cap() { # over_cap <label> <bytes>
+  if [ "$2" -gt 4095 ]; then
+    printf '%s exceeds the 4 KB backtick cap: yes\n' "$1"
+  else
+    printf '%s exceeds the 4 KB backtick cap: NO (%s bytes)\n' "$1" "$2"
+  fi
+}
+over_cap "branch-list scan" \
+  "$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ | wc -c | tr -d ' ')"
+over_cap "stack-config scan" \
+  "$(git -C "$repo" config --get-regexp '^branch\..*\.stackparent$' | wc -c | tr -d ' ')"
+
+# The stack must render nested under the trunk, with no "parent missing" and no
+# duplicated rows. The count is asserted separately: duplication was the loudest
+# symptom, and a grep transcript alone would not pin it down.
+run_grep zzz tree
+printf 'zzz rows in tree (expect 2): %s\n' \
+  "$(cd "$repo" && NO_COLOR=1 "$GIT_STACK" tree 2>&1 | grep -c zzz)"
+
+# sync must leave the recorded shape alone. Under truncation it "healed"
+# zzz-stack-top onto main, discarding its real parent.
+git_q checkout -q zzz-stack-top
+run sync
+show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
+show "zzz-stack-bottom parent after sync" "config --get branch.zzz-stack-bottom.stackParent"
+
+# The same cap, reached through the branch list ALONE. Above, the config dump
+# overflowed too, so the stack read as merely untracked and `sync` left it be.
+# Here the padding branches are NOT tracked: the config dump stays small and
+# accurate while the branch list still overflows, so the stack is read as
+# tracked-but-orphaned -- its live parent "does not exist". That is the
+# data-losing shape: `sync` heals the orphan onto trunk and the recorded parent
+# is gone for good.
+section "an orphan-looking stack past the branch-list cap is not 'healed' away"
+new_repo
+i=0
+while [ "$i" -lt 70 ]; do
+  git_q branch "$pad-$i"
+  i=$((i + 1))
+done
+git_q branch zzz-stack-bottom
+git_q config branch.zzz-stack-bottom.stackParent main
+git_q branch zzz-stack-top
+git_q config branch.zzz-stack-top.stackParent zzz-stack-bottom
+
+over_cap "branch-list scan" \
+  "$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ | wc -c | tr -d ' ')"
+show "stack-config scan (small and accurate here)" \
+  "config --get-regexp ^branch\..*\.stackparent$"
+
+run_grep zzz tree
+printf 'zzz rows in tree (expect 2): %s\n' \
+  "$(cd "$repo" && NO_COLOR=1 "$GIT_STACK" tree 2>&1 | grep -c zzz)"
+
+git_q checkout -q zzz-stack-top
+run sync
+show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
