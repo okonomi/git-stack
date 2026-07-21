@@ -470,3 +470,31 @@ puts "feat-b contains a2: #{`cd #{$repo} && git log --oneline feat-b | grep -c '
 puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
 show("feat-b stackBase == feat-a tip (re-recorded)",
      'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse feat-a)" && echo yes || echo no')
+
+# A branch whose recorded stackBase has gone stale: git-stack only re-records the
+# base when it moves the branch itself, so a manual `git rebase` (or a `git pull`)
+# leaves the recorded base pointing far below the branch's real fork point. Here
+# feat-b is manually rebased onto feat-a -- absorbing feat-a's `s2` commit -- while
+# its stackBase stays pinned at feat-a's *original* tip. feat-a then advances with a
+# conflicting `s3`. `sync` must replay only feat-b's own `b1`, not re-apply the `s2`
+# that is already in feat-a: rebasing from the stale base would re-apply `s2` and
+# conflict against `s3`. resolve_stack_base clamps the stale base forward to the
+# live merge-base so only `b1` is replayed.
+section "sync clamps a stale stackBase to the merge-base instead of re-applying parent commits"
+new_repo
+gsq("create feat-a"); commit("shared.txt", "s1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# advance feat-a, then move feat-b onto it with a plain git rebase (not git-stack),
+# so feat-b now contains s2 but its recorded stackBase is left at the old feat-a tip.
+setup("git checkout -q feat-a"); commit("shared.txt", "s2"); commit("a.txt", "a1")
+setup("git checkout -q feat-b && git rebase -q feat-a")
+# advance feat-a once more with a commit that conflicts with the stale range's s2
+setup("git checkout -q feat-a"); commit("shared.txt", "s3")
+setup("git checkout -q feat-b")
+run("sync")
+show("feat-b behind feat-a", "git rev-list --count feat-b..feat-a")
+show("feat-b commits above feat-a", "git rev-list --count feat-a..feat-b")
+puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
+puts "feat-b contains s3: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' s3$' || true`.strip}"
+show("feat-b stackBase == feat-a tip (re-anchored)",
+     'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse feat-a)" && echo yes || echo no')

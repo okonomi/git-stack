@@ -1178,19 +1178,35 @@ end
 # ancestor, would replay the wrong range. Otherwise (empty, stale, or not an
 # ancestor) it falls back to the current merge-base of `branch` and `parent`.
 #
+# The recorded base is additionally clamped forward to the live merge-base of
+# `branch` and `parent`. git-stack only re-records the base when it moves a
+# branch itself (`set_base` after a restack), so a manual `git rebase`/`git
+# pull` -- or a parent that advanced past the branch -- leaves the recorded base
+# pointing at an old commit far below where the branch and parent now diverge.
+# When that recorded base is a (strict or equal) ancestor of the merge-base,
+# every commit between the two is by definition already contained in `parent`,
+# so replaying from the recorded base would re-apply commits the parent already
+# has and conflict against them. In that case the merge-base is the correct
+# base. A base that sits *above* the merge-base -- i.e. is not an ancestor of it
+# -- is left as-is: that is the squash-merged-parent case `--onto` exists for,
+# where the branch's own commits legitimately start below the merge-base.
+#
 # Returns "" only when even the merge-base is unavailable (unrelated histories,
 # or a vanished parent during orphan heal), signalling the caller to fall back
 # to a plain `git rebase <parent> <branch>` for backward compatibility.
 def resolve_stack_base(branch, parent)
   base = get_base(branch)
+  # The merge-base is both the clamp target for a valid-but-stale recorded base
+  # and the fallback when the recorded base is unusable; "" (no parent, or
+  # unrelated histories) disables the clamp and signals a plain-rebase fallback.
+  mb = parent.empty? ? "" : git_out("merge-base #{sh(branch)} #{sh(parent)}")
   if !base.empty? &&
      git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
      git_ok("merge-base --is-ancestor #{sh(base)} #{sh(branch)}")
+    return mb if !mb.empty? && git_ok("merge-base --is-ancestor #{sh(base)} #{sh(mb)}")
     return base
   end
-  return "" if parent.empty?
-
-  git_out("merge-base #{sh(branch)} #{sh(parent)}")
+  mb
 end
 
 # Rebase the whole stack rooted at `root` onto itself, each branch onto its
