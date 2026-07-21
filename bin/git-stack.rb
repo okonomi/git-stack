@@ -163,6 +163,40 @@ def git_run(subcmd)
   $? == 0
 end
 
+# Capture the FULL stdout of `git <subcmd>`, however large, by routing it
+# through a temp file instead of a backtick.
+#
+# All three wrappers above read through a backtick, and a Spinel-compiled
+# binary's backtick keeps only the first ~4 KB, silently dropping the rest --
+# the same cap AHEAD_BEHIND_CHUNK exists to stay under. That is harmless where
+# the output is bounded by construction (one SHA, one config value, one chunk of
+# at most AHEAD_BEHIND_CHUNK rows), but two scans grow with the repository: the
+# local branch list and the stack-config dump.
+#
+# Truncating those does not yield a smaller answer, it yields a WRONG one. Every
+# branch past the cut reads as "does not exist", so `tree` prints live parents as
+# missing AND duplicates their rows (they become orphan roots as well as real
+# children), `restack` skips them, and `sync` -- which the tree output tells the
+# user to run -- reparents those healthy branches onto trunk, destroying the
+# recorded stack. `for-each-ref` emits refnames in sorted order, so the branches
+# lost are always the alphabetically last ones while `main`/`master` survives:
+# the trunk row still renders and the damage reads like "my branches lost their
+# parent" rather than a broken tool.
+#
+# `File.read` has no such cap. The temp file is per-process, so concurrent
+# git-stack runs in one repo cannot read each other's scan.
+def git_out_full(subcmd)
+  dir = ENV["TMPDIR"]
+  dir = "/tmp" if dir.nil? || dir.empty?
+  path = "#{dir}/git-stack-scan-#{Process.pid}"
+  system("git #{subcmd} > #{sh(path)} 2>/dev/null")
+  return "" unless File.exist?(path)
+
+  out = File.read(path)
+  File.delete(path)
+  out.strip
+end
+
 # Check out `branch`, or die with a consistent message.
 #
 # Uses git_run (not git_ok) so git's own "Switched to branch" message reaches
@@ -373,8 +407,12 @@ end
 # StackContext parses this scan once up front so the recursion reads it in
 # memory instead of re-spawning `git` per node (an O(N^2) subprocess blow-up on
 # a stack of N branches).
+#
+# Read through `git_out_full`, not `git_out`: this output grows with the number
+# of tracked branches (~95 bytes each), so a backtick would drop everything past
+# roughly the 45th and those branches would silently read as untracked.
 def scan_stack_config
-  git_out("config --get-regexp '^branch\\..*\\.stackparent$'")
+  git_out_full("config --get-regexp '^branch\\..*\\.stackparent$'")
 end
 
 # Set of every local branch name, fetched with a single `git` subprocess.
@@ -384,8 +422,14 @@ end
 # git fork/exec, ~10ms). Capturing the full branch list once and checking
 # it in memory removes that per-node cost, mirroring how `scan_stack_config`
 # avoids re-spawning `git config` per node.
+#
+# Read through `git_out_full` for the reason spelled out there: this list grows
+# with the repository, and a truncated branch set makes every branch past the cut
+# answer `branch?` with a confident, wrong `false`. That is the one lookup the
+# whole traversal trusts, so it must be complete or the tree, restack and sync
+# all act on a repository that isn't there.
 def existing_branches
-  out = git_out("for-each-ref --format='%(refname:short)' refs/heads/")
+  out = git_out_full("for-each-ref --format='%(refname:short)' refs/heads/")
   set = Set.new
   out.split("\n").each do |name|
     next if name.empty?

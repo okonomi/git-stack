@@ -13,6 +13,7 @@ class Object
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def git_run: (String) -> bool
+  def git_out_full: (String) -> String
   def checkout!: (String) -> nil
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
