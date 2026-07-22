@@ -125,7 +125,7 @@ end
 
 # Quote a single argument for safe interpolation into a shell command.
 def sh(arg)
-  "'" + arg.gsub(/'/, "'\\''") + "'"
+  "'" + arg.gsub("'") { "'\\''" } + "'"
 end
 
 # Every git call goes through one of the three wrappers below. Pick by
