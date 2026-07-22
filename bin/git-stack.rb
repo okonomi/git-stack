@@ -197,7 +197,13 @@ end
 # write into a fresh regular file we own; on sticky-bit /tmp no other user can
 # then unlink or replace it, closing the write/read TOCTOU. The random suffix
 # also keeps concurrent git-stack runs in one repo from colliding.
-def git_out_full(subcmd)
+# `empty_ok` marks the ONE command whose non-zero exit is a legitimate empty
+# result rather than a failure: `git config --get-regexp` exits non-zero when no
+# key matches, which for `scan_stack_config` just means "no branch is tracked
+# yet". Every other caller (the branch-list scan) passes false, so any non-zero
+# status there is treated as a genuine I/O failure and dies. See the fail-closed
+# note on the redirect below.
+def git_out_full(subcmd, empty_ok)
   dir = ENV["TMPDIR"]
   dir = "/tmp" if dir.nil? || dir.empty?
 
@@ -217,9 +223,25 @@ def git_out_full(subcmd)
   end
   file.close
 
+  # Do NOT swallow the exit status. This helper's callers require a COMPLETE
+  # result -- a partial or empty scan is a WRONG answer, not a smaller one (see
+  # the header comment). If git or the redirect fails (disk full, TMPDIR yanked
+  # mid-run), we would otherwise hand back a truncated/empty file that exits 0
+  # and is indistinguishable from "the repo really has no branches", and `sync`'s
+  # heal path reparents the branches that silently dropped out onto trunk. So
+  # fail closed: unless git exited 0, clean up and die -- except for `empty_ok`
+  # callers (`git config --get-regexp`), whose non-zero exit is its documented
+  # "no match" and a real empty result.
+  #
+  # Only `$? == 0` is compared: it reads identically under CRuby (where `$?` is a
+  # Process::Status) and a Spinel build, whereas a specific non-zero code does
+  # not -- so `empty_ok` accepts any non-zero rather than singling out exit 1.
+  # The line is read on its own, per the Spinel note on `git_run`.
   system("git #{subcmd} > #{sh(path)} 2>/dev/null")
+  ok = $? == 0
   out = File.read(path)
   File.delete(path)
+  die("scan failed: git #{subcmd}") unless ok || empty_ok
   out.strip
 end
 
@@ -438,7 +460,7 @@ end
 # of tracked branches (~95 bytes each), so a backtick would drop everything past
 # roughly the 45th and those branches would silently read as untracked.
 def scan_stack_config
-  git_out_full("config --get-regexp '^branch\\..*\\.stackparent$'")
+  git_out_full("config --get-regexp '^branch\\..*\\.stackparent$'", true)
 end
 
 # Set of every local branch name, fetched with a single `git` subprocess.
@@ -455,7 +477,7 @@ end
 # whole traversal trusts, so it must be complete or the tree, restack and sync
 # all act on a repository that isn't there.
 def existing_branches
-  out = git_out_full("for-each-ref --format='%(refname:short)' refs/heads/")
+  out = git_out_full("for-each-ref --format='%(refname:short)' refs/heads/", false)
   set = Set.new
   out.split("\n").each do |name|
     next if name.empty?
