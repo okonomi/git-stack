@@ -183,15 +183,41 @@ end
 # the trunk row still renders and the damage reads like "my branches lost their
 # parent" rather than a broken tool.
 #
-# `File.read` has no such cap. The temp file is per-process, so concurrent
-# git-stack runs in one repo cannot read each other's scan.
+# `File.read` has no such cap.
+#
+# The scan file is created by us with O_EXCL (File::CREAT|File::EXCL) at an
+# UNPREDICTABLE path (pid plus a random suffix) rather than left to the shell's
+# `>` to create at a guessable one. That matters on a shared /tmp (TMPDIR unset
+# under cron/CI/sudo): the old `git-stack-scan-<pid>` path let a hostile local
+# user enumerate pids and pre-place a symlink there, which the shell redirect
+# would follow -- clobbering the victim's writable file, or swapping the scan
+# out between write and read to inject a forged branch list / stackParent dump
+# that `sync` then executes as real config rewrites and rebases. O_EXCL refuses
+# to open through a pre-placed symlink (or any existing entry), so we only ever
+# write into a fresh regular file we own; on sticky-bit /tmp no other user can
+# then unlink or replace it, closing the write/read TOCTOU. The random suffix
+# also keeps concurrent git-stack runs in one repo from colliding.
 def git_out_full(subcmd)
   dir = ENV["TMPDIR"]
   dir = "/tmp" if dir.nil? || dir.empty?
-  path = "#{dir}/git-stack-scan-#{Process.pid}"
-  system("git #{subcmd} > #{sh(path)} 2>/dev/null")
-  return "" unless File.exist?(path)
 
+  path = ""
+  file = nil
+  attempts = 0
+  while file.nil?
+    attempts += 1
+    die("could not create a private scan file under #{dir}") if attempts > 100
+    candidate = "#{dir}/git-stack-scan-#{Process.pid}-#{rand(1_000_000_000)}"
+    begin
+      file = File.open(candidate, File::WRONLY | File::CREAT | File::EXCL, 0600)
+      path = candidate
+    rescue SystemCallError
+      file = nil
+    end
+  end
+  file.close
+
+  system("git #{subcmd} > #{sh(path)} 2>/dev/null")
   out = File.read(path)
   File.delete(path)
   out.strip
