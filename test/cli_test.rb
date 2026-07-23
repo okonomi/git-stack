@@ -514,3 +514,17 @@ puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c '
 puts "feat-b contains s3: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' s3$' || true`.strip}"
 show("feat-b stackBase == feat-a tip (re-anchored)",
      'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse feat-a)" && echo yes || echo no')
+
+# A branch with a same-named tag must still be seen as existing. `for-each-ref
+# --format='%(refname:short)' refs/heads/` disambiguates such a branch as
+# `heads/<name>` rather than `<name>`, so a `:short` scan would drop it from the
+# existing-branches set: `tree` would then flag its children as "parent
+# missing", and the sync the message tells the user to run would reparent those
+# healthy branches onto trunk, destroying the recorded stack. Here feat-a shares
+# its name with a tag; tree must still render feat-b nested under feat-a.
+section "tree keeps a branch whose name collides with a tag"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git tag feat-a") # tag sharing feat-a's name triggers the %(refname:short) disambiguation
+run("tree")

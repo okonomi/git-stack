@@ -359,3 +359,10 @@ feat-b commits above feat-a: 1
 feat-b contains b1: 1
 feat-b contains s3: 1
 feat-b stackBase == feat-a tip (re-anchored): yes
+
+### tree keeps a branch whose name collides with a tag
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
