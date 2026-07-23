@@ -476,13 +476,19 @@ end
 # answer `branch?` with a confident, wrong `false`. That is the one lookup the
 # whole traversal trusts, so it must be complete or the tree, restack and sync
 # all act on a repository that isn't there.
+#
+# Format with the full `%(refname)` and strip `refs/heads/` ourselves rather
+# than lean on `%(refname:short)`: when a tag shares a branch's name, `:short`
+# disambiguates by emitting `heads/<name>` instead of `<name>`, so `branch?`
+# reads the branch as missing and sync reparents its healthy children onto
+# trunk -- the exact stack-destroying failure this set exists to prevent.
 def existing_branches
-  out = git_out_full("for-each-ref --format='%(refname:short)' refs/heads/", false)
+  out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
   set = Set.new
   out.split("\n").each do |name|
     next if name.empty?
 
-    set.add(name)
+    set.add(name.delete_prefix("refs/heads/"))
   end
   set
 end
@@ -701,7 +707,9 @@ end
 def ahead_behind_readback(output, cols)
   result = ""
   output.split("\n").each do |row|
-    branch = tab_head(row)
+    # `tab_head` is the `%(refname)` column; strip `refs/heads/` back to the
+    # short branch name the column map and downstream index are keyed by.
+    branch = tab_head(row).delete_prefix("refs/heads/")
     next if branch.empty?
 
     idx = cols[branch]
@@ -736,11 +744,17 @@ def ahead_behind_chunk(group)
   return "" if refs.empty?
 
   bases = ahead_behind_bases(group)
-  fmt = "%(refname:short)"
+  # `%(refname)` + strip below, not `%(refname:short)`: a branch that shares a
+  # tag's name shortens to `heads/<name>`, whose row the readback can't map back
+  # to `<name>` and so drops the branch's counts. The atom likewise takes the
+  # full `refs/heads/<parent>` rather than the bare parent name, so a same-named
+  # tag can't shadow the branch as the ahead-behind base (git resolves a bare
+  # name to the tag first, and warns the ref is ambiguous).
+  fmt = "%(refname)"
   bases.split("\n").each do |b|
     next if b.empty?
 
-    fmt = "#{fmt}\t%(ahead-behind:#{b})"
+    fmt = "#{fmt}\t%(ahead-behind:refs/heads/#{b})"
   end
 
   out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
