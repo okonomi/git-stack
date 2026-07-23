@@ -1244,7 +1244,9 @@ def cmd_parent(args)
     puts effective_parent(branch, primary_trunk)
     return
   end
-  validate_new_parent!(StackContext.build_topology, branch, new_parent, trunk_branches, "setting it as parent")
+  trunks = trunk_branches
+  die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
+  validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1253,6 +1255,7 @@ def cmd_track(args)
   branch = current_branch
   trunks = trunk_branches
   parent = arg0(args)
+  die("cannot track trunk '#{branch}'") if is_trunk?(branch, trunks)
   parent = trunks[0] if parent.empty?
   validate_new_parent!(StackContext.build_topology, branch, parent, trunks, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")

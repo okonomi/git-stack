@@ -251,6 +251,18 @@ $ git stack track feat-b
 error: 'feat-b' is downstream of 'feat-a'; tracking it would create a cycle
 [exit 1]
 
+### track refuses to track a trunk
+$ git stack track
+error: cannot track trunk 'develop'
+[exit 1]
+branch.develop.stackParent (untracked): 
+
+### parent refuses to reparent a trunk
+$ git stack parent main
+error: cannot set parent of trunk 'develop'
+[exit 1]
+branch.develop.stackParent (untracked): 
+
 ### restack leaves an untracked branch alone
 $ git stack restack
 restacking stack rooted at feat-a

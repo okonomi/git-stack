@@ -342,6 +342,22 @@ gsq("create feat-b")
 setup("git checkout -q feat-a")
 run("track feat-b")
 
+section "track refuses to track a trunk"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop")
+run("track")
+show("branch.develop.stackParent (untracked)", "git config --get branch.develop.stackParent")
+
+section "parent refuses to reparent a trunk"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop")
+run("parent main")
+show("branch.develop.stackParent (untracked)", "git config --get branch.develop.stackParent")
+
 section "restack leaves an untracked branch alone"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
