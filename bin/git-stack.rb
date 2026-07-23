@@ -372,6 +372,68 @@ end
 
 # --- stack metadata ---------------------------------------------------------
 
+# EXPERIMENT (claude/branch-class-refactor): a first-class Branch value that
+# bundles a branch name with the stack-metadata operations that were free
+# functions taking a name. The point of the experiment is to see what this does
+# to Spinel's inference / the golden RBS, not to ship it.
+class Branch
+  def initialize(name)
+    @name = name
+    nil
+  end
+
+  def name
+    @name
+  end
+
+  def exists?
+    git_ok("show-ref --verify --quiet refs/heads/#{sh(@name)}")
+  end
+
+  def parent
+    git_out("config --get branch.#{sh(@name)}.stackParent")
+  end
+
+  def set_parent(parent)
+    git_ok("config branch.#{sh(@name)}.stackParent #{sh(parent)}")
+  end
+
+  def clear_parent
+    git_ok("config --unset branch.#{sh(@name)}.stackParent")
+  end
+
+  def base
+    git_out("config --get branch.#{sh(@name)}.stackBase")
+  end
+
+  def set_base(sha)
+    git_ok("config branch.#{sh(@name)}.stackBase #{sh(sha)}")
+  end
+
+  def clear_base
+    git_ok("config --unset branch.#{sh(@name)}.stackBase")
+  end
+
+  # Record `parent` as parent and re-anchor the base to merge-base(self, parent),
+  # the object-method twin of the free `reparent!`.
+  def reparent!(parent, err)
+    die(err) unless set_parent(parent)
+    base = git_out("merge-base #{sh(@name)} #{sh(parent)}")
+    if base.empty?
+      info "warning: no common ancestor of '#{@name}' and '#{parent}'; stack base not recorded"
+      return nil
+    end
+    set_base(base)
+    nil
+  end
+
+  def untrack!
+    clear_parent
+    clear_base
+    nil
+  end
+end
+
 def get_parent(branch)
   git_out("config --get branch.#{sh(branch)}.stackParent")
 end
@@ -1215,14 +1277,15 @@ end
 def cmd_create(args)
   name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
-  die("branch '#{name}' already exists") if branch_exists?(name)
+  branch = Branch.new(name)
+  die("branch '#{name}' already exists") if branch.exists?
 
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
-  die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
+  die("created branch '#{name}' but failed to record its parent") unless branch.set_parent(parent)
   # The base is the parent's tip: a freshly created branch has no commits of its
   # own yet, so its stack begins exactly where the parent currently sits.
-  record_tip_base(name, parent)
+  branch.set_base(git_out("rev-parse #{sh(parent)}"))
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
@@ -1261,7 +1324,7 @@ def cmd_parent(args)
   trunks = trunk_branches
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
-  reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
+  Branch.new(branch).reparent!(new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
@@ -1277,9 +1340,9 @@ def cmd_track(args)
 end
 
 def cmd_untrack(_args)
-  branch = current_branch
-  untrack!(branch)
-  info "'#{branch}' is no longer tracked in a stack"
+  branch = Branch.new(current_branch)
+  branch.untrack!
+  info "'#{branch.name}' is no longer tracked in a stack"
 end
 
 def cmd_down(_args)
