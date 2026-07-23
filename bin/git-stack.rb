@@ -1239,12 +1239,12 @@ end
 
 def cmd_parent(args)
   branch = current_branch
-  trunks = trunk_branches
   new_parent = arg0(args)
   if new_parent.empty?
     puts effective_parent(branch, primary_trunk)
     return
   end
+  trunks = trunk_branches
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
