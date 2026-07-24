@@ -33,12 +33,12 @@ class Object
   def set_base: (String, String) -> bool
   def clear_base: (String) -> bool
   def record_reparent_base: (String, String) -> nil
-  def record_tip_base: (String, String) -> nil
+  def record_tip_base: (untyped, untyped) -> nil # spinel: widened to untyped (slow path)
   def reparent!: (String, String, String) -> nil
   def untrack!: (String) -> nil
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
-  def children_of: (String) -> Array[String]
+  def children_of: (String) -> Array[untyped] # spinel: widened to untyped (slow path)
   def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, String) -> String
   def stack_root: (StackContext, String, Array[String]) -> String
@@ -151,9 +151,12 @@ end
 
 class Branch
   @name: String
+  @ctx: StackContext
   def initialize: (String) -> nil
+  def bind: (StackContext) -> Branch
   def name: () -> String
   def exists?: () -> bool
+  def parent_name: () -> String
   def parent: () -> String
   def set_parent: (String) -> bool
   def clear_parent: () -> bool
@@ -177,11 +180,11 @@ class StackContext
   def parent_of: (String) -> String
   def effective_parent_of: (String) -> String
   def scan_ahead_behind: () -> String
-  def children_of: (String) -> Array[String]
+  def children_of: (String) -> Array[untyped] # spinel: widened to untyped (slow path)
   def order: (String) -> String
   def order_line_branch: (String) -> String
   def order_line_depth: (String) -> Integer
-  def order_branches: (String) -> Array[String]
+  def order_branches: (String) -> Array[untyped] # spinel: widened to untyped (slow path)
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
