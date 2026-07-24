@@ -45,8 +45,18 @@ end
 # what `StackContext#children_of` and `#walk_order` predicted in their comments,
 # and it is why their `.to_s` guards before `.split` are now load-bearing rather
 # than defensive -- removing them costs six more untyped signatures.
+class Branch
+end
+
 class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
-  def children_of: (String) -> Array[String]
+  # AR-style traversal: children_of/order_branches now return context-bound
+  # Branch records, not name Strings. Pinned HONESTLY to Array[Branch] (the real
+  # runtime type). Spinel still emits Array[untyped] for a user-class element --
+  # a pin cannot force it concrete -- but an honest pin avoids the crash a stale
+  # Array[String] pin caused (the compiled binary dispatched String methods on a
+  # Branch and raised NoMethodError).
+  def children_of: (String) -> Array[Branch]
+  def order_branches: (String) -> Array[Branch]
 end
