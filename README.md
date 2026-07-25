@@ -116,6 +116,13 @@ register is the *primary* one, used as the tie-breaker when history can't
 distinguish them (two trunks still pointing at the same commit). `sync` names
 the trunk it picked, since it rewrites the branch as well as its config.
 
+A registered trunk that is later renamed or deleted is dropped from the list on
+the next command, with a note saying so — a name with no branch cannot be
+rebased onto, and `sync` would otherwise record it as a branch's parent. If none
+of the registered trunks is left, git-stack auto-detects one again (so renaming
+`master` to `main` just works) and asks you to run `git stack init <branch>`
+only when there is nothing to detect.
+
 ## Commands
 
 | Command                 | Description                                                        |

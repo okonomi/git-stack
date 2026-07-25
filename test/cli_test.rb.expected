@@ -38,6 +38,35 @@ $ git stack init nope
 error: branch 'nope' does not exist
 [exit 1]
 
+### sync re-detects a renamed trunk instead of reparenting onto its old name
+$ git stack sync
+configured trunk 'master' no longer exists; ignoring it
+trunk set to main
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+stack.trunk: main
+feat-b stackParent: main
+feat-b behind main: 0
+
+### a vanished secondary trunk is dropped from the trunk list
+$ git stack tree
+configured trunk 'develop' no longer exists; ignoring it
+* main (trunk)
+[exit 0]
+stack.trunk: main
+$ git stack tree
+* main (trunk)
+[exit 0]
+
+### a trunk that is gone with no replacement is an error, and config is kept
+$ git stack tree
+configured trunk 'main' no longer exists; ignoring it
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk: main
+
 ### tree renders each trunk as its own root
 $ git stack tree
   main (trunk)

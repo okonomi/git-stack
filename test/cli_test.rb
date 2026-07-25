@@ -147,6 +147,43 @@ section "init rejects a non-existent trunk"
 new_repo
 run("init nope")
 
+# `init` and auto-detect only ever record a branch that exists, but nothing
+# keeps it there. These three cover a recorded trunk that was renamed or
+# deleted afterwards -- the name reads back fine and is a ghost.
+section "sync re-detects a renamed trunk instead of reparenting onto its old name"
+new_repo
+setup("git branch -m main master")
+gsq("init master")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# the trunk is renamed and feat-b's parent deleted, as a merged-and-cleaned-up
+# PR would leave it: `stack.trunk` still says `master`, which no longer exists
+setup("git checkout -q master")
+setup("git branch -m master main")
+setup("git branch -D feat-a")
+setup("git checkout -q feat-b")
+run("sync")
+show("stack.trunk", "git config --get-all stack.trunk")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+
+section "a vanished secondary trunk is dropped from the trunk list"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git branch -D develop")
+run("tree")
+show("stack.trunk", "git config --get-all stack.trunk")
+# the pruned list is cached, so the next command has nothing to say
+run("tree")
+
+section "a trunk that is gone with no replacement is an error, and config is kept"
+new_repo
+gsq("init main")
+setup("git branch -m main feature")
+run("tree")
+show("stack.trunk", "git config --get-all stack.trunk")
+
 section "tree renders each trunk as its own root"
 new_repo
 setup("git branch develop main")
