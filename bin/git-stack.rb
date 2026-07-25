@@ -492,19 +492,29 @@ def effective_parent_rule(parent, trunk)
   parent.empty? ? trunk : parent
 end
 
-# The parent used for display and navigation, resolved with one `git` subprocess:
-# the recorded parent, or the trunk when none is recorded. The single-command
-# path for `parent`/`down`.
+# The parent used for display and navigation: the recorded parent, or -- when
+# none is recorded -- the trunk the branch rests on. The single-command path for
+# `parent`/`down`.
 #
-# A trunk resolves to itself -- the self-parent fixed point `down` already reads
-# as "the bottom". Trunks are peers, and a secondary trunk records no parent, so
-# without this it would fall through the rule onto the primary trunk and report
-# `develop`'s parent as `main`. The rule itself stays trunk-blind: its other
-# callers go through a `ctx`, where trunks are roots by topology, never lookups.
+# Trunks are peers, which this answers in two places. A trunk resolves to itself,
+# the self-parent fixed point `down` already reads as "the bottom"; without it a
+# secondary trunk, recording no parent, would fall through the rule and report
+# `develop`'s parent as `main`. And an untracked branch resolves through
+# `containing_trunk`, so a branch built on `develop` walks down to `develop`
+# rather than being handed the primary trunk.
+#
+# The rule itself stays trunk-blind -- it knows only "unrecorded parent means a
+# trunk", never which one -- so both answers live here. Its other callers go
+# through a `ctx`, where trunks are roots by topology, never lookups.
+#
+# The trunk is resolved eagerly, for the recorded-parent case too, so this stays
+# one call into the shared rule. It is not worth avoiding: `containing_trunk`
+# returns before spending a `git` call in a single-trunk repo, and `down`/`parent`
+# are one-shot commands, not a per-node traversal.
 def effective_parent(branch, trunks)
   return branch if is_trunk?(branch, trunks)
 
-  effective_parent_rule(get_parent(branch), trunks[0])
+  effective_parent_rule(get_parent(branch), containing_trunk(branch, trunks))
 end
 
 # Walk down from `branch` to the root of its stack (whose parent is the trunk or

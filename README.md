@@ -108,9 +108,10 @@ stack down when they reach any trunk.
 
 Trunks are peers, so the commands that need a trunk without one to follow —
 `git stack track` with no argument, `git stack sync` reparenting a branch whose
-parent was merged and deleted, and `git stack drop` reconnecting the children of
-a branch that sat directly on a trunk — pick the trunk the branch's own history
-rests on: a stack built on `develop` stays on `develop`. The **first** trunk you
+parent was merged and deleted, `git stack drop` reconnecting the children of a
+branch that sat directly on a trunk, and `git stack down`/`parent` on an
+untracked branch — pick the trunk the branch's own history rests on: a stack
+built on `develop` stays on `develop`. The **first** trunk you
 register is the *primary* one, used as the tie-breaker when history can't
 distinguish them (two trunks still pointing at the same commit). `sync` names
 the trunk it picked, since it rewrites the branch as well as its config.

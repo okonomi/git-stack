@@ -79,6 +79,22 @@ Switched to branch 'develop'
 [exit 0]
 HEAD: develop
 
+### down and parent walk an untracked branch to the trunk it rests on
+$ git stack parent
+develop
+[exit 0]
+$ git stack down
+Switched to branch 'develop'
+[exit 0]
+HEAD: develop
+$ git stack parent
+main
+[exit 0]
+$ git stack down
+Switched to branch 'main'
+[exit 0]
+HEAD: main
+
 ### track with no argument picks the trunk the branch rests on
 $ git stack track
 tracking 'feat-d' on top of 'develop'
