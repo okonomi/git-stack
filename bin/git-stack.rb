@@ -745,7 +745,7 @@ end
 #   @branches  the set of existing local branches   (existing_branches)
 #   @children  parent -> "<child>\n<child>\n..."    (`@parents` inverted)
 #   @ab        branch -> "<behind>\t<ahead>"        (ahead_behind_index)
-#   @trunk     the primary trunk a parentless branch falls back to (`build`'s arg)
+#   @trunk     the primary trunk a parentless branch falls back to (`trunks[0]`)
 #
 # `@trunk` lets the in-memory traversal resolve a parentless branch through the
 # shared `effective_parent_rule`, so display, counts, and navigation agree.
@@ -772,8 +772,7 @@ class StackContext
 
   # Full snapshot including ahead/behind counts, for `tree`. The scan is parsed
   # once (into `@parents`); the ahead/behind walk then reads `@parents` rather
-  # than re-parsing the raw config. `trunks[0]` is the primary trunk a
-  # parentless branch falls back to.
+  # than re-parsing the raw config.
   def self.build(trunks)
     ctx = new
     ctx.load(scan_stack_config, trunks)
@@ -847,7 +846,8 @@ class StackContext
     nil
   end
 
-  # The parent recorded for `branch`, or "" when none is recorded.
+  # The parent recorded for `branch`, or "" when none is recorded -- and always
+  # "" for a trunk, whose record `load` drops on the way in.
   def parent_of(branch)
     parent = @parents[branch]
     parent.nil? ? "" : parent
@@ -1188,9 +1188,10 @@ end
 
 def cmd_up(args)
   branch = current_branch
+  trunks = trunk_branches
   want = arg0(args)
 
-  children = children_of(branch, trunk_branches)
+  children = children_of(branch, trunks)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   unless want.empty?
