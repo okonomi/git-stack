@@ -131,6 +131,25 @@ section "parent reports the recorded parent"
 git_q checkout -q feat-b
 run parent
 
+# Every rejection path of `validate_new_parent!`, on the SHIPPED binary, for the
+# exit STATUS as much as the message. A rejected `parent`/`track` must fail with
+# `[exit 1]`: scripts and `&&` chains read the status, not the text.
+#
+# That is not hypothetical. `would_cycle?` used to answer with `return true` from
+# inside a `loop`, which under Spinel corrupts a later `exit`: the compiled
+# binary printed the cycle error and then exited 0, so a correctly REJECTED
+# reparent still reported success. CRuby was unaffected and cli_test.rb does not
+# assert exit codes, so nothing caught it -- these `[exit 1]` lines are the
+# regression guard for that class of bug.
+#
+# All four commands die before writing any config, so this section leaves the
+# fixture's recorded shape untouched for the sections that follow.
+section "parent/track reject a cycle, a self-parent, and a missing branch"
+run parent feat-b1        # downstream of feat-b -> cycle
+run track feat-b1         # same cycle, reached through track
+run parent feat-b         # a branch cannot be its own parent
+run parent no-such-branch # does not exist
+
 section "restack replays the sibling subtrees onto an advanced parent"
 git_q checkout -q feat-a
 commit a2.txt a2            # advance feat-a, leaving feat-b/feat-b1/feat-c behind
