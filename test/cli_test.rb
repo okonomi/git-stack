@@ -193,6 +193,77 @@ run("parent")
 run("down")
 show("HEAD", "git branch --show-current")
 
+# The three commands below have to answer "which trunk is this branch on?" with
+# no recorded parent to follow -- untracked, or a parent that was merged and
+# deleted. Naming the primary trunk pulled a develop-based stack over to main;
+# each now reads the trunk out of the branch's own history.
+
+section "track with no argument picks the trunk the branch rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q -b feat-d"); commit("x.txt", "x1")
+run("track")
+show("feat-d stackParent", "git config --get branch.feat-d.stackParent")
+# a branch off the primary trunk still tracks onto it
+setup("git checkout -q main")
+setup("git checkout -q -b feat-m"); commit("m.txt", "m1")
+run("track")
+show("feat-m stackParent", "git config --get branch.feat-m.stackParent")
+
+# The heaviest of the three: sync's orphan heal doesn't just record a parent, it
+# rebases onto it. Healing this stack onto main would replay feat-b off develop
+# and drop develop's own commits from it -- so the checks below assert the ref,
+# not only the config. main is advanced first so a wrong trunk really would move
+# feat-b.
+section "sync heals an orphan onto the trunk its stack rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# merge feat-a into develop and delete it, as a merged PR would
+setup("git checkout -q develop")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q main"); commit("m.txt", "m1")
+setup("git checkout -q feat-b")
+run("sync")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind develop", "git rev-list --count feat-b..develop")
+puts "feat-b contains d1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' d1$' || true`.strip}"
+
+section "sync still heals a main-based orphan onto main when a second trunk exists"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q main")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q feat-b")
+run("sync")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+
+section "drop reconnects children to the trunk the dropped branch rested on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+# feat-a is created with plain git, so it records no parent and `drop` has to
+# read the trunk it rests on out of history
+setup("git checkout -q -b feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q develop")
+run("drop feat-a")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind develop", "git rev-list --count feat-b..develop")
+
 section "version shows the program version"
 run("version")
 
