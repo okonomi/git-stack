@@ -39,7 +39,7 @@ class Object
   def existing_branches: () -> Set
   def children_of: (String) -> Array[String]
   def effective_parent_rule: (String, String) -> String
-  def effective_parent: (String, String) -> String
+  def effective_parent: (String, Array[String]) -> String
   def stack_root: (StackContext, String, Array[String]) -> String
   def would_cycle?: (StackContext, String, String, Array[String]) -> bool
   def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil

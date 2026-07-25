@@ -12,6 +12,12 @@
 # so pinning them here is a faithful assertion, not a fib to the compiler; it
 # keeps the compiled binary unboxed and the emitted golden free of new untyped.
 #
+# `effective_parent` is pinned for the same reason one step out: it takes the
+# trunk LIST (it answers "is this branch itself a trunk?" before applying the
+# rule), and an `Array[String]` parameter inferred from scratch widens to
+# `Array[untyped]`, which then flows into the rule and back out through
+# `effective_parent_of`.
+#
 # Everything below the first four entries was added when Spinel moved to
 # 0b8527df4b87, whose inference propagates that same unification further than
 # the previous pin did: without them the emitted golden carries ten widened
@@ -30,6 +36,7 @@ class Object
   def green: (String) -> String
   def set_trunks: (Array[String]) -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
+  def effective_parent: (String, Array[String]) -> String
   def clear_parent: (String) -> bool
   def clear_base: (String) -> bool
   def untrack!: (String) -> nil
