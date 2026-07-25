@@ -470,6 +470,27 @@ setup("git checkout -q develop")
 run("parent main")
 show("branch.develop.stackParent (untracked)", "git config --get branch.develop.stackParent")
 
+# A trunk that still carries a `stackParent` -- recorded before `track`/`parent`
+# learned to refuse a trunk, or set by hand -- must be read back as a root
+# anyway: `tree` must not print its subtree a second time under the other trunk,
+# and `restack` must not rebase the shared trunk onto it (rewriting published
+# history). main is advanced past develop first, so a trunk that were treated as
+# a stack member really would be replayed.
+section "a trunk's recorded parent is ignored by tree and restack"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+gsq("create feat-d"); commit("f.txt", "f1")
+setup("git checkout -q main"); commit("m.txt", "m1")
+setup("git checkout -q develop")
+setup("git config branch.develop.stackParent main")
+show("develop before", "git rev-parse develop")
+run("tree")
+run("restack")
+show("develop after", "git rev-parse develop")
+show("feat-d stackParent", "git config --get branch.feat-d.stackParent")
+
 section "restack leaves an untracked branch alone"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")

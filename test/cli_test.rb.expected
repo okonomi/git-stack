@@ -336,6 +336,20 @@ error: cannot set parent of trunk 'develop'
 [exit 1]
 branch.develop.stackParent (untracked): 
 
+### a trunk's recorded parent is ignored by tree and restack
+develop before: 9c14d11533ceeff640ccce21d69b461cac6386cc
+$ git stack tree
+  main (trunk)
+* develop (trunk)
+    feat-d (1 commit(s))
+[exit 0]
+$ git stack restack
+restacking stack rooted at develop
+done.
+[exit 0]
+develop after: 9c14d11533ceeff640ccce21d69b461cac6386cc
+feat-d stackParent: develop
+
 ### restack leaves an untracked branch alone
 $ git stack restack
 restacking stack rooted at feat-a

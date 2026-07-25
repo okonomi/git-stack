@@ -474,8 +474,8 @@ end
 # Every branch that records `parent` as its parent. Builds a throwaway
 # StackContext (one config scan, no ahead/behind walk) -- the one-shot path for
 # `up`, distinct from the context `tree`/`restack`/`sync` thread through recursion.
-def children_of(parent)
-  StackContext.build_topology.children_of(parent)
+def children_of(parent, trunks)
+  StackContext.build_topology(trunks).children_of(parent)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
@@ -741,7 +741,7 @@ end
 # repeatedly, so every lookup is in memory and a whole traversal costs the two or
 # three `git` calls `build` makes up front rather than a subprocess per node:
 #
-#   @parents   branch -> recorded parent           (from the config scan)
+#   @parents   branch -> recorded parent           (config scan, trunks dropped)
 #   @branches  the set of existing local branches   (existing_branches)
 #   @children  parent -> "<child>\n<child>\n..."    (`@parents` inverted)
 #   @ab        branch -> "<behind>\t<ahead>"        (ahead_behind_index)
@@ -772,26 +772,36 @@ class StackContext
 
   # Full snapshot including ahead/behind counts, for `tree`. The scan is parsed
   # once (into `@parents`); the ahead/behind walk then reads `@parents` rather
-  # than re-parsing the raw config.
-  def self.build(trunk)
+  # than re-parsing the raw config. `trunks[0]` is the primary trunk a
+  # parentless branch falls back to.
+  def self.build(trunks)
     ctx = new
-    ctx.load(scan_stack_config)
-    ctx.load_ahead_behind(trunk)
+    ctx.load(scan_stack_config, trunks)
+    ctx.load_ahead_behind(trunks[0])
     ctx
   end
 
   # Topology and branch existence only -- no ahead/behind git walk. For
   # restack/sync (which never render counts) and the one-shot `children_of`.
-  def self.build_topology
+  def self.build_topology(trunks)
     ctx = new
-    ctx.load(scan_stack_config)
+    ctx.load(scan_stack_config, trunks)
     ctx
   end
 
   # Parse one `scan_stack_config` string into the parent and child indexes and
   # capture the existing-branch set. Note: git lowercases a config key's
   # variable name, so the stored key is `branch.<name>.stackparent`.
-  def load(scan)
+  #
+  # A trunk's recorded parent is DROPPED here, which is what makes "trunks are
+  # roots by topology" true of every context rather than a convention `track` and
+  # `parent` merely refuse to break. `branch.<trunk>.stackParent` still exists in
+  # the wild -- written before those guards landed, or by hand -- and reading it
+  # back would let `restack` rebase a shared trunk onto another trunk (rewriting
+  # published history) and make `tree` print the trunk's subtree twice. The
+  # single-command `effective_parent` already answers a trunk with itself; this
+  # is the same rule for the in-memory traversals.
+  def load(scan, trunks)
     @branches = existing_branches
     scan.split("\n").each do |line|
       next if line.empty?
@@ -802,6 +812,8 @@ class StackContext
       key = line[0...space]
       value = line[(space + 1)..-1]
       name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
+      next if is_trunk?(name, trunks)
+
       @parents[name] = value
     end
     index_children
@@ -1112,10 +1124,9 @@ end
 def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
-  primary = trunks[0]
   # One StackContext captures the whole stack up front -- topology, branches, and
   # every node's counts -- so the loops below read it in memory, no `git` per node.
-  ctx = StackContext.build(primary)
+  ctx = StackContext.build(trunks)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   # `order(trunk)` includes the trunk itself at depth 0, which we skip here --
@@ -1141,7 +1152,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
+  validate_new_parent!(StackContext.build_topology(trunks), branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1154,7 +1165,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  validate_new_parent!(StackContext.build_topology, branch, parent, trunks, "tracking it")
+  validate_new_parent!(StackContext.build_topology(trunks), branch, parent, trunks, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1179,7 +1190,7 @@ def cmd_up(args)
   branch = current_branch
   want = arg0(args)
 
-  children = children_of(branch)
+  children = children_of(branch, trunk_branches)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   unless want.empty?
@@ -1331,7 +1342,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   trunks = trunk_branches
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
-  ctx = StackContext.build_topology
+  ctx = StackContext.build_topology(trunks)
   root = stack_root(ctx, original, trunks)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
@@ -1373,7 +1384,7 @@ def cmd_drop(args)
   # One snapshot answers every read the splice needs -- exists?, parent,
   # children -- from a single scan. NOT reused past the rewrites below, which
   # invalidate it.
-  ctx = StackContext.build_topology
+  ctx = StackContext.build_topology(trunks)
   die("branch '#{branch}' does not exist") unless ctx.branch?(branch)
 
   original = current_branch_or_empty
@@ -1402,7 +1413,7 @@ def cmd_drop(args)
 
   # Restack each moved subtree onto its new parent. Rebuild the topology first so
   # it reflects the config rewrites above.
-  ctx = StackContext.build_topology
+  ctx = StackContext.build_topology(trunks)
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
     restack_subtree(child, trunks, false, "restack", ctx)
