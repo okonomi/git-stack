@@ -24,7 +24,6 @@ class Object
   def set_trunks: (Array[String]) -> Array[String]
   def detect_trunk: () -> String
   def trunk_branches: () -> Array[String]
-  def primary_trunk: () -> String
   def is_trunk?: (String, Array[String]) -> bool
   def get_parent: (String) -> String
   def set_parent: (String, String) -> bool

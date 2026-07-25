@@ -317,13 +317,6 @@ def trunk_branches
   [trunk]
 end
 
-# The primary trunk -- the default base a branch falls back to: the first
-# configured trunk. Reads `trunk_branches` rather than repeating its
-# detect-and-persist fallback, so the two can't disagree.
-def primary_trunk
-  trunk_branches[0]
-end
-
 # True when `branch` is one of the configured trunks.
 def is_trunk?(branch, trunks)
   trunks.include?(branch)
@@ -1084,11 +1077,15 @@ end
 def cmd_parent(args)
   branch = current_branch
   new_parent = arg0(args)
+  trunks = trunk_branches
   if new_parent.empty?
-    puts effective_parent(branch, primary_trunk)
+    # A trunk is the bottom, not a branch stacked on another trunk: report it as
+    # its own parent rather than letting `effective_parent` fall back to the
+    # primary trunk (which would show `develop`'s parent as `main`). Trunks are
+    # peers -- `is_trunk?` is the same bottom test `down` and `stack_root` use.
+    puts is_trunk?(branch, trunks) ? branch : effective_parent(branch, trunks[0])
     return
   end
-  trunks = trunk_branches
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
@@ -1114,7 +1111,13 @@ end
 
 def cmd_down(_args)
   branch = current_branch
-  parent = effective_parent(branch, primary_trunk)
+  trunks = trunk_branches
+  # Every trunk is a bottom, not just the primary one: on a secondary trunk
+  # `get_parent` is empty, so `effective_parent` would fall back to the primary
+  # trunk and check it out, as if the trunks were stacked. `parent == branch`
+  # still guards a branch hand-configured as its own parent.
+  die("already at the bottom of the stack") if is_trunk?(branch, trunks)
+  parent = effective_parent(branch, trunks[0])
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
   checkout!(parent)
