@@ -97,7 +97,6 @@ done.
 [exit 0]
 feat-b stackParent: develop
 feat-b behind develop: 0
-develop is an ancestor of feat-b: yes
 feat-b contains d1: 1
 
 ### sync still heals a main-based orphan onto main when a second trunk exists

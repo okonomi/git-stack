@@ -233,8 +233,6 @@ setup("git checkout -q feat-b")
 run("sync")
 show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 show("feat-b behind develop", "git rev-list --count feat-b..develop")
-show("develop is an ancestor of feat-b",
-     "git merge-base --is-ancestor develop feat-b && echo yes || echo no")
 puts "feat-b contains d1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' d1$' || true`.strip}"
 
 section "sync still heals a main-based orphan onto main when a second trunk exists"

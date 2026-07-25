@@ -341,6 +341,10 @@ end
 # with the same default as before. Callers announce the trunk they picked --
 # `sync` already did, being the one that rewrites refs.
 def containing_trunk(branch, trunks)
+  # One trunk is the common repo, and with nothing to compare it against the
+  # loop below can only pick it -- so skip the `git` call it would spend first.
+  return trunks[0] if trunks.length < 2
+
   best = trunks[0]
   best_count = -1
   trunks.each do |trunk|
