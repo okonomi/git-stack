@@ -558,51 +558,10 @@ def effective_parent(branch, trunks)
   effective_parent_rule(get_parent(branch), containing_trunk(branch, trunks))
 end
 
-# Walk down from `branch` to the root of its stack (whose parent is the trunk or
-# is untracked). Returns the root branch name. Reads the pre-captured `ctx`, not
-# a `git config`+`git show-ref` per level. `seen` guards cyclic parent chains
-# (A -> B -> A from hand-edited config) so we terminate instead of hanging.
-def stack_root(ctx, branch, trunks)
-  seen = Set.new
-  loop do
-    seen.add(branch)
-    parent = ctx.parent_of(branch)
-    break if parent.empty? || is_trunk?(parent, trunks)
-    break unless ctx.branch?(parent)
-    break if seen.include?(parent)
-
-    branch = parent
-  end
-  branch
-end
-
-# True if making `new_parent` the parent of `branch` would create a cycle --
-# i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks the
-# pre-captured `ctx` (like `stack_root`), so the whole walk costs no `git` per level.
-def would_cycle?(ctx, branch, new_parent, trunks)
-  seen = Set.new
-  cur = new_parent
-  loop do
-    return true if cur == branch
-    break if cur.empty? || is_trunk?(cur, trunks)
-    break if seen.include?(cur)
-    break unless ctx.branch?(cur)
-
-    seen.add(cur)
-    cur = ctx.parent_of(cur)
-  end
-  false
-end
-
-# Validate that `candidate` can become the parent of `branch`: it must exist,
-# must not be `branch` itself, and must not create a cycle. `verb` customizes
-# the cycle-error wording for the calling command. `ctx` answers both the
-# existence check and the whole ancestor walk from one snapshot.
-def validate_new_parent!(ctx, branch, candidate, trunks, verb)
-  die("branch '#{candidate}' does not exist") unless ctx.branch?(candidate)
-  die("a branch cannot be its own parent") if candidate == branch
-  die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(ctx, branch, candidate, trunks)
-end
+# The stack-graph queries `stack_root` / `would_cycle?` / `validate_new_parent!`
+# used to live here as free functions that all took `ctx` first -- the sign they
+# wanted to be methods on the object holding the graph. They are StackContext's
+# own now: it already owns the parent map and branch set they walk.
 
 # --- tree rendering ---------------------------------------------------------
 
@@ -1063,6 +1022,66 @@ class StackContext
     end
     names.sort
   end
+
+  # Walk down from `branch` to the root of its stack (whose parent is a trunk or
+  # is untracked). Returns the root branch name. Reads this context's own parent
+  # map and branch set, not a `git config`+`git show-ref` per level. `seen`
+  # guards cyclic parent chains (A -> B -> A from hand-edited config) so we
+  # terminate instead of hanging.
+  def stack_root(branch, trunks)
+    seen = Set.new
+    loop do
+      seen.add(branch)
+      parent = parent_of(branch)
+      break if parent.empty? || is_trunk?(parent, trunks)
+      break unless branch?(parent)
+      break if seen.include?(parent)
+
+      branch = parent
+    end
+    branch
+  end
+
+  # True if making `new_parent` the parent of `branch` would create a cycle --
+  # i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks this
+  # context (like `stack_root`), so the whole walk costs no `git` per level.
+  #
+  # The hit is recorded in `result` and reported after a `break`, NOT with a
+  # `return true` from inside the `loop`. Under Spinel a `return` out of a `loop
+  # do...end` corrupts a later `exit`: with `die(...) if would_cycle?(...)` the
+  # compiled binary printed die's message and then exited 0, so a `parent`/
+  # `track` that correctly REJECTED a cycle still reported success to a script.
+  # CRuby is unaffected and cli_test.rb does not assert exit codes, so it only
+  # showed on the shipped binary; test/binary_test.sh now covers it.
+  def would_cycle?(branch, new_parent, trunks)
+    seen = Set.new
+    cur = new_parent
+    result = false
+    loop do
+      if cur == branch
+        result = true
+        break
+      end
+      break if cur.empty? || is_trunk?(cur, trunks)
+      break if seen.include?(cur)
+      break unless branch?(cur)
+
+      seen.add(cur)
+      cur = parent_of(cur)
+    end
+    result
+  end
+
+  # Validate that `candidate` can become the parent of `branch`: it must exist,
+  # must not be `branch` itself, and must not create a cycle. `verb` customizes
+  # the cycle-error wording for the calling command. This context answers both
+  # the existence check and the whole ancestor walk from its one snapshot.
+  def validate_new_parent!(branch, candidate, trunks, verb)
+    die("branch '#{candidate}' does not exist") unless branch?(candidate)
+    die("a branch cannot be its own parent") if candidate == branch
+    die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunks)
+    nil
+  end
 end
 
 # Print one tree row for `branch`, indented two spaces per `depth`. One node of
@@ -1193,7 +1212,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  validate_new_parent!(StackContext.build_topology(trunks), branch, new_parent, trunks, "setting it as parent")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1206,7 +1225,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  validate_new_parent!(StackContext.build_topology(trunks), branch, parent, trunks, "tracking it")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, trunks, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1385,7 +1404,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
   ctx = StackContext.build_topology(trunks)
-  root = stack_root(ctx, original, trunks)
+  root = ctx.stack_root(original, trunks)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
   restack_subtree(root, trunks, heal_orphans, verb, ctx)

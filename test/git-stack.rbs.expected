@@ -42,9 +42,6 @@ class Object
   def children_of: (String, Array[String]) -> Array[String]
   def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, Array[String]) -> String
-  def stack_root: (StackContext, String, Array[String]) -> String
-  def would_cycle?: (StackContext, String, String, Array[String]) -> bool
-  def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
   def tab_head: (String) -> String
@@ -172,6 +169,9 @@ class StackContext
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
   def orphan_roots: () -> Array[String]
+  def stack_root: (String, Array[String]) -> String
+  def would_cycle?: (String, String, Array[String]) -> bool
+  def validate_new_parent!: (String, String, Array[String], String) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext
 end
