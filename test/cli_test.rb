@@ -434,7 +434,8 @@ setup("git checkout -q main")
 setup("git branch -D feat-a")
 run("drop feat-b")
 show("feat-c stackParent", "git config --get branch.feat-c.stackParent")
-show("feat-c stackBase is main", "test \"$(git config --get branch.feat-c.stackBase)\" = \"$(git rev-parse main)\" && echo yes || echo no")
+show("feat-c stackBase == main tip",
+     'test "$(git config --get branch.feat-c.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
 
 section "drop --delete on the current branch survives a dead recorded parent"
 new_repo

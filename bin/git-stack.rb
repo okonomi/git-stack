@@ -1397,21 +1397,19 @@ def cmd_drop(args)
   # helper was measured to widen this file's whole reparent chain to Spinel's
   # untyped slow path (see effective_parent_rule); the rule is also trunk-blind,
   # while the children need the trunk their history is actually built on.
-  #
-  # A recorded parent that no longer EXISTS is no reconnect target either: it is
-  # a dead name, and only `parent.empty?` would fall back without this check, so
-  # the children would each be written a parent that isn't there -- one orphan
-  # turned into N, silently, since the restack below doesn't heal orphans. This
-  # is `validate_new_parent!`'s existence check at the one reparent site whose
-  # parent is read rather than typed, so a missing one heals onto trunk (as
-  # `sync` does) instead of dying on a branch the user never named.
   parent = ctx.parent_of(branch)
-  dead_parent = !parent.empty? && !ctx.branch?(parent)
-  if parent.empty? || dead_parent
+  # A recorded parent that no longer exists is no reconnect target either, and
+  # the restack below doesn't heal orphans -- writing that dead name onto each
+  # child would turn one orphan into N, silently. `validate_new_parent!` would
+  # die on it; this is the one reparent site whose parent is read rather than
+  # typed by the user, so a missing one heals onto trunk, as `sync` does. Same
+  # guard as `restack_subtree`'s heal, minus its `heal_orphans` opt-in.
+  if !parent.empty? && !ctx.branch?(parent)
     trunk = containing_trunk(branch, trunks)
-    info "'#{branch}': parent '#{parent}' no longer exists; reconnecting children onto trunk '#{trunk}'" if dead_parent
+    info "'#{branch}': parent '#{parent}' no longer exists; reconnecting children onto trunk '#{trunk}'"
     parent = trunk
   end
+  parent = containing_trunk(branch, trunks) if parent.empty?
 
   # Capture children BEFORE rewriting config. Each is reparented as `parent`/
   # `track` do it (set_parent + record_reparent_base), re-anchoring stackBase to

@@ -303,7 +303,7 @@ $ git stack drop feat-b
 dropped feat-b; reparented children onto main
 [exit 0]
 feat-c stackParent: main
-feat-c stackBase is main: yes
+feat-c stackBase == main tip: yes
 
 ### drop --delete on the current branch survives a dead recorded parent
 $ git stack drop feat-b --delete
