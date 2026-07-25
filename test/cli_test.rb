@@ -172,6 +172,27 @@ show("feat-d parent", "git config --get branch.feat-d.stackParent")
 show("feat-d behind develop", "git rev-list --count feat-d..develop")
 show("feat-d2 behind feat-d", "git rev-list --count feat-d2..feat-d")
 
+section "down and parent treat every trunk as a bottom"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+# on the secondary trunk: no parent is recorded, but it must not fall back to
+# the primary trunk -- trunks are peers, not stacked on one another
+setup("git checkout -q develop")
+run("down")
+show("HEAD", "git branch --show-current")
+run("parent")
+# the primary trunk behaves the same way
+setup("git checkout -q main")
+run("down")
+run("parent")
+# a branch stacked on the secondary trunk still walks down to it
+setup("git checkout -q develop")
+gsq("create feat-d")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+
 section "version shows the program version"
 run("version")
 

@@ -317,13 +317,6 @@ def trunk_branches
   [trunk]
 end
 
-# The primary trunk -- the default base a branch falls back to: the first
-# configured trunk. Reads `trunk_branches` rather than repeating its
-# detect-and-persist fallback, so the two can't disagree.
-def primary_trunk
-  trunk_branches[0]
-end
-
 # True when `branch` is one of the configured trunks.
 def is_trunk?(branch, trunks)
   trunks.include?(branch)
@@ -462,8 +455,16 @@ end
 # The parent used for display and navigation, resolved with one `git` subprocess:
 # the recorded parent, or the trunk when none is recorded. The single-command
 # path for `parent`/`down`.
-def effective_parent(branch, trunk)
-  effective_parent_rule(get_parent(branch), trunk)
+#
+# A trunk resolves to itself -- the self-parent fixed point `down` already reads
+# as "the bottom". Trunks are peers, and a secondary trunk records no parent, so
+# without this it would fall through the rule onto the primary trunk and report
+# `develop`'s parent as `main`. The rule itself stays trunk-blind: its other
+# callers go through a `ctx`, where trunks are roots by topology, never lookups.
+def effective_parent(branch, trunks)
+  return branch if is_trunk?(branch, trunks)
+
+  effective_parent_rule(get_parent(branch), trunks[0])
 end
 
 # Walk down from `branch` to the root of its stack (whose parent is the trunk or
@@ -1084,11 +1085,11 @@ end
 def cmd_parent(args)
   branch = current_branch
   new_parent = arg0(args)
+  trunks = trunk_branches
   if new_parent.empty?
-    puts effective_parent(branch, primary_trunk)
+    puts effective_parent(branch, trunks)
     return
   end
-  trunks = trunk_branches
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   validate_new_parent!(StackContext.build_topology, branch, new_parent, trunks, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
@@ -1114,7 +1115,9 @@ end
 
 def cmd_down(_args)
   branch = current_branch
-  parent = effective_parent(branch, primary_trunk)
+  trunks = trunk_branches
+  parent = effective_parent(branch, trunks)
+  # True for every trunk, and for a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
   checkout!(parent)
