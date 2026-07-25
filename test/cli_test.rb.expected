@@ -297,6 +297,23 @@ feat-a exists: no
 feat-b stackParent: main
 HEAD: main
 
+### drop falls back to trunk when the dropped branch's own parent is gone
+$ git stack drop feat-b
+'feat-b': parent 'feat-a' no longer exists; reconnecting children onto trunk 'main'
+dropped feat-b; reparented children onto main
+[exit 0]
+feat-c stackParent: main
+feat-c stackBase == main tip: yes
+
+### drop --delete on the current branch survives a dead recorded parent
+$ git stack drop feat-b --delete
+'feat-b': parent 'feat-a' no longer exists; reconnecting children onto trunk 'main'
+dropped feat-b; reparented children onto main
+deleted branch feat-b
+[exit 0]
+feat-b exists: no
+HEAD: main
+
 ### drop refuses a trunk and a non-existent branch
 $ git stack drop main
 error: cannot drop trunk 'main'

@@ -423,6 +423,31 @@ show("feat-a exists", "git show-ref --verify --quiet refs/heads/feat-a && echo y
 show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 show("HEAD", "git branch --show-current")
 
+section "drop falls back to trunk when the dropped branch's own parent is gone"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+# feat-b's recorded parent is deleted behind git-stack's back, so the name it
+# reads back is dead -- non-empty, but no branch to reconnect feat-c onto
+setup("git checkout -q main")
+setup("git branch -D feat-a")
+run("drop feat-b")
+show("feat-c stackParent", "git config --get branch.feat-c.stackParent")
+show("feat-c stackBase == main tip",
+     'test "$(git config --get branch.feat-c.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
+
+section "drop --delete on the current branch survives a dead recorded parent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git branch -D feat-a")
+setup("git checkout -q feat-b")
+run("drop feat-b --delete")
+show("feat-b exists", "git show-ref --verify --quiet refs/heads/feat-b && echo yes || echo no")
+show("HEAD", "git branch --show-current")
+
 section "drop refuses a trunk and a non-existent branch"
 new_repo
 gsq("create feat-a")
