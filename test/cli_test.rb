@@ -193,6 +193,26 @@ run("parent")
 run("down")
 show("HEAD", "git branch --show-current")
 
+# With no recorded parent there is no stack to walk down, so `down`/`parent`
+# read the trunk out of the branch's own history -- the same question `track`
+# and `sync` ask, not the primary trunk by default.
+section "down and parent walk an untracked branch to the trunk it rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+# created with plain git, so nothing is recorded in stack config
+setup("git checkout -q -b feat-d"); commit("x.txt", "x1")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+# a branch off the primary trunk still resolves to it
+setup("git checkout -q main")
+setup("git checkout -q -b feat-m"); commit("m.txt", "m1")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+
 # The three commands below have to answer "which trunk is this branch on?" with
 # no recorded parent to follow -- untracked, or a parent that was merged and
 # deleted. Naming the primary trunk pulled a develop-based stack over to main;
