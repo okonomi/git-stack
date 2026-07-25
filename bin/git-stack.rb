@@ -36,15 +36,10 @@ PROG = "git stack"
 VERSION = "0.1.0"
 
 # The Spinel revision this binary was compiled with, shown by `git stack
-# version`. A Spinel-compiled binary can't introspect its compiler's revision
-# at run time (the only build signal it exposes is RUBY_DESCRIPTION ==
-# "spinel", with no revision), so it is stamped in at build time: the Homebrew
-# formula rewrites this line with the actual `spinel --version` before
-# `spin build` (see Formula/git-stack.rb).
-#
-# It is intentionally left empty here -- a placeholder for that stamp, not a
-# hand-maintained revision. A build that doesn't stamp it (a plain
-# `spin build`) reports "unknown" instead of a stale pinned value.
+# version`. A compiled binary can't introspect its compiler's revision at run
+# time, so the Homebrew formula stamps this line with the real `spinel
+# --version` before `spin build` (see Formula/git-stack.rb). Left empty here as
+# a placeholder; an un-stamped build reports "unknown".
 SPINEL_REF = ""
 
 # --- output helpers ---------------------------------------------------------
@@ -62,12 +57,8 @@ SPINEL_REF = ""
 def color_enabled?
   return false unless ENV["NO_COLOR"].nil?
 
-  # The constant, not the `$stdout` global. Spinel used to dispatch `.tty?` on
-  # `unknown` for the global and raise; as of 0b8527df4b87 it compiles and
-  # answers correctly, so this is no longer a workaround -- it is kept because
-  # the two are equivalent here and the not-a-tty path is the only one the
-  # snapshot tests (which always run piped) can cover. Switching would be an
-  # unverified change to colour detection for no gain.
+  # The STDOUT constant, not the `$stdout` global: equivalent here, and the
+  # piped (not-a-tty) path is the only one the snapshot tests can cover.
   STDOUT.tty?
 end
 
@@ -77,12 +68,9 @@ USE_COLOR = color_enabled?
 # When colour is disabled this is the identity function, so callers never
 # touch escape codes or the matching reset themselves.
 def paint(code, text)
-  # `.to_s` (identity for the String this always receives) keeps Spinel's
-  # return type independent of `text`: `return text` ties them together, and
-  # the `bold(green(branch))` nesting in tree_name then feeds paint's return
-  # back into this parameter -- a constraint cycle that locks the whole
-  # colour-helper family to untyped once any transiently-untyped value
-  # (cmd_tree's `trunks.each` block variable) passes through it.
+  # `.to_s` keeps Spinel's return type independent of `text`: `return text`
+  # would tie them together, and the `bold(green(branch))` nesting in tree_name
+  # then locks the whole colour-helper family to untyped.
   return text.to_s unless USE_COLOR
 
   "\033[#{code}m#{text}\033[0m"
@@ -154,55 +142,43 @@ end
 
 # Run `git <subcmd>` with its stdout/stderr passing through to the terminal;
 # return true on success (exit 0). Unlike git_ok, nothing is redirected away,
-# so git's own progress/status messages (e.g. "Switched to branch") stay
-# visible -- use this for the interactive commands whose output the user
-# should see. The `$? == 0` is read on its own line because Spinel drops the
-# boolean when a bare `system` call is a method's trailing expression.
+# so git's own messages (e.g. "Switched to branch") stay visible -- use this
+# for the interactive commands whose output the user should see.
+#
+# The `$? == 0` is read on its own line, not as a trailing `system` call:
+# Spinel drops the boolean when a bare `system` is a method's last expression.
+# (Every wrapper that returns a status this way relies on the same rule.)
 def git_run(subcmd)
   system("git #{subcmd}")
   $? == 0
 end
 
 # Capture the FULL stdout of `git <subcmd>`, however large, by routing it
-# through a temp file instead of a backtick.
+# through a temp file (`File.read` has no cap) instead of a backtick.
 #
-# All three wrappers above read through a backtick, and a Spinel-compiled
-# binary's backtick keeps only the first ~4 KB, silently dropping the rest --
-# the same cap AHEAD_BEHIND_CHUNK exists to stay under. That is harmless where
-# the output is bounded by construction (one SHA, one config value, one chunk of
-# at most AHEAD_BEHIND_CHUNK rows), but two scans grow with the repository: the
-# local branch list and the stack-config dump.
+# THE ~4 KB CAP. A Spinel-compiled binary's backtick keeps only the first ~4 KB
+# and silently drops the rest (the same cap AHEAD_BEHIND_CHUNK stays under).
+# Harmless for output bounded by construction (one SHA, one config value), but
+# two scans grow with the repository -- the local branch list and the
+# stack-config dump -- and truncating those yields a WRONG answer, not a smaller
+# one: every branch past the cut reads as "does not exist", so `tree` shows live
+# parents as missing, `restack` skips them, and `sync` reparents those healthy
+# branches onto trunk, destroying the stack. This helper is where those two
+# scans avoid the cap; downstream comments point back here.
 #
-# Truncating those does not yield a smaller answer, it yields a WRONG one. Every
-# branch past the cut reads as "does not exist", so `tree` prints live parents as
-# missing AND duplicates their rows (they become orphan roots as well as real
-# children), `restack` skips them, and `sync` -- which the tree output tells the
-# user to run -- reparents those healthy branches onto trunk, destroying the
-# recorded stack. `for-each-ref` emits refnames in sorted order, so the branches
-# lost are always the alphabetically last ones while `main`/`master` survives:
-# the trunk row still renders and the damage reads like "my branches lost their
-# parent" rather than a broken tool.
+# THE TEMP FILE. Created by us with O_EXCL at an unpredictable path (pid + random
+# suffix), not left to the shell's `>` at a guessable one. On a shared /tmp
+# (TMPDIR unset under cron/CI/sudo) a guessable `git-stack-scan-<pid>` let a
+# hostile local user pre-place a symlink the redirect would follow -- clobbering
+# a victim's file, or swapping the scan between write and read to inject a forged
+# branch/stackParent dump that `sync` then executes as real rewrites and rebases.
+# O_EXCL refuses to open through any pre-placed entry, so we only write a fresh
+# file we own; the random suffix also stops concurrent runs colliding.
 #
-# `File.read` has no such cap.
-#
-# The scan file is created by us with O_EXCL (File::CREAT|File::EXCL) at an
-# UNPREDICTABLE path (pid plus a random suffix) rather than left to the shell's
-# `>` to create at a guessable one. That matters on a shared /tmp (TMPDIR unset
-# under cron/CI/sudo): the old `git-stack-scan-<pid>` path let a hostile local
-# user enumerate pids and pre-place a symlink there, which the shell redirect
-# would follow -- clobbering the victim's writable file, or swapping the scan
-# out between write and read to inject a forged branch list / stackParent dump
-# that `sync` then executes as real config rewrites and rebases. O_EXCL refuses
-# to open through a pre-placed symlink (or any existing entry), so we only ever
-# write into a fresh regular file we own; on sticky-bit /tmp no other user can
-# then unlink or replace it, closing the write/read TOCTOU. The random suffix
-# also keeps concurrent git-stack runs in one repo from colliding.
 # `empty_ok` marks the ONE command whose non-zero exit is a legitimate empty
-# result rather than a failure: `git config --get-regexp` exits non-zero when no
-# key matches, which for `scan_stack_config` just means "no branch is tracked
-# yet". Every other caller (the branch-list scan) passes false, so any non-zero
-# status there is treated as a genuine I/O failure and dies. See the fail-closed
-# note on the redirect below.
+# result: `git config --get-regexp` exits non-zero when no key matches ("no
+# branch tracked yet"). Every other caller passes false, so any non-zero status
+# is a genuine I/O failure and dies (see the fail-closed note below).
 def git_out_full(subcmd, empty_ok)
   dir = ENV["TMPDIR"]
   dir = "/tmp" if dir.nil? || dir.empty?
@@ -223,20 +199,12 @@ def git_out_full(subcmd, empty_ok)
   end
   file.close
 
-  # Do NOT swallow the exit status. This helper's callers require a COMPLETE
-  # result -- a partial or empty scan is a WRONG answer, not a smaller one (see
-  # the header comment). If git or the redirect fails (disk full, TMPDIR yanked
-  # mid-run), we would otherwise hand back a truncated/empty file that exits 0
-  # and is indistinguishable from "the repo really has no branches", and `sync`'s
-  # heal path reparents the branches that silently dropped out onto trunk. So
-  # fail closed: unless git exited 0, clean up and die -- except for `empty_ok`
-  # callers (`git config --get-regexp`), whose non-zero exit is its documented
-  # "no match" and a real empty result.
-  #
-  # Only `$? == 0` is compared: it reads identically under CRuby (where `$?` is a
-  # Process::Status) and a Spinel build, whereas a specific non-zero code does
-  # not -- so `empty_ok` accepts any non-zero rather than singling out exit 1.
-  # The line is read on its own, per the Spinel note on `git_run`.
+  # Fail closed: a partial/empty scan is a WRONG answer (see header). If git or
+  # the redirect fails, an empty file that exits 0 is indistinguishable from "no
+  # branches", and sync would then reparent the dropped branches onto trunk. So
+  # unless git exited 0, clean up and die -- except for `empty_ok` callers, whose
+  # non-zero exit is a real "no match". Any non-zero counts (not just exit 1):
+  # only `$? == 0` reads identically under CRuby and Spinel. Own line, per git_run.
   system("git #{subcmd} > #{sh(path)} 2>/dev/null")
   ok = $? == 0
   out = File.read(path)
@@ -268,22 +236,19 @@ def current_branch
   b
 end
 
-# Spawns a `git` subprocess per call. Fine for the one-off checks scattered
-# through this file, but do NOT call this inside a per-node loop over a
-# stack -- use the pre-captured `existing_branches` set there instead (see
-# `print_tree_row`/`restack_subtree` for the pattern).
+# Spawns a `git` subprocess per call. Fine for one-off checks, but do NOT call
+# it in a per-node loop over a stack -- use the pre-captured `existing_branches`
+# set there instead (see `print_tree_row`/`restack_subtree`).
 def branch_exists?(name)
   git_ok("show-ref --verify --quiet refs/heads/#{sh(name)}")
 end
 
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
-# `git rev-list --left-right --count` call: behind is how many commits parent
-# has that branch lacks, ahead how many branch has that parent lacks.
+# `git rev-list --left-right --count` call: behind is commits parent has that
+# branch lacks, ahead is commits branch has that parent lacks.
 #
-# `tree` no longer calls this per node -- it batches every node's counts into
-# one `git for-each-ref` (see scan_ahead_behind) and only falls back here on
-# git too old for that atom. It is still the per-branch path for `restack`'s
-# up-to-date check and remains correct for one-off use.
+# The per-branch path, for `restack`'s up-to-date check and as `tree`'s fallback
+# when git is too old for the batched `for-each-ref` atom (see scan_ahead_behind).
 def ahead_behind(parent, branch)
   out = git_out("rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
   parts = out.split("\t")
@@ -325,17 +290,12 @@ end
 # Auto-detect a single trunk: prefer the remote's default branch, then
 # main/master. Dies when none can be determined.
 #
-# Every candidate must exist as a LOCAL branch, `origin/HEAD`'s included. A
-# trunk is a local branch everywhere else in this file -- `is_trunk?` compares
-# plain branch names, `StackContext#branch?` checks refs/heads, restack rebases
-# onto it, and `init` validates its argument with the same `branch_exists?` --
-# so a name with no local ref is not a usable trunk, it is a dead end: it would
-# be persisted by `trunk_branches`, rendered by `tree` as a trunk row for a
-# branch that isn't there, and then rejected by every `track`/`parent` that
-# validates against it. `origin/HEAD` naming a branch the local clone doesn't
-# have is ordinary (it points at the remote's default; the local ref is gone
-# once that branch is merged and cleaned up, or was never checked out), so this
-# falls through to main/master rather than trusting it.
+# Every candidate must exist as a LOCAL branch, `origin/HEAD`'s included --
+# a trunk is a local branch everywhere else in this file, so a name with no
+# local ref is a dead end (persisted, rendered as a phantom trunk row, then
+# rejected by every `track`/`parent`). `origin/HEAD` pointing at a branch the
+# clone lacks is ordinary (merged and cleaned up, or never checked out), so we
+# fall through to main/master rather than trust it.
 def detect_trunk
   head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
   name = head.sub(/^origin\//, "")
@@ -358,9 +318,8 @@ def trunk_branches
 end
 
 # The primary trunk -- the default base a branch falls back to: the first
-# configured trunk, auto-detected and cached on first use exactly as
-# `trunk_branches` does it (this reads that list rather than repeating its
-# detect-and-persist fallback, so the two can't disagree on what the trunk is).
+# configured trunk. Reads `trunk_branches` rather than repeating its
+# detect-and-persist fallback, so the two can't disagree.
 def primary_trunk
   trunk_branches[0]
 end
@@ -417,11 +376,10 @@ def record_reparent_base(branch, parent)
   nil
 end
 
-# Record the stack base when `branch` is known to be sitting exactly on
-# `parent`'s tip -- freshly created on it (`create`), or just replayed onto it
-# (`restack`). The counterpart to `record_reparent_base`, which handles the
-# already-diverged case with a merge-base; here the tip IS the point the
-# branch's own commits begin, so no merge-base walk is needed.
+# Record the stack base when `branch` sits exactly on `parent`'s tip -- freshly
+# created (`create`) or just replayed onto it (`restack`). Counterpart to
+# `record_reparent_base`: here the tip IS where the branch's commits begin, so
+# no merge-base walk is needed.
 def record_tip_base(branch, parent)
   set_base(branch, git_out("rev-parse #{sh(parent)}"))
   nil
@@ -450,38 +408,25 @@ def untrack!(branch)
 end
 
 # One scan of git config listing every `branch.<name>.stackParent` entry.
+# StackContext parses it once up front so the tree/restack recursions read
+# children in memory instead of re-spawning `git` per node (O(N^2) otherwise).
 #
-# The tree and restack recursions look up a node's children at every step;
-# StackContext parses this scan once up front so the recursion reads it in
-# memory instead of re-spawning `git` per node (an O(N^2) subprocess blow-up on
-# a stack of N branches).
-#
-# Read through `git_out_full`, not `git_out`: this output grows with the number
-# of tracked branches (~95 bytes each), so a backtick would drop everything past
-# roughly the 45th and those branches would silently read as untracked.
+# Through `git_out_full`, not `git_out`: this output grows with the tracked
+# branch count, so a backtick would truncate it (see git_out_full's ~4 KB cap).
 def scan_stack_config
   git_out_full("config --get-regexp '^branch\\..*\\.stackparent$'", true)
 end
 
-# Set of every local branch name, fetched with a single `git` subprocess.
+# Set of every local branch name, in one `git` subprocess. Captured once so the
+# per-node `branch?` lookup is in memory, not a `git show-ref` per tree node.
 #
-# `tree` calls `branch_exists?` for every node it renders; on a stack of N
-# branches that means N extra `git show-ref` subprocesses (each a shell +
-# git fork/exec, ~10ms). Capturing the full branch list once and checking
-# it in memory removes that per-node cost, mirroring how `scan_stack_config`
-# avoids re-spawning `git config` per node.
+# Through `git_out_full`: this list grows with the repo, and a truncated set
+# makes every branch past the cut answer `branch?` with a confident, wrong
+# `false` -- the one lookup the whole traversal trusts (see git_out_full).
 #
-# Read through `git_out_full` for the reason spelled out there: this list grows
-# with the repository, and a truncated branch set makes every branch past the cut
-# answer `branch?` with a confident, wrong `false`. That is the one lookup the
-# whole traversal trusts, so it must be complete or the tree, restack and sync
-# all act on a repository that isn't there.
-#
-# Format with the full `%(refname)` and strip `refs/heads/` ourselves rather
-# than lean on `%(refname:short)`: when a tag shares a branch's name, `:short`
-# disambiguates by emitting `heads/<name>` instead of `<name>`, so `branch?`
-# reads the branch as missing and sync reparents its healthy children onto
-# trunk -- the exact stack-destroying failure this set exists to prevent.
+# Full `%(refname)` stripped of `refs/heads/` ourselves, not `%(refname:short)`:
+# when a tag shares a branch's name, `:short` emits `heads/<name>`, so `branch?`
+# reads the branch as missing and sync reparents its children onto trunk.
 def existing_branches
   out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
   set = Set.new
@@ -493,30 +438,23 @@ def existing_branches
   set
 end
 
-# Return every branch that records `parent` as its parent. Builds a throwaway
-# StackContext (a single config scan, no ahead/behind git walk) -- the one-shot
-# path used by `up`, distinct from the shared context `tree`/`restack`/`sync`
-# build once and thread through their recursion.
+# Every branch that records `parent` as its parent. Builds a throwaway
+# StackContext (one config scan, no ahead/behind walk) -- the one-shot path for
+# `up`, distinct from the context `tree`/`restack`/`sync` thread through recursion.
 def children_of(parent)
   StackContext.build_topology.children_of(parent)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
-# rule. Every path that resolves an effective parent funnels through here: the
-# single-command `parent`/`down` (`effective_parent`, one `git` subprocess) and
-# the in-memory tree/count traversal (`StackContext#effective_parent_of`, off the
-# pre-captured config snapshot). Keeping it in one place is the whole point --
-# display, counts, and navigation can no longer drift on what a branch's parent
-# effectively is (the rule used to sit, copied, in three separate spots).
+# rule. Every effective-parent path funnels through here -- the single-command
+# `effective_parent` and the in-memory `StackContext#effective_parent_of` -- so
+# display, counts, and navigation can't drift (the rule used to sit copied in
+# three spots).
 #
-# Threading one rule through both the subprocess wrappers and the StackContext
-# methods unifies their branch-name parameters with its result, which pulls the
-# `git`-wrapper family (`sh`, `checkout!`, `branch_exists?`, `ahead_behind`) and
-# `StackContext#branch?` onto Spinel's untyped slow path. Those five signatures
-# are pinned back to concrete types by the hand-written seed in rbs/ (fed to the
-# compiler via `--rbs`, which `spin` and the CI golden check pass) -- so the
-# binary stays on the fast path and the emitted golden gains no new untyped. See
-# rbs/git-stack.rbs.
+# Threading one rule through both worlds pulls the `git`-wrapper family (`sh`,
+# `checkout!`, `branch_exists?`, `ahead_behind`) and `StackContext#branch?` onto
+# Spinel's untyped slow path; the hand-written seed in rbs/ pins them back to
+# concrete types (fed via `--rbs`, checked by the CI golden). See rbs/git-stack.rbs.
 def effective_parent_rule(parent, trunk)
   parent.empty? ? trunk : parent
 end
@@ -528,16 +466,10 @@ def effective_parent(branch, trunk)
   effective_parent_rule(get_parent(branch), trunk)
 end
 
-# Walk down from `branch` to the root of its stack (the branch whose parent is
-# the trunk or is untracked). Returns the root branch name.
-#
-# Reads the pre-captured `ctx` instead of spawning `git config` + `git show-ref`
-# per level (the two-subprocess-per-node pattern `branch_exists?` warns against):
-# its callers build a StackContext for the traversal that follows anyway, and it
-# already holds the parent map and branch set this walk needs.
-#
-# `seen` guards against cyclic parent chains (e.g. A -> B -> A) left over from
-# older versions or hand-edited config, so we terminate instead of hanging.
+# Walk down from `branch` to the root of its stack (whose parent is the trunk or
+# is untracked). Returns the root branch name. Reads the pre-captured `ctx`, not
+# a `git config`+`git show-ref` per level. `seen` guards cyclic parent chains
+# (A -> B -> A from hand-edited config) so we terminate instead of hanging.
 def stack_root(ctx, branch, trunks)
   seen = Set.new
   loop do
@@ -553,12 +485,8 @@ def stack_root(ctx, branch, trunks)
 end
 
 # True if making `new_parent` the parent of `branch` would create a cycle --
-# that is, `branch` already lies on `new_parent`'s chain of ancestors.
-#
-# Walks the pre-captured `ctx` rather than spawning `git config` + `git show-ref`
-# per level -- the two-subprocess-per-node pattern `branch_exists?` warns
-# against, and the same one `stack_root` was moved off. The whole walk now costs
-# the two `git` calls `build_topology` makes up front, whatever its depth.
+# i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks the
+# pre-captured `ctx` (like `stack_root`), so the whole walk costs no `git` per level.
 def would_cycle?(ctx, branch, new_parent, trunks)
   seen = Set.new
   cur = new_parent
@@ -601,18 +529,12 @@ def tree_name(branch, cur, default_code)
   paint(default_code, branch)
 end
 
-# Several of the indexes below are kept as newline-packed strings of
-# `"<left>\t<right>"` lines (see StackContext for why packing beats an
-# `Array`/nested `Hash` here): the ahead/behind pairs `"<branch>\t<parent>"`, a
-# for-each-ref row `"<branch>\t<cols...>"`, and an order line
-# `"<depth>\t<branch>"`. These two readers are where that layout is known --
-# every consumer asks for a side by name instead of re-deriving the separator's
-# position, so changing the format is a one-place edit rather than a six-site
-# one.
+# Readers for the `"<left>\t<right>"` lines that several indexes below are
+# packed as (see StackContext for why packing beats an Array/nested Hash). Every
+# consumer asks for a side by name, so the separator's position is known only here.
 #
-# A line with no tab has no fields, so both answer "". Every caller already
-# skips on an empty side, which doubles as their malformed-line guard (and
-# covers the empty trailing line a `"...\n"` split yields).
+# A line with no tab answers "" -- which every caller already skips on, so it
+# doubles as the malformed-line and empty-trailing-line guard.
 def tab_head(line)
   tab = line.index("\t")
   return "" if tab.nil?
@@ -627,21 +549,15 @@ def tab_tail(line)
   line[(tab + 1)..-1]
 end
 
-# How many branches per batched `git for-each-ref` in scan_ahead_behind.
-#
-# Each batch's captured output must stay well under Spinel's ~4 KB backtick
-# cap (a compiled binary's backticks read a single ~4 KB chunk, silently
-# dropping the rest -- verified against the toolchain). A batch emits at most
-# CHUNK rows of at most CHUNK+1 numeric columns, so its bytes grow as CHUNK^2;
-# 12 keeps a batch comfortably small (~2 KB worst case) while still turning one
-# git call into a dozen branches' worth of counts.
+# How many branches per batched `git for-each-ref` in scan_ahead_behind. A batch
+# emits at most CHUNK rows of CHUNK+1 columns, so its bytes grow as CHUNK^2; 12
+# keeps it ~2 KB worst case, comfortably under git_out's ~4 KB backtick cap.
 AHEAD_BEHIND_CHUNK = 12
 
 # The distinct parents in `group` (up to AHEAD_BEHIND_CHUNK "<branch>\t<parent>"
 # lines), newline-joined -- one entry per `%(ahead-behind:<parent>)` atom column
-# the batch's for-each-ref will emit. Kept newline-PACKED as a String, scanned
-# with `.each` block variables and never indexed as an Array[String] (whose
-# element reads Spinel widens to untyped; see scan_ahead_behind).
+# the batch's for-each-ref emits. Newline-packed, not Array[String] (see
+# scan_ahead_behind for the Spinel-widening reason).
 def ahead_behind_bases(group)
   bases = ""
   seen = Set.new
@@ -656,8 +572,8 @@ def ahead_behind_bases(group)
 end
 
 # The `refs/heads/...` argument tail for the batch's for-each-ref: every branch
-# named in `group`, shell-quoted and space-joined. Same string-packed, never
-# Array[String]-indexed idiom as ahead_behind_bases (see scan_ahead_behind).
+# in `group`, shell-quoted and space-joined. Same packed-String idiom as
+# ahead_behind_bases.
 def ahead_behind_refs(group)
   refs = ""
   group.split("\n").each do |pl|
@@ -670,14 +586,10 @@ def ahead_behind_refs(group)
 end
 
 # branch -> the for-each-ref column carrying that branch's counts, for one
-# batch. `bases` lists the distinct parents in the order `ahead_behind_chunk`
-# appends their `%(ahead-behind:)` atoms, so a parent's position in it IS its
-# column number; `group` then maps each branch to its parent.
-#
-# Built once per batch rather than re-derived per output row: it is the whole of
-# what the readback needs to know about `group` and `bases`, and computing it up
-# front means the row loop is a single hash lookup instead of two nested scans
-# reconstructing the same branch -> parent -> column chain in two encodings.
+# batch. `bases` lists the distinct parents in the order their `%(ahead-behind:)`
+# atoms are appended, so a parent's position in it IS its column number; `group`
+# maps each branch to its parent. Built once per batch so the readback's row loop
+# is a single hash lookup, not two nested scans.
 def ahead_behind_columns(group, bases)
   parent_col = {}
   n = 0
@@ -701,9 +613,7 @@ end
 
 # Read one batch's for-each-ref `output` back into "<branch>\t<behind>\t<ahead>"
 # lines. Each row is "<branch>\t<col0>\t<col1>..."; `cols` (from
-# `ahead_behind_columns`) says which column is this branch's. All string slicing
-# plus `.each` block variables -- no Array[String] indexing (see
-# scan_ahead_behind).
+# `ahead_behind_columns`) says which column is this branch's.
 def ahead_behind_readback(output, cols)
   result = ""
   output.split("\n").each do |row|
@@ -734,22 +644,18 @@ def ahead_behind_readback(output, cols)
 end
 
 # One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
-# "<branch>\t<parent>" lines. Runs a single `git for-each-ref` listing those
-# branches, with one `%(ahead-behind:<parent>)` atom per distinct parent in the
-# group, then reads back each branch's own parent column. Returns
-# "<branch>\t<behind>\t<ahead>" lines (empty on git older than 2.41, where the
-# atom is unknown and the call fails -- print_tree_row then falls back per node).
+# "<branch>\t<parent>" lines. Runs one `git for-each-ref` over those branches,
+# with one `%(ahead-behind:<parent>)` atom per distinct parent, then reads back
+# each branch's own parent column. Returns "<branch>\t<behind>\t<ahead>" lines
+# (empty on git < 2.41, where the atom fails and print_tree_row falls back per node).
 def ahead_behind_chunk(group)
   refs = ahead_behind_refs(group)
   return "" if refs.empty?
 
   bases = ahead_behind_bases(group)
-  # `%(refname)` + strip below, not `%(refname:short)`: a branch that shares a
-  # tag's name shortens to `heads/<name>`, whose row the readback can't map back
-  # to `<name>` and so drops the branch's counts. The atom likewise takes the
-  # full `refs/heads/<parent>` rather than the bare parent name, so a same-named
-  # tag can't shadow the branch as the ahead-behind base (git resolves a bare
-  # name to the tag first, and warns the ref is ambiguous).
+  # `%(refname)` + strip, not `%(refname:short)`, and full `refs/heads/<parent>`
+  # in the atom, not the bare name: a same-named tag would otherwise shadow the
+  # branch (dropping its counts, or being resolved as the ahead-behind base).
   fmt = "%(refname)"
   bases.split("\n").each do |b|
     next if b.empty?
@@ -761,17 +667,11 @@ def ahead_behind_chunk(group)
   ahead_behind_readback(out, ahead_behind_columns(group, bases))
 end
 
-# Parse a `scan_ahead_behind` result string once into a name -> "behind\tahead"
-# index, so each node's lookup is O(1) instead of re-splitting and re-scanning
-# the whole result per node (an O(N^2) blow-up on a stack of N branches, mirroring
-# the one StackContext's parent/child indexes remove for the config scan).
-#
-# The counts are kept as the packed "<behind>\t<ahead>" string they already
-# arrive in, not as an `Array[Integer]` value: a hash whose values are read back
-# out stays a concrete `Hash[String, String]` in Spinel's emitted signatures,
-# whereas an array-valued hash widens to untyped (the same reason `ab` itself
-# stays a String rather than an `Array[String]`; see scan_ahead_behind).
-# `StackContext#ahead_behind_of` unpacks the pair back into a fresh `Array[Integer]`.
+# Parse a `scan_ahead_behind` result once into a name -> "behind\tahead" index,
+# so each node's lookup is O(1) instead of re-scanning the whole result per node.
+# Values stay packed "<behind>\t<ahead>" strings, not Array[Integer]: an
+# array-valued hash widens to untyped in Spinel's signatures (see
+# scan_ahead_behind). `ahead_behind_of` unpacks back into a fresh Array[Integer].
 def ahead_behind_index(ab)
   index = {}
   ab.split("\n").each do |line|
@@ -786,10 +686,9 @@ def ahead_behind_index(ab)
 end
 
 # One snapshot of the stack, captured up front and threaded through the tree /
-# restack / sync recursions in place of the loose `index` / `branches` /
-# `ab_index` triple those used to pass around by hand.
-#
-# It bundles the git state a traversal reads repeatedly:
+# restack / sync recursions. It bundles the git state a traversal reads
+# repeatedly, so every lookup is in memory and a whole traversal costs the two or
+# three `git` calls `build` makes up front rather than a subprocess per node:
 #
 #   @parents   branch -> recorded parent           (from the config scan)
 #   @branches  the set of existing local branches   (existing_branches)
@@ -797,31 +696,17 @@ end
 #   @ab        branch -> "<behind>\t<ahead>"        (ahead_behind_index)
 #   @trunk     the primary trunk a parentless branch falls back to (`build`'s arg)
 #
-# `@trunk` is what lets the in-memory traversal resolve a parentless branch to
-# the trunk through the shared `effective_parent_rule`, the same rule the
-# single-command `parent`/`down` path uses -- so the tree's display, its
-# ahead/behind counts, and navigation never disagree on a branch's parent.
+# `@trunk` lets the in-memory traversal resolve a parentless branch through the
+# shared `effective_parent_rule`, so display, counts, and navigation agree.
 #
-# `@children` is newline-PACKED, and that packing is what makes it a field at
-# all: the child relationship is `@parents` inverted, and holding it as the
-# `Hash[String, Array[String]]` an array value would force widens to
-# `Hash[String, untyped]` (Spinel has no tag for it) -- pollution that used to
-# bleed through `children_of` into every traversal. Packed, it is a concrete
-# `Hash[String, String]`, exactly like `@ab`, so it is built once by
-# `index_children` at `load` time rather than re-inverted on every `order` /
-# `children_of` call. Callers read a row back with `.split("\n")` into a fresh
-# `Array[String]`; that split is where the concrete element type is
-# (re)introduced. `order` walks it to yield a stack's traversal order;
-# `children_of` reads one node's row.
+# @children and @ab are newline-PACKED Strings, and that is what makes them
+# concrete fields: the `Hash[String, Array[String]]` an array value would force
+# widens to `Hash[String, untyped]` (Spinel has no tag for it). Packed, they are
+# `Hash[String, String]`; callers `.split("\n")` a row back into a fresh
+# `Array[String]`, which is where the concrete element type is (re)introduced.
 #
-# Every lookup is in memory, so a whole traversal costs the two or three `git`
-# calls `build` makes up front rather than a subprocess per node. Splitting the
-# old `[parents, children]` Array into named fields also drops the
-# `index[0]` / `index[1]` positional reads Spinel widened to untyped.
-#
-# Build it once per command with `build` (with ahead/behind counts, for `tree`)
-# or `build_topology` (topology only, for restack/sync, which navigate the
-# stack but never render counts and so skip the ahead/behind git walk).
+# Build with `build` (with ahead/behind counts, for `tree`) or `build_topology`
+# (topology only, for restack/sync, which never render counts).
 class StackContext
   def initialize
     @parents = {}
@@ -829,15 +714,14 @@ class StackContext
     @children = {}
     @ab = {}
     @trunk = ""
-    # Explicit nil: without it the trailing `@trunk = ""` assignment would be
-    # the initializer's value and Spinel infers `initialize` as returning
-    # String. Pinning it to nil keeps the emitted signature `() -> nil`.
+    # Explicit nil so Spinel infers `initialize` as `() -> nil`, not `-> String`
+    # from the trailing assignment.
     nil
   end
 
-  # Full snapshot including ahead/behind counts, for `tree`. The `scan` is parsed
-  # exactly once (into `@parents`); the ahead/behind walk then builds its branch
-  # pairs from `@parents`, not by re-parsing the raw config a second time.
+  # Full snapshot including ahead/behind counts, for `tree`. The scan is parsed
+  # once (into `@parents`); the ahead/behind walk then reads `@parents` rather
+  # than re-parsing the raw config.
   def self.build(trunk)
     ctx = new
     ctx.load(scan_stack_config)
@@ -854,9 +738,8 @@ class StackContext
   end
 
   # Parse one `scan_stack_config` string into the parent and child indexes and
-  # capture the existing-branch set. Note: git lowercases the variable-name
-  # portion of a config key, so the stored key is `branch.<name>.stackparent`
-  # even though we write `stackParent`.
+  # capture the existing-branch set. Note: git lowercases a config key's
+  # variable name, so the stored key is `branch.<name>.stackparent`.
   def load(scan)
     @branches = existing_branches
     scan.split("\n").each do |line|
@@ -874,19 +757,13 @@ class StackContext
     nil
   end
 
-  # Invert `@parents` into the packed `@children` index, once per context. The
-  # traversal looks up a node's children at every step, so this is built here
-  # rather than re-derived per `order` / `children_of` call (`tree` alone drives
-  # one walk per trunk and one per orphan root).
+  # Invert `@parents` into the packed `@children` index, once per context (the
+  # traversal reads children at every step, so it isn't re-derived per call).
   #
-  # Rebuilds from empty rather than appending to whatever is there: the rows are
-  # accumulated with `"#{row}#{name}\n"`, so without the reset a second `load`
-  # (or a bare second call) would append every child a second time and
-  # `children_of` would answer ["a", "a", "b", "b"] -- enough for `cmd_up` to
-  # report "multiple children" for a branch that has one. The `child_index` this
-  # replaced built a fresh local hash per call and could not drift that way;
-  # keeping it derived-not-accumulated preserves that, since a field outlives the
-  # call that filled it.
+  # Rebuilds from empty: rows accumulate with `"#{row}#{name}\n"`, so without the
+  # reset a second `load` would append every child again and `children_of` would
+  # answer ["a", "a", ...] -- enough for `cmd_up` to see "multiple children"
+  # where there's one.
   def index_children
     @children = {}
     @parents.each do |name, value|
@@ -898,10 +775,9 @@ class StackContext
     nil
   end
 
-  # Record the fallback trunk and populate the ahead/behind index from a batched
-  # `git for-each-ref` walk (see `scan_ahead_behind`). `@trunk` is set first
-  # because `scan_ahead_behind` reads it (through `effective_parent_of`) to know
-  # where a parentless branch rests.
+  # Record the fallback trunk, then populate the ahead/behind index from a
+  # batched walk (see `scan_ahead_behind`). `@trunk` is set first because
+  # `scan_ahead_behind` reads it to know where a parentless branch rests.
   def load_ahead_behind(trunk)
     @trunk = trunk
     @ab = ahead_behind_index(scan_ahead_behind)
@@ -914,52 +790,34 @@ class StackContext
     parent.nil? ? "" : parent
   end
 
-  # The effective parent of `branch` for display, navigation, and counts: its
-  # recorded parent, or `@trunk` when none is recorded. The in-memory entry point
-  # to the shared `effective_parent_rule` -- `print_tree_row` and
-  # `scan_ahead_behind` both resolve through here, so the tree's display and its
-  # counts read a branch's parent the exact same way the single-command path does
-  # (see `effective_parent_rule` for the seed that keeps this off the slow path).
+  # The effective parent of `branch`: its recorded parent, or `@trunk` when none
+  # is recorded. The in-memory entry point to the shared `effective_parent_rule`,
+  # used by `print_tree_row` and `scan_ahead_behind` so display and counts agree.
   def effective_parent_of(branch)
     effective_parent_rule(parent_of(branch), @trunk)
   end
 
   # Precompute [behind, ahead] for every branch against its effective parent in a
   # HANDFUL of batched `git for-each-ref` calls, instead of one `git rev-list` per
-  # tree node (an O(N) subprocess blow-up -- the dominant cost of a large tree,
-  # since every other lookup was already collapsed into a single `git` call).
+  # tree node -- the dominant cost of a large tree once every other lookup was
+  # collapsed to a single `git` call. Reads the `@parents` snapshot, resolving
+  # each branch through the same `effective_parent_of` the tree render uses, so
+  # counts and displayed parent can't disagree.
   #
-  # It reads the `@parents` snapshot `load` already built rather than re-parsing
-  # the raw config scan a second time: one `"<branch>\t<parent>"` line per branch
-  # whose effective parent exists as a branch, each resolved through the same
-  # `effective_parent_of` the per-node tree render uses, so the counts computed
-  # here and the parent shown there can never disagree.
+  # The `%(ahead-behind:<base>)` atom reports "<ahead> <behind>" for every listed
+  # ref against <base> in one graph walk. Branches are processed in chunks of
+  # AHEAD_BEHIND_CHUNK (one call each, one atom per distinct parent), which cuts
+  # ~N git calls to ~N/12 AND bounds each call's output under the ~4 KB backtick
+  # cap that a single O(N^2)-output call would blow past. Returns one
+  # `"<branch>\t<behind>\t<ahead>"` line per branch (tabs are safe: refnames have
+  # no control chars), parsed back by `ahead_behind_index` into `@ab`.
   #
-  # `git for-each-ref`'s `%(ahead-behind:<base>)` atom reports "<ahead> <behind>"
-  # for every listed ref against <base> in one graph walk. Each branch rests on
-  # its own parent, so we process branches in chunks of AHEAD_BEHIND_CHUNK: one
-  # call per chunk, listing that chunk's refs with one atom per distinct parent in
-  # it, then reading back each branch's own parent column. That is ~N/12 git calls
-  # instead of N -- and, crucially, bounds each call's output so it never trips the
-  # ~4 KB backtick cap that a single all-branches-by-all-parents call (O(N^2)
-  # output) would blow past on a stack of more than a couple dozen branches.
-  #
-  # Returns one `"<branch>\t<behind>\t<ahead>"` line per branch, parsed back by
-  # `ahead_behind_index` into `@ab` and read via `ahead_behind_of`. Tabs are safe
-  # separators: git refnames cannot contain control characters, and the atom's own
-  # output is just two space-separated numbers.
-  #
-  # The atom requires git 2.41+. On older git `for-each-ref` fails, a chunk yields
-  # nothing, and `print_tree_row` falls back to the per-node `ahead_behind` for its
-  # branches -- so the tree still renders correctly (just without the batching
-  # win). A branch whose name breaks the atom's `)`-terminated argument fails the
-  # same closed way, only for its own chunk.
+  # The atom requires git 2.41+; on older git the call fails, a chunk yields
+  # nothing, and `print_tree_row` falls back to per-node `ahead_behind`.
   def scan_ahead_behind
-    # "<branch>\t<parent>" lines for branches whose effective parent exists as a
-    # branch. Held as one string and processed with the same string-slicing idiom
-    # as the config scan itself -- deliberately NOT as an Array[String], whose
-    # element reads Spinel widens to untyped (and that widening bleeds into the
-    # emitted Set signatures; see test/git-stack.rbs.expected).
+    # "<branch>\t<parent>" lines for branches whose effective parent exists. One
+    # packed string, NOT an Array[String] -- whose element reads Spinel widens to
+    # untyped, bleeding into the emitted Set signatures (test/git-stack.rbs.expected).
     pairs = ""
     @parents.each do |name, value|
       next unless @branches.include?(name)
@@ -991,17 +849,13 @@ class StackContext
   end
 
   # Sorted list of branches that record `branch` as their parent (empty when
-  # none do). Reads one row of the packed `@children` index and splits it into
-  # a concrete `Array[String]`; the `.sort` both orders siblings deterministically
-  # and pins the element type (a poly array would raise on `sort` at run time).
+  # none). Reads one packed `@children` row and splits it into a concrete
+  # `Array[String]`; `.sort` orders siblings and pins the element type.
   #
-  # The row is a String (`index_children` packs each value as one), but a `.to_s`
-  # guards the split: newer Spinel can widen `@children` to `Hash[String,
-  # untyped]`, handing back a boxed poly whose `.split` result types as
-  # `unknown` -- and `.each` on `unknown` is a compile-time-baked
-  # `NoMethodError` ("undefined method 'each' for unknown"). `.to_s` re-narrows
-  # it to a concrete String so the split stays `Array[String]`. It is a no-op
-  # under the pinned Spinel, where the value is already a String.
+  # The `.to_s` guards the split: newer Spinel can widen `@children` to
+  # `Hash[String, untyped]`, whose value `.split`s to `unknown`, and `.each` on
+  # `unknown` is a baked-in `NoMethodError`. `.to_s` re-narrows to a String so
+  # the split stays `Array[String]`; a no-op under the pinned Spinel.
   def children_of(branch)
     row = @children[branch]
     return [] if row.nil?
@@ -1013,25 +867,19 @@ class StackContext
     names.sort
   end
 
-  # The whole subtree rooted at `root`, in DFS pre-order (each parent before its
+  # The whole subtree rooted at `root`, DFS pre-order (each parent before its
   # children, siblings sorted), packed one `"<depth>\t<branch>"` line per node
-  # with `root` itself at depth 0. This replaces the old per-node `children_of`
-  # recursion that `tree` and `restack` drove: they now split this once and loop
-  # flat, so the indent (tree) or nothing (restack) is a single `Integer` depth
-  # instead of a threaded prefix string, and the cycle guard lives here once.
+  # with `root` at depth 0. `tree` and `restack` split this once and loop flat
+  # (depth is a single `Integer`, not a threaded prefix), and the cycle guard
+  # lives here once.
   def order(root)
     walk_order(root, 0, Set.new, "")
   end
 
-  # The two readers of one packed order line ("<depth>\t<branch>", see `order`).
-  # `order_branches` wants the name, `print_order` wants both. Both go through
-  # the shared `tab_head`/`tab_tail`, so this pair names which side of an order
-  # line means what and nothing here knows where the separator sits.
-  #
-  # A line with no tab has no branch, so `order_line_branch` answers "" for it.
-  # That covers the empty trailing line every `"...\n"` split yields as well as a
-  # malformed one, and both callers already skip on an empty name -- so it
-  # doubles as their guard instead of each repeating an `empty?`/`nil?` pair.
+  # The two readers of one packed order line ("<depth>\t<branch>", see `order`),
+  # naming which side means what so callers don't know where the separator sits.
+  # `order_line_branch` answers "" for a tab-less line, which both callers skip --
+  # covering the empty trailing line and malformed lines alike.
   def order_line_branch(line)
     tab_tail(line)
   end
@@ -1042,15 +890,10 @@ class StackContext
     tab_head(line).to_i
   end
 
-  # The same pre-order walk as `order`, with the depth dropped: just the branch
-  # names, `root` first. For the callers that traverse a subtree but never render
-  # it (`restack_subtree`).
-  #
-  # It decodes what `order` just encoded, which is deliberate: the alternative is
-  # a second walk of `@children` to maintain alongside `walk_order`, and one walk
-  # that tree and restack share cannot disagree with itself about traversal order
-  # or the cycle guard. The `<<` of a `String` slice introduces the concrete
-  # element type, as in `children_of`.
+  # The same pre-order walk as `order`, depth dropped: just branch names, `root`
+  # first, for callers that traverse but never render (`restack_subtree`).
+  # Decoding what `order` encoded is deliberate -- one shared walk can't disagree
+  # with itself about traversal order or the cycle guard.
   def order_branches(root)
     names = []
     order(root).split("\n").each do |line|
@@ -1061,11 +904,9 @@ class StackContext
   end
 
   # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
-  # reading children from the packed `@children` index. `visited` guards against
-  # cyclic parent chains (A -> B -> A from hand-edited config) so the walk
-  # terminates and emits each branch at most once. `acc` is threaded and returned
-  # rather than mutated in place; the interpolation keeps its type a concrete
-  # String.
+  # reading children from packed `@children`. `visited` guards cyclic parent
+  # chains (A -> B -> A) so the walk terminates, emitting each branch at most
+  # once. `acc` is threaded and returned, not mutated, keeping it a concrete String.
   def walk_order(branch, depth, visited, acc)
     return acc if visited.include?(branch)
     visited.add(branch)
@@ -1090,12 +931,11 @@ class StackContext
     @branches.include?(name)
   end
 
-  # [behind, ahead] for `branch` from the ahead/behind index -- a single `Hash`
-  # lookup. Returns the sentinel [-1, -1] when `branch` has no entry (e.g. git
-  # too old for the batched atom, so the index was empty, or a context built
-  # without counts), signalling `print_tree_row` to fall back to a per-node
-  # `ahead_behind`. The pair is rebuilt into a fresh literal so the return type
-  # stays a plain `Array[Integer]`, off Spinel's untyped slow path.
+  # [behind, ahead] for `branch` from the index -- a single `Hash` lookup.
+  # Returns the sentinel [-1, -1] when `branch` has no entry (git too old for the
+  # atom, or a context built without counts), signalling `print_tree_row` to fall
+  # back to per-node `ahead_behind`. Rebuilt into a fresh literal so the return
+  # type stays a plain `Array[Integer]`.
   def ahead_behind_of(branch)
     packed = @ab[branch]
     return [-1, -1] if packed.nil?
@@ -1106,10 +946,9 @@ class StackContext
     [fields[0].to_i, fields[1].to_i]
   end
 
-  # Branches whose recorded parent is non-empty but no longer a real branch
-  # (its parent was merged and deleted). Treated as extra roots by `tree` so
-  # they're always visible instead of silently disappearing; `git stack sync`
-  # is what actually repairs them.
+  # Branches whose recorded parent is non-empty but no longer a real branch (it
+  # was merged and deleted). `tree` shows them as extra roots so they stay
+  # visible; `git stack sync` is what repairs them.
   def orphan_roots
     names = []
     @parents.each do |name, value|
@@ -1122,22 +961,15 @@ class StackContext
   end
 end
 
-# Print one tree row for `branch`, indented two spaces per `depth`.
-#
-# One node of the traversal, no recursion of its own: `cmd_tree` drives the
-# order with `ctx.order` and calls this per line. `ctx` is the pre-built
-# StackContext, so every parent / branch-existence / ahead-behind lookup is in
-# memory and rendering the whole tree costs no `git` per node. The fallback
-# trunk lives in `ctx`, so the effective parent is resolved through
-# `effective_parent_of` (the same rule the counts were computed against) rather
-# than a trunk threaded in alongside.
+# Print one tree row for `branch`, indented two spaces per `depth`. One node of
+# the traversal, no recursion: `cmd_tree` drives the order and calls this per
+# line, reading the pre-built `ctx` so the whole tree costs no `git` per node.
 def print_tree_row(branch, depth, cur, ctx)
   extra = ""
   parent = ctx.effective_parent_of(branch)
   if !parent.empty? && ctx.branch?(parent)
-    # Counts come from the single batched `git for-each-ref` (see
-    # scan_ahead_behind), looked up in memory. The sentinel guards the git-too-
-    # old case, where the index is empty and we fall back to a per-node call.
+    # Counts from the batched `for-each-ref` (see scan_ahead_behind); the
+    # sentinel guards the git-too-old case with a per-node fallback.
     behind, ahead = ctx.ahead_behind_of(branch)
     if behind < 0
       behind, ahead = ahead_behind(parent, branch)
@@ -1230,10 +1062,8 @@ def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
   primary = trunks[0]
-  # One StackContext captures the whole stack up front -- topology, existing
-  # branches, and every node's [behind, ahead] counts (the latter batched into a
-  # few `git for-each-ref` calls, replacing one `git rev-list` per node) -- so
-  # the loops below read it all in memory instead of re-spawning `git` per node.
+  # One StackContext captures the whole stack up front -- topology, branches, and
+  # every node's counts -- so the loops below read it in memory, no `git` per node.
   ctx = StackContext.build(primary)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
@@ -1315,36 +1145,30 @@ def cmd_up(args)
   exit 1
 end
 
-# Resolve the base commit to feed `git rebase --onto <parent> <base> <branch>`
-# for one branch. The base is the commit the branch's own work begins at -- the
-# point below which commits belong to the parent and must NOT be replayed.
+# Resolve the base commit to feed `git rebase --onto <parent> <base> <branch>`.
+# The base is where the branch's own work begins -- below it, commits belong to
+# the parent and must NOT be replayed.
 #
 # Prefers the recorded stackBase, but only when it still names a real commit
-# that is an ancestor of `branch`: a base that was rewritten, or never an
-# ancestor, would replay the wrong range. Otherwise (empty, stale, or not an
-# ancestor) it falls back to the current merge-base of `branch` and `parent`.
+# that is an ancestor of `branch` (a rewritten or never-ancestor base would
+# replay the wrong range); otherwise falls back to the merge-base of `branch`
+# and `parent`.
 #
-# The recorded base is additionally clamped forward to the live merge-base of
-# `branch` and `parent`. git-stack only re-records the base when it moves a
-# branch itself (`set_base` after a restack), so a manual `git rebase`/`git
-# pull` -- or a parent that advanced past the branch -- leaves the recorded base
-# pointing at an old commit far below where the branch and parent now diverge.
-# When that recorded base is a (strict or equal) ancestor of the merge-base,
-# every commit between the two is by definition already contained in `parent`,
-# so replaying from the recorded base would re-apply commits the parent already
-# has and conflict against them. In that case the merge-base is the correct
-# base. A base that sits *above* the merge-base -- i.e. is not an ancestor of it
-# -- is left as-is: that is the squash-merged-parent case `--onto` exists for,
-# where the branch's own commits legitimately start below the merge-base.
+# A valid recorded base is additionally clamped forward to the merge-base: a
+# manual rebase/pull (or a parent that advanced past the branch) can leave the
+# recorded base far below where they now diverge. When it is an ancestor of the
+# merge-base, every commit between the two is already in `parent`, so replaying
+# from it would re-apply and conflict -- the merge-base is correct. A base
+# *above* the merge-base is left as-is: the squash-merged-parent case `--onto`
+# exists for, where the branch's commits legitimately start below it.
 #
 # Returns "" only when even the merge-base is unavailable (unrelated histories,
-# or a vanished parent during orphan heal), signalling the caller to fall back
-# to a plain `git rebase <parent> <branch>` for backward compatibility.
+# or a vanished parent during orphan heal) -- the caller then falls back to a
+# plain `git rebase <parent> <branch>`.
 def resolve_stack_base(branch, parent)
   base = get_base(branch)
-  # The merge-base is both the clamp target for a valid-but-stale recorded base
-  # and the fallback when the recorded base is unusable; "" (no parent, or
-  # unrelated histories) disables the clamp and signals a plain-rebase fallback.
+  # Both the clamp target for a stale recorded base and the fallback when the
+  # recorded base is unusable; "" disables the clamp and signals plain-rebase.
   mb = parent.empty? ? "" : git_out("merge-base #{sh(branch)} #{sh(parent)}")
   if !base.empty? &&
      git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
@@ -1355,15 +1179,13 @@ def resolve_stack_base(branch, parent)
   mb
 end
 
-# Replay `branch`'s own commits onto `parent`'s tip, or die with the manual
-# recovery command. Only the branch's commits (those above its stack base) are
-# replayed: a plain `git rebase <parent>` would instead replay every commit in
-# `parent..branch`, re-applying a squash-merged parent's work and conflicting;
-# `--onto` with the recorded base avoids that. When no base can be resolved at
-# all we do fall back to the plain rebase, for branches predating stackBase.
+# Replay `branch`'s own commits (those above its stack base) onto `parent`'s tip,
+# or die with the manual recovery command. A plain `git rebase <parent>` would
+# replay all of `parent..branch`, re-applying a squash-merged parent's work and
+# conflicting; `--onto` with the recorded base avoids that. With no base at all
+# we fall back to the plain rebase, for branches predating stackBase.
 #
-# `verb` is the subcommand to send the user back to after resolving a conflict
-# (see `restack_subtree`, whose loop this is the moving arm of).
+# `verb` is the subcommand to send the user back to after a conflict.
 def replay_onto!(branch, parent, verb)
   info "restacking #{cyan(branch)} onto #{cyan(parent)}"
   base = resolve_stack_base(branch, parent)
@@ -1384,35 +1206,23 @@ def replay_onto!(branch, parent, verb)
   nil
 end
 
-# Rebase the whole stack rooted at `root` onto itself, each branch onto its
-# parent, in `ctx.order_branches(root)` order (each parent before its children).
+# Rebase the whole stack rooted at `root`, each branch onto its parent, in
+# `ctx.order_branches(root)` order (each parent before its children). That order,
+# and the cycle guard, are fixed up front, so this is a flat loop.
 #
-# The traversal order is fixed up front by `ctx.order_branches`, which also
-# carries the cycle guard (a hand-edited A -> B -> A chain terminates and visits
-# each branch once), so this is a flat loop over branch names rather than a
-# recursion.
+# `verb` is the subcommand to name on conflict, passed in rather than derived
+# from `heal_orphans`: `drop` heals nothing yet must still send the user to
+# `restack` (its splice is already in config, re-running `drop` would be wrong).
 #
-# `verb` is the subcommand to name when a rebase conflicts ("then re-run '#{PROG}
-# <verb>'"). It is passed in rather than derived from `heal_orphans`, which is a
-# behaviour knob and not the caller's identity: `drop` heals nothing yet must
-# still send the user to `restack`, since its splice is already committed to
-# config and re-running `drop` would be wrong.
+# A branch with no recorded parent is untracked and left untouched -- NOT rebased
+# onto the trunk. When `heal_orphans` is true (`sync`), a branch whose recorded
+# parent no longer exists is reparented onto `trunk` first; when false
+# (`restack`) it is left untouched. Reparenting rewrites config but not `ctx`,
+# and an orphan roots its own subtree, so the pre-computed order still holds.
 #
-# A branch with no recorded parent is untracked and is left untouched -- we do
-# *not* fall back to rebasing it onto the trunk.
-#
-# When `heal_orphans` is true (used by `git stack sync`), a branch whose
-# recorded parent no longer exists (e.g. it was merged and deleted) is
-# reparented onto `trunk` before the rebase check runs. When false (used by
-# `git stack restack`), such a branch is left untouched, same as before.
-# Reparenting rewrites config but not `ctx` -- and an orphan is the root of its
-# own subtree, so the pre-computed order still holds.
-#
-# `ctx` is a pre-captured StackContext (built with `build_topology`, no
-# ahead/behind counts) so config parsing and existence checks don't spawn work
-# per node -- safe because neither restack nor sync creates or deletes branch
-# refs mid-traversal (sync only rewrites `stackParent` config, and rebase
-# updates a branch's history in place without removing the ref).
+# `ctx` is built with `build_topology` (no counts). Safe to reuse across the
+# traversal because neither restack nor sync creates or deletes branch refs
+# mid-walk (sync only rewrites config; rebase updates history in place).
 def restack_subtree(root, trunk, heal_orphans, verb, ctx)
   ctx.order_branches(root).each do |branch|
     parent = ctx.parent_of(branch)
@@ -1425,18 +1235,13 @@ def restack_subtree(root, trunk, heal_orphans, verb, ctx)
 
     if !parent.empty? && ctx.branch?(parent)
       behind, ahead = ahead_behind(parent, branch)
-      # `behind == 0` means the branch is already on the parent's tip and there
-      # is nothing to move; it still falls through to the re-anchor below, which
-      # is what back-fills the base for branches predating stackBase.
+      # `behind == 0`: already on the parent's tip, nothing to move; still falls
+      # through to the re-anchor below (which back-fills a missing base).
       if behind > 0
         if ahead == 0
-          # The branch has no commits of its own above the parent -- it is a strict
-          # ancestor of the parent, so its work already sits there and the parent has
-          # since advanced past it (e.g. the branch was merged into trunk, then trunk
-          # moved on). There is nothing to replay: a `rebase --onto <parent> <base>`
-          # would re-apply the `base..branch` commits that the parent already
-          # contains and conflict against them. Fast-forward the branch to the parent
-          # instead.
+          # No commits of its own above the parent -- a strict ancestor whose work
+          # already sits there while the parent advanced past it. Nothing to
+          # replay (`--onto` would re-apply and conflict); fast-forward instead.
           info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
           ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
           die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
@@ -1444,33 +1249,27 @@ def restack_subtree(root, trunk, heal_orphans, verb, ctx)
           replay_onto!(branch, parent, verb)
         end
       end
-      # Every path here leaves the branch sitting on the parent's tip (the
-      # nothing-to-do case was already there; fast-forward and replay just moved
-      # it), so re-anchor the recorded base there. A later parent advance then
-      # replays from the right point. Both moving paths `die` on failure, so
-      # reaching here means the branch really is on the tip.
+      # Every path above leaves the branch on the parent's tip (both moving paths
+      # `die` on failure), so re-anchor the recorded base there for a later parent
+      # advance to replay from.
       record_tip_base(branch, parent)
     end
   end
   nil
 end
 
-# The shared body of `restack` and `sync`: restack the stack the current branch
-# belongs to, then return to it. The two commands are the same walk over the same
-# stack and differ only in whether a branch whose parent was deleted is healed
-# onto trunk first -- `heal_orphans` is that difference, and the only one.
+# The shared body of `restack` and `sync`: restack the current branch's stack,
+# then return to it. The two are the same walk and differ only in whether a
+# branch whose parent was deleted is healed onto trunk first -- `heal_orphans`.
 #
 # `verb`/`gerund` are the calling command's own name, passed in rather than
-# derived from `heal_orphans` -- the same separation `restack_subtree` makes for
-# its own `verb`, and for the reason given there. Deriving them here would also
-# spell each command's name twice, in ternaries that a later third mode could
-# leave disagreeing ("syncing stack rooted at X" followed by "restack completed,
-# but returning to..."). Each command now states both forms once, together.
+# derived from `heal_orphans`, so each command states its wording once (see the
+# same separation in `restack_subtree`).
 def run_stack_rebase(heal_orphans, verb, gerund)
   original = current_branch
   trunks = trunk_branches
-  # Built before the root walk, which reads the stack's topology out of it
-  # rather than re-deriving it with a subprocess per level.
+  # Built before the root walk, which reads topology out of it, not a subprocess
+  # per level.
   ctx = StackContext.build_topology
   root = stack_root(ctx, original, trunks)
 
@@ -1493,20 +1292,16 @@ def cmd_sync(_args)
   run_stack_rebase(true, "sync", "syncing")
 end
 
-# Splice `branch` out of the stack graph: reconnect each of its children to
-# `branch`'s own parent, untrack `branch`, and restack the moved subtrees. This
-# is the first-class "the bottom of my stack merged, re-base the rest" move --
-# run *while the merged branch still exists*, so its recorded parent (the true
-# grandparent) is still readable and the children reconnect exactly, rather than
-# the delete-then-`sync` order which only ever heals onto trunk.
+# Splice `branch` out of the stack: reconnect each child to `branch`'s own
+# parent, untrack `branch`, and restack the moved subtrees. The first-class "the
+# bottom of my stack merged, re-base the rest" move -- run *while the merged
+# branch still exists*, so its recorded parent (the grandparent) is still
+# readable and children reconnect exactly, unlike delete-then-`sync` which only
+# heals onto trunk. (Contrast `untrack`, which orphans the children instead.)
 #
-# Non-destructive by default: it rewrites stack *config* only and never deletes
-# the branch ref (that stays an explicit `git branch -d`). `--delete` is opt-in
-# sugar for `git branch -D` after a successful splice. It also does no merge
+# Non-destructive by default: rewrites stack config only, never the branch ref.
+# `--delete` is opt-in `git branch -D` after a successful splice. No merge
 # detection -- invoking `drop` IS the assertion that the branch is done.
-#
-# Contrast with `untrack`, which orphans the children; `drop` reconnects them to
-# the grandparent. That is the whole difference.
 def cmd_drop(args)
   delete = has_flag?(args, "--delete")
   operand = first_operand(args)
@@ -1514,59 +1309,45 @@ def cmd_drop(args)
   trunks = trunk_branches
   die("cannot drop trunk '#{branch}'") if is_trunk?(branch, trunks)
 
-  # One snapshot answers every read the splice needs -- does `branch` exist, what
-  # is its parent, what are its children -- instead of a `show-ref`, a `git
-  # config`, and a whole throwaway context (the top-level `children_of` builds
-  # one) spawning their own subprocesses for state a single scan already holds.
-  # It is deliberately NOT reused past the rewrites below; those invalidate it.
+  # One snapshot answers every read the splice needs -- exists?, parent,
+  # children -- from a single scan. NOT reused past the rewrites below, which
+  # invalidate it.
   ctx = StackContext.build_topology
   die("branch '#{branch}' does not exist") unless ctx.branch?(branch)
 
   original = current_branch_or_empty
 
-  # Where the children reconnect: the dropped branch's own parent, or the
-  # primary trunk when it sat directly on a trunk (no recorded parent).
-  #
-  # This is `effective_parent_rule` applied by hand, and the one place that does
-  # not call it -- so a change to that rule must be mirrored HERE. Routing it
-  # through the shared helper was tried and measured: a third call site unifies
-  # its parameters with `reparent!`'s chain and widens `paint`, `cyan`,
-  # `set_parent`, `record_reparent_base` and `reparent!` to untyped in the
-  # emitted golden -- exactly the slow path the rbs/ seed exists to keep this
-  # file off (see effective_parent_rule's own note). `ctx.effective_parent_of`
-  # is not the way out either: this context comes from `build_topology`, which
-  # records no trunk and would answer "".
+  # Where the children reconnect: the dropped branch's own parent, or the primary
+  # trunk when it sat directly on a trunk. This is `effective_parent_rule` applied
+  # by hand -- the ONE place that doesn't call it, so a change to that rule must
+  # be mirrored here. Routing it through the helper was measured to widen this
+  # file's whole reparent chain to Spinel's untyped slow path (see
+  # effective_parent_rule); `ctx.effective_parent_of` records no trunk here.
   parent = ctx.parent_of(branch)
   parent = trunks[0] if parent.empty?
 
-  # Capture the children BEFORE rewriting config -- `branch.<child>.stackParent`
-  # is about to change. Each child is reparented exactly as `parent`/`track` do
-  # it: set_parent then record_reparent_base, which re-anchors stackBase to
-  # merge-base(child, parent) so `restack`'s `--onto` replays from the right
-  # point (leaving the old base pointing into the dropped parent's history would
-  # replay the wrong range, and break outright if that ref is later deleted).
+  # Capture children BEFORE rewriting config. Each is reparented as `parent`/
+  # `track` do it (set_parent + record_reparent_base), re-anchoring stackBase to
+  # merge-base(child, parent) so `restack`'s `--onto` replays from the right point.
   moved = ctx.children_of(branch)
   moved.each do |child|
     reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
   end
 
-  # Untrack the dropped branch. Its ref is left intact -- deleting it stays an
-  # explicit, separate act unless `--delete` was passed.
+  # Untrack the dropped branch; its ref stays intact unless `--delete` was passed.
   untrack!(branch)
   info "dropped #{green(branch)}; reparented children onto #{cyan(parent)}"
 
-  # Restack each moved subtree onto its new parent. Rebuild the topology first
-  # so it reflects the config rewrites above.
+  # Restack each moved subtree onto its new parent. Rebuild the topology first so
+  # it reflects the config rewrites above.
   ctx = StackContext.build_topology
   moved.each do |child|
-    # "restack", not "drop", on conflict: the splice above is already written to
-    # config, so the move to recover with is a restack of the moved subtree.
+    # "restack", not "drop", on conflict: the splice is already in config.
     restack_subtree(child, trunks[0], false, "restack", ctx)
   end
 
   if delete
-    # You can't delete the branch you're standing on; step onto its former
-    # parent first (the restack above may have already moved HEAD to a child).
+    # Can't delete the branch you're on; step onto its former parent first.
     git_ok("checkout #{sh(parent)}") if current_branch_or_empty == branch
     die("dropped '#{branch}' but failed to delete its ref") unless git_ok("branch -D #{sh(branch)}")
     info "deleted branch #{green(branch)}"
@@ -1582,14 +1363,12 @@ end
 
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
-  # Only the Spinel-compiled binary was "built with" Spinel; run as a plain
-  # Ruby script there is no build toolchain to report. Spinel is the only
-  # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version),
-  # so key on that.
+  # Only the Spinel-compiled binary was "built with" Spinel, and it's the only
+  # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version).
   return unless RUBY_DESCRIPTION == "spinel"
 
-  # SPINEL_REF is stamped at build time; an un-stamped build leaves it empty.
-  # The 12-char slice matches `spinel --version`'s short rev.
+  # SPINEL_REF is stamped at build time (empty when un-stamped); the 12-char
+  # slice matches `spinel --version`'s short rev.
   rev = SPINEL_REF.empty? ? "unknown" : SPINEL_REF[0...12]
   puts "built with spinel #{rev}"
 end
@@ -1633,24 +1412,19 @@ end
 
 # --- dispatch ---------------------------------------------------------------
 
-# Command-level flags a subcommand consumes itself (as opposed to the global
-# -h/-v). They ride through `parse_global_flags` untouched by its unknown-flag
-# check so the command can read them out of its own args; currently only
-# `drop --delete`. Kept explicit so a genuine typo like `--delet` is still
-# rejected, and the tolerated set is visible in one place.
+# Command-level flags a subcommand consumes itself (vs. the global -h/-v),
+# currently only `drop --delete`. Explicit so a typo like `--delet` is still
+# rejected and the tolerated set lives in one place.
 COMMAND_FLAGS = ["--delete"].freeze
 
-# Parse the global flags (-h/--help, -v/--version) out of `argv` with
-# OptionParser, returning the command they map to ("help"/"version"), or ""
-# when no flag was given. Flags are removed from `argv` in place and may
-# appear anywhere (`tree -v` prints the version), as usual for optparse.
+# Parse the global flags (-h/-v) out of `argv`, returning the command they map to
+# ("help"/"version") or "" when none was given. Flags are removed in place and
+# may appear anywhere (`tree -v` prints the version).
 #
-# Spinel's optparse package is an exact-match subset of CRuby's: no option
-# clustering (`-hv`), no long-option abbreviation (`--ver`), no `--`
-# terminator -- so registered flags must be spelled out in full -- and its
-# `parse!` leaves an unknown flag in argv instead of raising. The leftover
-# check below reports such a flag with the same message CRuby's
-# InvalidOption carries, keeping the script and the compiled binary aligned.
+# Spinel's optparse is an exact-match subset of CRuby's (no clustering, no
+# abbreviation, no `--`) and its `parse!` leaves an unknown flag in argv instead
+# of raising -- the leftover check below reports it with CRuby's own message,
+# keeping the script and compiled binary aligned.
 def parse_global_flags(argv)
   cmd = ""
   parser = OptionParser.new
@@ -1668,12 +1442,10 @@ def parse_global_flags(argv)
 end
 
 def main(argv)
-  # Lift command-level flags (COMMAND_FLAGS, e.g. `drop --delete`) out before
-  # global parsing: CRuby's `parse!` raises on any long option the parser
-  # doesn't register, so an unregistered `--delete` would be reported as an
-  # invalid *global* option before it ever reached the subcommand. Pulling them
-  # aside here leaves `parse_global_flags` to handle only -h/-v (and still
-  # reject genuine typos), then they are re-attached to the subcommand's args.
+  # Lift command-level flags out before global parsing: CRuby's `parse!` raises
+  # on any long option the parser doesn't register, so an unregistered `--delete`
+  # would be reported as an invalid *global* option. Pulled aside here and
+  # re-attached to the subcommand's args below.
   flags = []
   cleaned = []
   argv.each do |a|
@@ -1716,9 +1488,8 @@ def main(argv)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")
   end
-  # An explicit nil: as the bare trailing expression the case would be the
-  # return value, and its branches' mixed types (nil from most cmd_*
-  # handlers, Array[String] from cmd_tree) widen to untyped (slow path).
+  # Explicit nil: as the trailing expression the `case`'s mixed branch types
+  # (nil from most handlers, Array[String] from cmd_tree) would widen to untyped.
   nil
 end
 
