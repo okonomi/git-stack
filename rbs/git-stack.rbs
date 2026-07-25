@@ -18,6 +18,13 @@
 # `Array[untyped]`, which then flows into the rule and back out through
 # `effective_parent_of`.
 #
+# `containing_trunk` and `restack_subtree` are the trunk-list pair: the first
+# picks the trunk a branch rests on, so its untyped result would spread through
+# every reparent it feeds (`set_parent`, `record_reparent_base`, `reparent!`);
+# the second now takes the whole list rather than one caller-chosen trunk, and
+# widens the same way `effective_parent` does. Both are faithful: a branch name
+# and the trunk list, String and Array[String] at every call site.
+#
 # Everything below the first four entries was added when Spinel moved to
 # 0b8527df4b87, whose inference propagates that same unification further than
 # the previous pin did: without them the emitted golden carries ten widened
@@ -36,6 +43,7 @@ class Object
   def green: (String) -> String
   def set_trunks: (Array[String]) -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
+  def containing_trunk: (String, Array[String]) -> String
   def effective_parent: (String, Array[String]) -> String
   def clear_parent: (String) -> bool
   def clear_base: (String) -> bool
@@ -43,6 +51,7 @@ class Object
   def stack_root: (StackContext, String, Array[String]) -> String
   def would_cycle?: (StackContext, String, String, Array[String]) -> bool
   def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason. Note that the

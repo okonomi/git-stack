@@ -79,6 +79,42 @@ Switched to branch 'develop'
 [exit 0]
 HEAD: develop
 
+### track with no argument picks the trunk the branch rests on
+$ git stack track
+tracking 'feat-d' on top of 'develop'
+[exit 0]
+feat-d stackParent: develop
+$ git stack track
+tracking 'feat-m' on top of 'main'
+[exit 0]
+feat-m stackParent: main
+
+### sync heals an orphan onto the trunk its stack rests on
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'develop'
+done.
+[exit 0]
+feat-b stackParent: develop
+feat-b behind develop: 0
+develop is an ancestor of feat-b: yes
+feat-b contains d1: 1
+
+### sync still heals a main-based orphan onto main when a second trunk exists
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+feat-b stackParent: main
+
+### drop reconnects children to the trunk the dropped branch rested on
+$ git stack drop feat-a
+dropped feat-a; reparented children onto develop
+[exit 0]
+feat-b stackParent: develop
+feat-b behind develop: 0
+
 ### version shows the program version
 $ git stack version
 git stack 0.1.0

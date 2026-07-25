@@ -260,9 +260,8 @@ end
 # Trunks are the branches every stack ultimately rests on. A repo can have
 # more than one (e.g. git-flow's `main` and `develop`); they are stored as a
 # multi-valued `stack.trunk` git config key. The first configured trunk is the
-# "primary" one -- the default base a branch falls back to when it needs a
-# trunk (an untracked branch's implied parent, or reparenting a branch whose
-# parent was merged and deleted).
+# "primary" one -- the trunk a branch falls back to when its own cannot be
+# determined (see `containing_trunk`).
 
 # Every configured trunk, in config order (empty list when none is set yet).
 def configured_trunks
@@ -320,6 +319,43 @@ end
 # True when `branch` is one of the configured trunks.
 def is_trunk?(branch, trunks)
   trunks.include?(branch)
+end
+
+# The trunk `branch` rests on, decided by ANCESTRY rather than config.
+#
+# The three callers -- `track` with no argument, `sync`'s orphan heal, and
+# `drop`'s child reconnect -- all face a branch whose parent is unrecorded or
+# already deleted, so there is no stack to walk down; the answer has to come
+# from history. Each used to name the primary trunk directly, which quietly
+# dragged a stack built on `develop` over to `main`.
+#
+# Trunks are peers, so "the" trunk is the NEAREST one: `<trunk>..<branch>`
+# counts the commits `branch` has gained since it left that trunk, and the
+# smallest count wins. A branch stacked on `develop` also carries develop's own
+# commits over `main`, so `main..<branch>` is the longer range and `develop`
+# wins -- which holds whether the trunks are ancestors of the branch or have
+# diverged from it, since `A..B` is measured from their merge-base either way.
+#
+# Ties keep config order, so the primary trunk is the tie-breaker: it answers
+# the genuinely ambiguous case (trunks that still point at the same commit)
+# with the same default as before. Callers announce the trunk they picked --
+# `sync` already did, being the one that rewrites refs.
+def containing_trunk(branch, trunks)
+  best = trunks[0]
+  best_count = -1
+  trunks.each do |trunk|
+    out = git_out("rev-list --count #{sh(trunk)}..#{sh(branch)}")
+    # Empty only when the range failed to resolve (a trunk ref that vanished
+    # mid-run); skip it rather than let `"".to_i`'s 0 win every comparison.
+    next if out.empty?
+
+    count = out.to_i
+    if best_count < 0 || count < best_count
+      best = trunk
+      best_count = count
+    end
+  end
+  best
 end
 
 # --- stack metadata ---------------------------------------------------------
@@ -1101,7 +1137,9 @@ def cmd_track(args)
   trunks = trunk_branches
   parent = arg0(args)
   die("cannot track trunk '#{branch}'") if is_trunk?(branch, trunks)
-  parent = trunks[0] if parent.empty?
+  # No parent named: the branch already sits on a trunk, so track it there --
+  # the trunk its history actually rests on, not just the primary one.
+  parent = containing_trunk(branch, trunks) if parent.empty?
   validate_new_parent!(StackContext.build_topology, branch, parent, trunks, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
@@ -1218,19 +1256,25 @@ end
 # `restack` (its splice is already in config, re-running `drop` would be wrong).
 #
 # A branch with no recorded parent is untracked and left untouched -- NOT rebased
-# onto the trunk. When `heal_orphans` is true (`sync`), a branch whose recorded
-# parent no longer exists is reparented onto `trunk` first; when false
-# (`restack`) it is left untouched. Reparenting rewrites config but not `ctx`,
-# and an orphan roots its own subtree, so the pre-computed order still holds.
+# onto a trunk. When `heal_orphans` is true (`sync`), a branch whose recorded
+# parent no longer exists is reparented onto the trunk it rests on first; when
+# false (`restack`) it is left untouched. Reparenting rewrites config but not
+# `ctx`, and an orphan roots its own subtree, so the pre-computed order still holds.
+#
+# The heal takes the whole trunk LIST, not one trunk chosen by the caller: which
+# trunk an orphan belongs to is per-branch (`containing_trunk`), and getting it
+# wrong here doesn't just mis-record a parent -- the replay below then rebases the
+# branch onto the wrong trunk, dropping the commits of the one it was built on.
 #
 # `ctx` is built with `build_topology` (no counts). Safe to reuse across the
 # traversal because neither restack nor sync creates or deletes branch refs
 # mid-walk (sync only rewrites config; rebase updates history in place).
-def restack_subtree(root, trunk, heal_orphans, verb, ctx)
+def restack_subtree(root, trunks, heal_orphans, verb, ctx)
   ctx.order_branches(root).each do |branch|
     parent = ctx.parent_of(branch)
 
     if heal_orphans && !parent.empty? && !ctx.branch?(parent)
+      trunk = containing_trunk(branch, trunks)
       info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
       die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
       parent = trunk
@@ -1277,7 +1321,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   root = stack_root(ctx, original, trunks)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
-  restack_subtree(root, trunks[0], heal_orphans, verb, ctx)
+  restack_subtree(root, trunks, heal_orphans, verb, ctx)
 
   unless git_ok("checkout #{sh(original)}")
     die("#{verb} completed, but returning to '#{original}' failed;\n" \
@@ -1320,14 +1364,15 @@ def cmd_drop(args)
 
   original = current_branch_or_empty
 
-  # Where the children reconnect: the dropped branch's own parent, or the primary
-  # trunk when it sat directly on a trunk. This is `effective_parent_rule` applied
-  # by hand -- the ONE place that doesn't call it, so a change to that rule must
-  # be mirrored here. Routing it through the helper was measured to widen this
-  # file's whole reparent chain to Spinel's untyped slow path (see
-  # effective_parent_rule); `ctx.effective_parent_of` records no trunk here.
+  # Where the children reconnect: the dropped branch's own parent, or -- when it
+  # was untracked and so sat directly on a trunk -- the trunk it rested on. This
+  # is `effective_parent_rule` applied by hand, the ONE place that doesn't call
+  # it, so a change to that rule must be mirrored here. Routing it through the
+  # helper was measured to widen this file's whole reparent chain to Spinel's
+  # untyped slow path (see effective_parent_rule); the rule is also trunk-blind,
+  # while the children need the trunk their history is actually built on.
   parent = ctx.parent_of(branch)
-  parent = trunks[0] if parent.empty?
+  parent = containing_trunk(branch, trunks) if parent.empty?
 
   # Capture children BEFORE rewriting config. Each is reparented as `parent`/
   # `track` do it (set_parent + record_reparent_base), re-anchoring stackBase to
@@ -1346,7 +1391,7 @@ def cmd_drop(args)
   ctx = StackContext.build_topology
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
-    restack_subtree(child, trunks[0], false, "restack", ctx)
+    restack_subtree(child, trunks, false, "restack", ctx)
   end
 
   if delete

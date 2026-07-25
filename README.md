@@ -104,9 +104,16 @@ git stack init                  # -> trunk(s): main, develop
 ```
 
 Each trunk is a root in `git stack tree`, and `restack`/`sync` stop walking a
-stack down when they reach any trunk. The **first** trunk you register is the
-*primary* one: it's the default base a branch falls back to — for example when
-`git stack sync` reparents a branch whose parent was merged and deleted.
+stack down when they reach any trunk.
+
+Trunks are peers, so the commands that need a trunk without one to follow —
+`git stack track` with no argument, `git stack sync` reparenting a branch whose
+parent was merged and deleted, and `git stack drop` reconnecting the children of
+a branch that sat directly on a trunk — pick the trunk the branch's own history
+rests on: a stack built on `develop` stays on `develop`. The **first** trunk you
+register is the *primary* one, used as the tie-breaker when history can't
+distinguish them (two trunks still pointing at the same commit). `sync` names
+the trunk it picked, since it rewrites the branch as well as its config.
 
 ## Commands
 

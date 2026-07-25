@@ -25,6 +25,7 @@ class Object
   def detect_trunk: () -> String
   def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
+  def containing_trunk: (String, Array[String]) -> String
   def get_parent: (String) -> String
   def set_parent: (String, String) -> bool
   def clear_parent: (String) -> bool
@@ -68,7 +69,7 @@ class Object
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
   def replay_onto!: (String, String, String) -> nil
-  def restack_subtree: (String, String, bool, String, StackContext) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
   def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
