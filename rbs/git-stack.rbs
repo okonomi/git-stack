@@ -25,6 +25,12 @@
 # widens the same way `effective_parent` does. Both are faithful: a branch name
 # and the trunk list, String and Array[String] at every call site.
 #
+# The `StackContext` builders and the top-level `children_of` are the newest
+# members of the same family: a context is now built FROM the trunk list (it
+# drops a trunk's recorded parent as it parses the config), so the list crosses
+# `build` / `build_topology` / `load` and, uninferred, widens the same way --
+# taking `@trunk`, `effective_parent_rule`, and `effective_parent_of` with it.
+#
 # Everything below the first four entries was added when Spinel moved to
 # 0b8527df4b87, whose inference propagates that same unification further than
 # the previous pin did: without them the emitted golden carries ten widened
@@ -52,6 +58,7 @@ class Object
   def would_cycle?: (StackContext, String, String, Array[String]) -> bool
   def validate_new_parent!: (StackContext, String, String, Array[String], String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
+  def children_of: (String, Array[String]) -> Array[String]
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason. Note that the
@@ -65,4 +72,7 @@ class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def load: (String, Array[String]) -> nil
+  def self.build: (Array[String]) -> StackContext
+  def self.build_topology: (Array[String]) -> StackContext
 end

@@ -38,7 +38,7 @@ class Object
   def untrack!: (String) -> nil
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
-  def children_of: (String) -> Array[String]
+  def children_of: (String, Array[String]) -> Array[String]
   def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, Array[String]) -> String
   def stack_root: (StackContext, String, Array[String]) -> String
@@ -156,7 +156,7 @@ class StackContext
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil
-  def load: (String) -> nil
+  def load: (String, Array[String]) -> nil
   def index_children: () -> nil
   def load_ahead_behind: (String) -> nil
   def parent_of: (String) -> String
@@ -171,7 +171,7 @@ class StackContext
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
   def orphan_roots: () -> Array[String]
-  def self.build: (String) -> StackContext
-  def self.build_topology: () -> StackContext
+  def self.build: (Array[String]) -> StackContext
+  def self.build_topology: (Array[String]) -> StackContext
 end
 
