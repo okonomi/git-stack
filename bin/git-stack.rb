@@ -306,13 +306,54 @@ def detect_trunk
   "" # unreachable: die exits, but every path must still yield a String
 end
 
+# The configured trunks that still exist, announcing each name that doesn't.
+# One `git` call per configured trunk -- one in nearly every repo, never a
+# per-node loop -- so `branch_exists?` is the right check here.
+#
+# `select` rather than an `each`/`<<` accumulator: it keeps `configured`'s
+# element type, where a fresh `[]` fed from a block parameter would come back
+# `Array[untyped]` and widen everything the trunk list reaches. It is also the
+# one poly-array method here that Spinel resolves only on a concrete receiver,
+# which `configured_trunks` is -- see rbs/git-stack.rbs and the doctor step in CI.
+def live_trunks(configured)
+  configured.select do |trunk|
+    live = branch_exists?(trunk)
+    info "configured trunk '#{trunk}' no longer exists; ignoring it" unless live
+    live
+  end
+end
+
 # Every trunk, auto-detecting and caching one on first use.
+#
+# Configured names are re-checked against the refs on the way out. `init` and
+# `detect_trunk` only ever store a branch that exists, but nothing keeps it
+# there: rename or delete the trunk afterwards and the key still names a branch
+# that is gone -- a dead end wherever a trunk is used (`detect_trunk` says why
+# it refuses to store one), and worse than inert in the heal paths, where `sync`
+# and `drop` hand the trunk they picked straight to `set_parent`: a ghost trunk
+# REPLACES a branch's real recorded parent with a name nothing can rebase onto,
+# the rebase is then skipped, and the run reports success. Every command's trunk
+# list comes through here, so the check lives here rather than at each use.
+#
+# What survives is re-cached, so the announcement prints once rather than per
+# command, and an empty list falls through to auto-detect exactly as an unset
+# key does -- landing a renamed trunk on its new name rather than dying. A repo
+# with nothing left to detect still dies in `detect_trunk`, stale key intact.
 def trunk_branches
-  list = configured_trunks
-  return list unless list.empty?
+  configured = configured_trunks
+  list = live_trunks(configured)
+  unless list.empty?
+    # Only when something was actually dropped: the common path reads config
+    # and writes nothing.
+    set_trunks(list) if list.length != configured.length
+    return list
+  end
 
   trunk = detect_trunk
   set_trunks([trunk])
+  # Silent on first use (nothing was configured), but a re-detect replaced a
+  # configured trunk, so name the one that took over.
+  info "trunk set to #{trunk}" unless configured.empty?
   [trunk]
 end
 

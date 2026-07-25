@@ -23,6 +23,7 @@ class Object
   def configured_trunks: () -> Array[String]
   def set_trunks: (Array[String]) -> Array[String]
   def detect_trunk: () -> String
+  def live_trunks: (Array[String]) -> Array[String]
   def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
   def containing_trunk: (String, Array[String]) -> String
