@@ -14,6 +14,27 @@ $ git stack parent
 feat-a
 [exit 0]
 
+### parent/track reject a cycle, a self-parent, and a missing branch
+$ git stack parent feat-b1
+error: 'feat-b1' is downstream of 'feat-b'; setting it as parent would create a cycle
+[exit 1]
+$ git stack track feat-b1
+error: 'feat-b1' is downstream of 'feat-b'; tracking it would create a cycle
+[exit 1]
+$ git stack parent feat-b
+error: a branch cannot be its own parent
+[exit 1]
+$ git stack parent no-such-branch
+error: branch 'no-such-branch' does not exist
+[exit 1]
+
+### up with multiple children exits non-zero
+$ git stack up
+'feat-a' has multiple children; pick one:
+  git stack up feat-b
+  git stack up feat-c
+[exit 1]
+
 ### restack replays the sibling subtrees onto an advanced parent
 $ git stack tree
   main (trunk)

@@ -131,6 +131,30 @@ section "parent reports the recorded parent"
 git_q checkout -q feat-b
 run parent
 
+# The failing commands, on the SHIPPED binary, for the exit STATUS as much as the
+# message: scripts and `&&` chains read the status, not the text. cli_test.rb
+# asserts these same codes but cannot catch a Spinel codegen bug, since CRuby is
+# unaffected -- see `would_cycle?` in bin/git-stack.rb for the one that shipped
+# (an error printed, then exit 0). Before this section binary_test.sh ran no
+# failing command at all, so no non-zero exit was proven on the real artifact.
+#
+# Both blocks are state-neutral -- the rejections die before writing config, and
+# an ambiguous `up` only prints -- so the fixture's recorded shape carries on
+# unchanged into the sections below.
+section "parent/track reject a cycle, a self-parent, and a missing branch"
+run parent feat-b1        # downstream of feat-b -> cycle
+run track feat-b1         # same cycle, reached through track
+run parent feat-b
+run parent no-such-branch
+
+# `cmd_up`'s ambiguous-children case is the file's only bare `exit 1` outside
+# `die`, and it runs straight after a `children.each` block -- the same
+# exit-after-a-block shape whose codegen the bug above proved can misfire. It is
+# the highest-risk exit path left, and CRuby coverage cannot speak for it.
+section "up with multiple children exits non-zero"
+git_q checkout -q feat-a
+run up
+
 section "restack replays the sibling subtrees onto an advanced parent"
 git_q checkout -q feat-a
 commit a2.txt a2            # advance feat-a, leaving feat-b/feat-b1/feat-c behind
