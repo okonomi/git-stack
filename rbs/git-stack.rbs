@@ -65,7 +65,14 @@ class Object
   def clear_base: (String) -> bool
   def untrack!: (String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
-  def children_of: (String, Array[String]) -> Array[String]
+  # Delegates to StackContext#children_of, so it returns Branch records now, not
+  # name Strings. Pinned honestly for the reason spelled out on that method.
+  def children_of: (String, Array[String]) -> Array[Branch]
+end
+
+# Declared so `Array[Branch]` above resolves; the class itself is inferred from
+# bin/git-stack.rb and needs no pinned members.
+class Branch
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
@@ -84,7 +91,11 @@ end
 class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
-  def children_of: (String) -> Array[String]
+  # Branch records now, not name Strings -- pinned honestly. A stale
+  # Array[String] here is precisely what makes the compiled binary dispatch
+  # String methods on a Branch and die at run time.
+  def children_of: (String) -> Array[Branch]
+  def order_branches: (String) -> Array[Branch]
   def stack_root: (String, Array[String]) -> String
   def would_cycle?: (String, String, Array[String]) -> bool
   def validate_new_parent!: (String, String, Array[String], String) -> nil
