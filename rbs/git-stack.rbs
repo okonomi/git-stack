@@ -32,13 +32,24 @@
 # taking `@trunk`, `effective_parent_rule`, and `effective_parent_of` with it.
 #
 # Everything below the first four entries was added when Spinel moved to
-# 0b8527df4b87, whose inference propagates that same unification further than
-# the previous pin did: without them the emitted golden carries widened
-# `class Object` signatures (`paint`, `green`, `set_trunks`, `is_trunk?`,
-# `clear_parent`, `clear_base`, `untrack!`) that were concrete before. They are
-# the same kind of assertion as the original four -- branch names, colour text,
-# and the trunk list, all String / Array[String] at every call site -- and with
-# them the golden is back to zero untyped in `class Object`.
+# 0b8527df4b87, whose inference propagated that same unification further than
+# the pin before it: without them the golden carried widened `class Object`
+# signatures (`paint`, `green`, `set_trunks`, `is_trunk?`, `clear_parent`,
+# `clear_base`, `untrack!`) that had been concrete.
+#
+# Under the pin in effect now (0d0a8651) most of this file is redundant --
+# inference holds those signatures on its own, and the golden is byte-identical
+# with them removed. They stay anyway, and that is deliberate: a pin is cheap,
+# and being redundant against TODAY'S compiler is not the same as being
+# unnecessary. It is what stops the next bump from quietly widening a signature
+# instead of failing the golden diff. This file has already learned that once --
+# `rbs/paint.rbs` was deleted on exactly the "inference no longer needs it"
+# reasoning, and the `paint`/`green` pins had to be written again one bump later.
+#
+# So: add a pin when a widening makes one necessary, and keep it once the need
+# passes. Every entry here is a faithful assertion -- branch names, colour text,
+# and the trunk list, all String / Array[String] at every call site -- so none of
+# them can lie to the compiler, whatever inference does next.
 class Object
   def sh: (String) -> String
   def checkout!: (String) -> nil
@@ -57,15 +68,11 @@ class Object
   def children_of: (String, Array[String]) -> Array[String]
 end
 
-# `parent_of` / `children_of` join `branch?` for the same reason.
-#
-# The graph queries `stack_root` / `would_cycle?` / `validate_new_parent!` used
-# to need pinning here too -- they take the trunk LIST, which widened exactly as
-# `effective_parent`'s does. Under 0d0a8651 they no longer do: inference keeps
-# all three concrete on its own, so the pins are gone. If a future bump
-# reintroduces the widening, the golden diff will say so and they come back as
-# `(String, Array[String]) -> String` / `(String, String, Array[String]) -> bool`
-# / `(String, String, Array[String], String) -> nil`.
+# `parent_of` / `children_of` join `branch?` for the same reason, and the graph
+# queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
+# they take the trunk LIST besides, which widens exactly as `effective_parent`'s
+# does, so becoming methods on the context relocated their pins here rather than
+# retiring them.
 #
 # Note that the seed reaches methods but NOT instance variables: `@parents` and
 # `@children` still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]`
@@ -78,6 +85,9 @@ class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def stack_root: (String, Array[String]) -> String
+  def would_cycle?: (String, String, Array[String]) -> bool
+  def validate_new_parent!: (String, String, Array[String], String) -> nil
   def load: (String, Array[String]) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext
