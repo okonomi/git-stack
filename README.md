@@ -214,6 +214,18 @@ git stack sync                  # reparents the orphaned feature-b onto main
       feature-b (needs restack: 1 behind)
 ```
 
+A stack whose parent is no longer part of the tree — untracked, or merged and
+deleted — is drawn as a root of its own rather than dropped from the picture,
+with the reason on the row. `restack` still follows the recorded parent, so the
+note is what tells you the branch does not actually rest on the trunk it now
+lines up with:
+
+```
+  main (trunk)
+    feature-b (1 commit(s)) (parent 'feature-a' is untracked)
+      feature-c (1 commit(s))
+```
+
 ## Adopting existing branches
 
 Already have a branch you want to fold into a stack?

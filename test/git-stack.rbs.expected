@@ -102,7 +102,7 @@ end
 
 class Set
   @data: Array[untyped]
-  def initialize: (Array[untyped]) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def initialize: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add: (untyped) -> Set # spinel: widened to untyped (slow path)
   def <<: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add?: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -120,7 +120,7 @@ class Set
   def delete_if: () -> Set
   def select!: () -> Set
   def reject!: () -> Set
-  def merge: (untyped) -> Set # spinel: widened to untyped (slow path)
+  def merge: (Array[String]) -> Set
   def replace: (untyped) -> Set # spinel: widened to untyped (slow path)
   def reset: () -> Set
   def subtract: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -150,11 +150,14 @@ end
 class StackContext
   @parents: Hash[String, untyped]
   @branches: Set
+  @trunks: Set
   @children: Hash[untyped, untyped]
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil
   def load: (String, Array[String]) -> nil
+  def trunk?: (String) -> bool
+  def tracked?: (String) -> bool
   def index_children: () -> nil
   def load_ahead_behind: (String) -> nil
   def parent_of: (String) -> String
@@ -168,10 +171,12 @@ class StackContext
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
   def ahead_behind_of: (String) -> Array[Integer]
-  def orphan_roots: () -> Array[String]
-  def stack_root: (String, Array[String]) -> String
-  def would_cycle?: (String, String, Array[String]) -> bool
-  def validate_new_parent!: (String, String, Array[String], String) -> nil
+  def detached_roots: () -> Array[String]
+  def detached_root: (String) -> String
+  def untracked_parent?: (String) -> bool
+  def stack_root: (String) -> String
+  def would_cycle?: (String, String) -> bool
+  def validate_new_parent!: (String, String, String) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext
 end

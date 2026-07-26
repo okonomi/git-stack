@@ -70,9 +70,11 @@ end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
 # queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
-# they take the trunk LIST besides, which widens exactly as `effective_parent`'s
-# does, so becoming methods on the context relocated their pins here rather than
-# retiring them.
+# becoming methods on the context relocated their pins here rather than retiring
+# them. They used to take the trunk LIST besides, which widened exactly as
+# `effective_parent`'s does; the context now keeps its trunks in a Set and
+# answers `trunk?` itself, so the parameter (always the same list the context
+# was built from) is gone and only the branch names are left to pin.
 #
 # Note that the seed reaches methods but NOT instance variables: `@parents` and
 # `@children` still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]`
@@ -85,9 +87,9 @@ class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
-  def stack_root: (String, Array[String]) -> String
-  def would_cycle?: (String, String, Array[String]) -> bool
-  def validate_new_parent!: (String, String, Array[String], String) -> nil
+  def stack_root: (String) -> String
+  def would_cycle?: (String, String) -> bool
+  def validate_new_parent!: (String, String, String) -> nil
   def load: (String, Array[String]) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext

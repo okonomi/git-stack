@@ -757,6 +757,7 @@ class StackContext
   def initialize
     @parents = {}
     @branches = Set.new
+    @trunks = Set.new
     @children = {}
     @ab = {}
     @trunk = ""
@@ -797,6 +798,12 @@ class StackContext
   # is the same rule for the in-memory traversals.
   def load(scan, trunks)
     @branches = existing_branches
+    # Kept as a Set so every graph query below can ask "is this parent a trunk?"
+    # (the walk's floor) from the context itself. That list used to be threaded
+    # back in as a parameter by each of them -- always the same list the context
+    # was built from, and an `Array[String]` parameter is exactly what widens to
+    # Spinel's untyped slow path (see rbs/git-stack.rbs).
+    @trunks = Set.new(trunks)
     scan.split("\n").each do |line|
       next if line.empty?
 
@@ -806,12 +813,26 @@ class StackContext
       key = line[0...space]
       value = line[(space + 1)..-1]
       name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
-      next if is_trunk?(name, trunks)
+      next if trunk?(name)
 
       @parents[name] = value
     end
     index_children
     nil
+  end
+
+  # True when `name` is one of this context's trunks -- the in-memory twin of
+  # the top-level `is_trunk?`, reading the set `load` captured.
+  def trunk?(name)
+    @trunks.include?(name)
+  end
+
+  # True when `name` has a recorded parent, i.e. it is a node of the tracked
+  # graph. A trunk answers false (its record is dropped on the way in) and is
+  # tested with `trunk?` instead. Distinct from `branch?`: that asks whether the
+  # ref exists, this asks whether the stack knows about it.
+  def tracked?(name)
+    !@parents[name].nil?
   end
 
   # Invert `@parents` into the packed `@children` index, once per context (the
@@ -1004,31 +1025,99 @@ class StackContext
     [fields[0].to_i, fields[1].to_i]
   end
 
-  # Branches whose recorded parent is non-empty but no longer a real branch (it
-  # was merged and deleted). `tree` shows them as extra roots so they stay
-  # visible; `git stack sync` is what repairs them.
-  def orphan_roots
-    names = []
-    @parents.each do |name, value|
-      next if value.empty?
-      next if @branches.include?(value)
+  # The extra roots `tree` draws: the top of every tracked stack the walk down
+  # from the trunks never reaches. Two shapes end up here.
+  #
+  #   * The recorded parent was merged and deleted -- the classic orphan, which
+  #     `git stack sync` repairs.
+  #   * The recorded parent still EXISTS but is untracked, as `untrack` on a
+  #     branch with children leaves it. Nothing records that parent, so it is
+  #     not a trunk's child; and it is not missing either, so the orphan rule
+  #     did not catch it. Everything above it dropped out of `tree` without a
+  #     word while `restack` went on rebasing onto it (issue #58).
+  #
+  # Every branch climbs to its own root (`detached_root`) rather than being
+  # tested where it sits, which is what makes the answer independent of how the
+  # branches are named: a stack is emitted once, at its top, even when a child
+  # sorts ahead of it. A root whose own parent is a trunk is exactly a branch
+  # the trunk walk already draws, so it is dropped here rather than drawn a
+  # second time -- the duplicate-row shape the 4 KB truncation bug produced (see
+  # test/binary_test.sh). Emitting a root marks its whole subtree covered, which
+  # is what keeps the rest of that stack from being considered again; the marking
+  # (rather than remembering the roots alone) is load-bearing for a hand-edited
+  # cycle, whose members each climb to a DIFFERENT member as their root.
+  def detached_roots
+    roots = []
+    covered = Set.new
+    # Sorted, so the roots come out in the order sibling rows elsewhere in the
+    # tree do. `.sort` on a `.keys` result is safe where the same call on a
+    # `@parents` VALUE would not be: the hash widened to `Hash[String, untyped]`
+    # on its values only, so the keys read back as a concrete `Array[String]`
+    # and `.sort` stays off the poly-array slow path (the shape that compiles
+    # clean and dies only in the shipped binary -- see test/binary_test.sh,
+    # whose fixture walks this line).
+    @parents.keys.sort.each do |name|
+      next if covered.include?(name)
 
-      names << name
+      root = detached_root(name)
+      next if trunk?(parent_of(root))
+
+      roots << root
+      covered.merge(order_branches(root))
     end
-    names.sort
+    roots
   end
 
-  # Walk down from `branch` to the root of its stack (whose parent is a trunk or
-  # is untracked). Returns the root branch name. Reads this context's own parent
-  # map and branch set, not a `git config`+`git show-ref` per level. `seen`
-  # guards cyclic parent chains (A -> B -> A from hand-edited config) so we
-  # terminate instead of hanging.
-  def stack_root(branch, trunks)
+  # Climb from `branch` to the top of the stack the trunk walk cannot reach: the
+  # last branch whose own parent is absent from the tracked graph. The same walk
+  # as `stack_root`, stopping one condition wider -- an existing but untracked
+  # parent ends the climb too, because a branch with no record of its own is
+  # never drawn and so cannot carry a subtree. `seen` guards a hand-edited
+  # parent cycle (A -> B -> A), which would otherwise loop forever; breaking out
+  # of it renders the cycle as a root instead of hiding it.
+  def detached_root(branch)
     seen = Set.new
     loop do
       seen.add(branch)
       parent = parent_of(branch)
-      break if parent.empty? || is_trunk?(parent, trunks)
+      break if parent.empty? || trunk?(parent)
+      break unless tracked?(parent)
+      break if seen.include?(parent)
+
+      branch = parent
+    end
+    branch
+  end
+
+  # True when `branch` records a parent that exists as a branch but that the
+  # tree never draws, because nothing tracks it. Such a branch is drawn as a
+  # detached root, at the indent a trunk's own children get, so its row has to
+  # say which branch it really rests on -- `restack` still rebases it onto that
+  # parent, not onto the trunk the indent suggests.
+  def untracked_parent?(branch)
+    parent = parent_of(branch)
+    return false if parent.empty? || trunk?(parent) || tracked?(parent)
+
+    branch?(parent)
+  end
+
+  # Walk down from `branch` to the root of its stack (whose parent is a trunk or
+  # no longer a branch). Returns the root branch name. Reads this context's own
+  # parent map and branch set, not a `git config`+`git show-ref` per level.
+  # `seen` guards cyclic parent chains (A -> B -> A from hand-edited config) so
+  # we terminate instead of hanging.
+  #
+  # Deliberately NOT `detached_root`, which stops one condition earlier: what
+  # `restack` wants is the branch whose subtree it must replay, and an untracked
+  # parent is a fine root for that (it is skipped itself, its children are
+  # rebased onto it). What `tree` wants is the topmost branch it can DRAW, and
+  # an untracked branch is never drawn. Same walk, two questions.
+  def stack_root(branch)
+    seen = Set.new
+    loop do
+      seen.add(branch)
+      parent = parent_of(branch)
+      break if parent.empty? || trunk?(parent)
       break unless branch?(parent)
       break if seen.include?(parent)
 
@@ -1051,7 +1140,7 @@ class StackContext
   # exit codes and still passed, because CRuby is unaffected and its `return`
   # returns. Only the compiled artifact can show it, so test/binary_test.sh is
   # where the guard had to go.
-  def would_cycle?(branch, new_parent, trunks)
+  def would_cycle?(branch, new_parent)
     seen = Set.new
     cur = new_parent
     result = false
@@ -1060,7 +1149,7 @@ class StackContext
         result = true
         break
       end
-      break if cur.empty? || is_trunk?(cur, trunks)
+      break if cur.empty? || trunk?(cur)
       break if seen.include?(cur)
       break unless branch?(cur)
 
@@ -1074,10 +1163,10 @@ class StackContext
   # must not be `branch` itself, and must not create a cycle. `verb` customizes
   # the cycle-error wording for the calling command. This context answers both
   # the existence check and the whole ancestor walk from its one snapshot.
-  def validate_new_parent!(branch, candidate, trunks, verb)
+  def validate_new_parent!(branch, candidate, verb)
     die("branch '#{candidate}' does not exist") unless branch?(candidate)
     die("a branch cannot be its own parent") if candidate == branch
-    die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunks)
+    die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate)
     nil
   end
 end
@@ -1100,6 +1189,13 @@ def print_tree_row(branch, depth, cur, ctx)
     elsif ahead > 0
       extra = dim("(#{ahead} commit(s))")
     end
+    # An untracked parent is never drawn, so this row sits at root indent as if
+    # it rested on the trunk. Name the parent it actually rests on -- silence
+    # here is what made the whole subtree look like it belonged to the trunk.
+    if ctx.untracked_parent?(branch)
+      note = yellow("(parent '#{parent}' is untracked)")
+      extra = extra.empty? ? note : "#{extra} #{note}"
+    end
   elsif !parent.empty?
     extra = yellow("(parent '#{parent}' missing; run `#{PROG} sync`)")
   end
@@ -1110,8 +1206,8 @@ end
 
 # Print the subtree `ctx.order(root)` produced, offset `base` levels deep.
 # `tree` calls this once per trunk (base 0, and skipping the depth-0 root, which
-# it prints itself with the trunk styling) and once per orphan root (base 1, so
-# an orphaned stack renders at the same indent a trunk's children would).
+# it prints itself with the trunk styling) and once per detached root (base 1, so
+# a stack the trunks cannot reach renders where a trunk's children would).
 def print_order(root, base, skip_root, cur, ctx)
   ctx.order(root).split("\n").each do |line|
     branch = ctx.order_line_branch(line)
@@ -1194,9 +1290,10 @@ def cmd_tree(_args)
     print_order(trunk, 0, true, cur, ctx)
   end
 
-  # Orphaned stacks render as extra roots, indented one level (base 1) so they
-  # line up with the stack roots that rest on a trunk.
-  ctx.orphan_roots.each do |root|
+  # Stacks the trunks cannot reach -- a parent merged and deleted, or untracked
+  # while it still had children -- render as extra roots, indented one level
+  # (base 1) so they line up with the stack roots that rest on a trunk.
+  ctx.detached_roots.each do |root|
     print_order(root, 1, false, cur, ctx)
   end
 end
@@ -1210,7 +1307,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, trunks, "setting it as parent")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1223,7 +1320,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, trunks, "tracking it")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1402,7 +1499,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
   ctx = StackContext.build_topology(trunks)
-  root = ctx.stack_root(original, trunks)
+  root = ctx.stack_root(original)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
   restack_subtree(root, trunks, heal_orphans, verb, ctx)
