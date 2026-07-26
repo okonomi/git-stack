@@ -803,10 +803,7 @@ class StackContext
     # back in as a parameter by each of them -- always the same list the context
     # was built from, and an `Array[String]` parameter is exactly what widens to
     # Spinel's untyped slow path (see rbs/git-stack.rbs).
-    @trunks = Set.new
-    trunks.each do |name|
-      @trunks.add(name)
-    end
+    @trunks = Set.new(trunks)
     scan.split("\n").each do |line|
       next if line.empty?
 
@@ -1050,25 +1047,23 @@ class StackContext
   # (rather than remembering the roots alone) is load-bearing for a hand-edited
   # cycle, whose members each climb to a DIFFERENT member as their root.
   def detached_roots
-    # `@parents` is iterated into a list first so the roots come out sorted,
-    # the way sibling rows elsewhere in the tree do.
-    names = []
-    @parents.each do |name, _value|
-      names << name
-    end
-
     roots = []
     covered = Set.new
-    names.sort.each do |name|
+    # Sorted, so the roots come out in the order sibling rows elsewhere in the
+    # tree do. `.sort` on a `.keys` result is safe where the same call on a
+    # `@parents` VALUE would not be: the hash widened to `Hash[String, untyped]`
+    # on its values only, so the keys read back as a concrete `Array[String]`
+    # and `.sort` stays off the poly-array slow path (the shape that compiles
+    # clean and dies only in the shipped binary -- see test/binary_test.sh,
+    # whose fixture walks this line).
+    @parents.keys.sort.each do |name|
       next if covered.include?(name)
 
       root = detached_root(name)
       next if trunk?(parent_of(root))
 
       roots << root
-      order_branches(root).each do |branch|
-        covered.add(branch)
-      end
+      covered.merge(order_branches(root))
     end
     roots
   end

@@ -38,11 +38,14 @@ jobs:
       # across bumps before).
       #
       # NOT master tip, deliberately. Tip was measured when this was last
-      # bumped: 1f747d86 takes the emitted golden from 42 untyped to 48, with
+      # bumped: 1f747d86 took the emitted golden from 42 untyped to 48, with
       # print_order / cmd_tree / effective_parent_of / order / walk_order /
-      # orphan_roots all widening to the slow path and @children / @ab dropping
-      # to bare untyped. Before bumping, re-run the golden check against the
-      # candidate and keep the count at 42.
+      # detached_roots all widening to the slow path and @children / @ab
+      # dropping to bare untyped. Before bumping, re-run the golden check
+      # against the candidate and keep the count where it stands: 41 today (it
+      # was the 42 above when that measurement was taken -- `Set#merge` narrowed
+      # to `(Array[String]) -> Set` once `detached_roots` fed it a concrete
+      # list). The number is a ratchet, not a constant: it may fall, never rise.
       SPINEL_REF: 0d0a8651b0c7c4de98893a5b575785bd6fc10870
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel

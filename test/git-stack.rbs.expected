@@ -102,7 +102,7 @@ end
 
 class Set
   @data: Array[untyped]
-  def initialize: (Array[untyped]) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def initialize: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add: (untyped) -> Set # spinel: widened to untyped (slow path)
   def <<: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add?: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -120,7 +120,7 @@ class Set
   def delete_if: () -> Set
   def select!: () -> Set
   def reject!: () -> Set
-  def merge: (untyped) -> Set # spinel: widened to untyped (slow path)
+  def merge: (Array[String]) -> Set
   def replace: (untyped) -> Set # spinel: widened to untyped (slow path)
   def reset: () -> Set
   def subtract: (untyped) -> Set # spinel: widened to untyped (slow path)
