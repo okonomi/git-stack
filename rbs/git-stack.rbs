@@ -57,11 +57,15 @@ class Object
   def children_of: (String, Array[String]) -> Array[String]
 end
 
-# `parent_of` / `children_of` join `branch?` for the same reason, and the graph
-# queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
-# they take the trunk LIST besides, which widens exactly as `effective_parent`'s
-# does, so becoming methods on the context relocated their pins here rather than
-# retiring them.
+# `parent_of` / `children_of` join `branch?` for the same reason.
+#
+# The graph queries `stack_root` / `would_cycle?` / `validate_new_parent!` used
+# to need pinning here too -- they take the trunk LIST, which widened exactly as
+# `effective_parent`'s does. Under 0d0a8651 they no longer do: inference keeps
+# all three concrete on its own, so the pins are gone. If a future bump
+# reintroduces the widening, the golden diff will say so and they come back as
+# `(String, Array[String]) -> String` / `(String, String, Array[String]) -> bool`
+# / `(String, String, Array[String], String) -> nil`.
 #
 # Note that the seed reaches methods but NOT instance variables: `@parents` and
 # `@children` still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]`
@@ -74,9 +78,6 @@ class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
-  def stack_root: (String, Array[String]) -> String
-  def would_cycle?: (String, String, Array[String]) -> bool
-  def validate_new_parent!: (String, String, Array[String], String) -> nil
   def load: (String, Array[String]) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext
