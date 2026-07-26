@@ -32,13 +32,24 @@
 # taking `@trunk`, `effective_parent_rule`, and `effective_parent_of` with it.
 #
 # Everything below the first four entries was added when Spinel moved to
-# 0b8527df4b87, whose inference propagates that same unification further than
-# the previous pin did: without them the emitted golden carries widened
-# `class Object` signatures (`paint`, `green`, `set_trunks`, `is_trunk?`,
-# `clear_parent`, `clear_base`, `untrack!`) that were concrete before. They are
-# the same kind of assertion as the original four -- branch names, colour text,
-# and the trunk list, all String / Array[String] at every call site -- and with
-# them the golden is back to zero untyped in `class Object`.
+# 0b8527df4b87, whose inference propagated that same unification further than
+# the pin before it: without them the golden carried widened `class Object`
+# signatures (`paint`, `green`, `set_trunks`, `is_trunk?`, `clear_parent`,
+# `clear_base`, `untrack!`) that had been concrete.
+#
+# Under the pin in effect now (0d0a8651) most of this file is redundant --
+# inference holds those signatures on its own, and the golden is byte-identical
+# with them removed. They stay anyway, and that is deliberate: a pin is cheap,
+# and being redundant against TODAY'S compiler is not the same as being
+# unnecessary. It is what stops the next bump from quietly widening a signature
+# instead of failing the golden diff. This file has already learned that once --
+# `rbs/paint.rbs` was deleted on exactly the "inference no longer needs it"
+# reasoning, and the `paint`/`green` pins had to be written again one bump later.
+#
+# So: add a pin when a widening makes one necessary, and keep it once the need
+# passes. Every entry here is a faithful assertion -- branch names, colour text,
+# and the trunk list, all String / Array[String] at every call site -- so none of
+# them can lie to the compiler, whatever inference does next.
 class Object
   def sh: (String) -> String
   def checkout!: (String) -> nil

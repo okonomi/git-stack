@@ -8,14 +8,20 @@
 # `brew install --HEAD okonomi/git-stack/spinel` builds straight from the tip
 # of upstream `master` instead, for testing against the latest Spinel.
 #
-# Keep the revision in sync with SPINEL_REF in .github/workflows/ci.yml and
-# the SessionStart hook (.claude/hooks/session-start.sh).
+# Keep REVISION in sync with SPINEL_REF in .github/workflows/ci.yml and the
+# SessionStart hook (.claude/hooks/session-start.sh) -- CI checks that the three
+# agree, so a half-finished bump fails there rather than shipping.
 class Spinel < Formula
+  # The one place this formula spells the commit. `version` derives its short
+  # form rather than repeating it: Homebrew keys upgrade detection on the
+  # version string, not on `revision:`, so a bump that updated one and not the
+  # other would leave installs reporting up-to-date and never rebuilding.
+  REVISION = "0d0a8651b0c7c4de98893a5b575785bd6fc10870"
+
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
-  url "https://github.com/matz/spinel.git",
-      revision: "0b8527df4b8721b68a87c508345a040279f4ef89"
-  version "0.0.0-0b8527d"
+  url "https://github.com/matz/spinel.git", revision: REVISION
+  version "0.0.0-#{REVISION[0, 7]}"
   head "https://github.com/matz/spinel.git", branch: "master"
   license "MIT"
 
