@@ -291,6 +291,35 @@ $ git stack untrack
 [exit 0]
 branch.feat-a.stackParent: 
 
+### tree keeps the subtree of a branch that was untracked
+$ git stack tree
+  main (trunk)
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+      feat-c (1 commit(s))
+[exit 0]
+feat-a stackParent (untracked): 
+feat-b stackParent (still recorded): feat-a
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+      feat-b (1 commit(s))
+        feat-c (1 commit(s))
+[exit 0]
+
+### a detached stack is drawn once, from its top, whatever its branches are named
+$ git stack tree
+  main (trunk)
+    zzz-top (1 commit(s)) (parent 'feat-mid' is untracked)
+      aaa-leaf (1 commit(s))
+[exit 0]
+
+### tree renders a hand-edited parent cycle instead of dropping it
+$ git stack tree
+* main (trunk)
+    feat-b 
+      feat-a 
+[exit 0]
+
 ### drop splices the bottom branch out, reparenting children onto trunk
 $ git stack drop feat-a
 dropped feat-a; reparented children onto main

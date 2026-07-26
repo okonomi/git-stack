@@ -81,10 +81,19 @@ end
 # comments, and it is why their `.to_s` guards before `.split` are now
 # load-bearing rather than defensive -- removing them costs six more untyped
 # signatures.
+#
+# `order_branches` is the newest pin, and the widening that made it necessary
+# came from a Set rather than the trunk list: `detached_roots` walks the trunks
+# out of the `@trunks` Set it captured, and a Set's element reads back as
+# `untyped` (see the emitted `Set#include?` / `#to_a` above -- the class itself
+# is on the slow path). Passing one into `order_branches` widened it and, with
+# it, the `order` / `walk_order` pair it hands the name down to. Faithful as
+# every other entry here: a trunk name is a String at each of its call sites.
 class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def order_branches: (String) -> Array[String]
   def stack_root: (String, Array[String]) -> String
   def would_cycle?: (String, String, Array[String]) -> bool
   def validate_new_parent!: (String, String, Array[String], String) -> nil
