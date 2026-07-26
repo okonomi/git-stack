@@ -39,12 +39,6 @@
 # the same kind of assertion as the original four -- branch names, colour text,
 # and the trunk list, all String / Array[String] at every call site -- and with
 # them the golden is back to zero untyped in `class Object`.
-#
-# `stack_root` / `would_cycle?` / `validate_new_parent!` moved from here to
-# `class StackContext` below when they became methods on the context. They still
-# need pinning -- the trunk LIST parameter widens to `Array[untyped]` exactly as
-# `effective_parent`'s does -- so the move relocates three assertions rather than
-# retiring them; they simply lost the leading `StackContext` parameter.
 class Object
   def sh: (String) -> String
   def checkout!: (String) -> nil
@@ -63,13 +57,19 @@ class Object
   def children_of: (String, Array[String]) -> Array[String]
 end
 
-# `parent_of` / `children_of` join `branch?` for the same reason. Note that the
-# seed reaches methods but NOT instance variables: `@parents` and `@children`
-# still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]` under this
-# Spinel (they were `Hash[String, String]` before). That widening is exactly
-# what `StackContext#children_of` and `#walk_order` predicted in their comments,
-# and it is why their `.to_s` guards before `.split` are now load-bearing rather
-# than defensive -- removing them costs six more untyped signatures.
+# `parent_of` / `children_of` join `branch?` for the same reason, and the graph
+# queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
+# they take the trunk LIST besides, which widens exactly as `effective_parent`'s
+# does, so becoming methods on the context relocated their pins here rather than
+# retiring them.
+#
+# Note that the seed reaches methods but NOT instance variables: `@parents` and
+# `@children` still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]`
+# under this Spinel (they were `Hash[String, String]` before). That widening is
+# exactly what `StackContext#children_of` and `#walk_order` predicted in their
+# comments, and it is why their `.to_s` guards before `.split` are now
+# load-bearing rather than defensive -- removing them costs six more untyped
+# signatures.
 class StackContext
   def branch?: (String) -> bool
   def parent_of: (String) -> String

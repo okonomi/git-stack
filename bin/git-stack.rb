@@ -558,11 +558,6 @@ def effective_parent(branch, trunks)
   effective_parent_rule(get_parent(branch), containing_trunk(branch, trunks))
 end
 
-# The stack-graph queries `stack_root` / `would_cycle?` / `validate_new_parent!`
-# used to live here as free functions that all took `ctx` first -- the sign they
-# wanted to be methods on the object holding the graph. They are StackContext's
-# own now: it already owns the parent map and branch set they walk.
-
 # --- tree rendering ---------------------------------------------------------
 
 # The tree row marker for `branch`: "*" when it's the checked-out branch.
@@ -1051,8 +1046,11 @@ class StackContext
   # do...end` corrupts a later `exit`: with `die(...) if would_cycle?(...)` the
   # compiled binary printed die's message and then exited 0, so a `parent`/
   # `track` that correctly REJECTED a cycle still reported success to a script.
-  # CRuby is unaffected and cli_test.rb does not assert exit codes, so it only
-  # showed on the shipped binary; test/binary_test.sh now covers it.
+  #
+  # The miss was the engine, not the harness: cli_test.rb asserts these very
+  # exit codes and still passed, because CRuby is unaffected and its `return`
+  # returns. Only the compiled artifact can show it, so test/binary_test.sh is
+  # where the guard had to go.
   def would_cycle?(branch, new_parent, trunks)
     seen = Set.new
     cur = new_parent
