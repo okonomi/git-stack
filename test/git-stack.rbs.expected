@@ -174,9 +174,9 @@ class StackContext
   def detached_roots: () -> Array[String]
   def detached_root: (String) -> String
   def untracked_parent?: (String) -> bool
-  def stack_root: (String, Array[String]) -> String
-  def would_cycle?: (String, String, Array[String]) -> bool
-  def validate_new_parent!: (String, String, Array[String], String) -> nil
+  def stack_root: (String) -> String
+  def would_cycle?: (String, String) -> bool
+  def validate_new_parent!: (String, String, String) -> nil
   def self.build: (Array[String]) -> StackContext
   def self.build_topology: (Array[String]) -> StackContext
 end

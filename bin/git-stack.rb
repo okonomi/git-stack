@@ -798,11 +798,11 @@ class StackContext
   # is the same rule for the in-memory traversals.
   def load(scan, trunks)
     @branches = existing_branches
-    # Kept as a Set, not just the primary `@trunk`: every graph query below has
-    # to tell "this parent is a trunk" (the walk's floor) from "this parent is
-    # a branch nobody records" (a hidden root), and threading the trunk list
-    # through each of them would widen it to Spinel's untyped slow path -- the
-    # very drift rbs/git-stack.rbs exists to pin back.
+    # Kept as a Set so every graph query below can ask "is this parent a trunk?"
+    # (the walk's floor) from the context itself. That list used to be threaded
+    # back in as a parameter by each of them -- always the same list the context
+    # was built from, and an `Array[String]` parameter is exactly what widens to
+    # Spinel's untyped slow path (see rbs/git-stack.rbs).
     @trunks = Set.new
     trunks.each do |name|
       @trunks.add(name)
@@ -1039,19 +1039,17 @@ class StackContext
   #     did not catch it. Everything above it dropped out of `tree` without a
   #     word while `restack` went on rebasing onto it (issue #58).
   #
-  # Roots are found by climbing (`detached_root`) rather than by testing each
-  # branch, so a stack is emitted once, at its top, whatever its branches are
-  # named; and each root's whole subtree is marked covered, so no branch can be
-  # drawn twice -- once as a root and again as some other row's child, the shape
-  # the 4 KB truncation bug produced (see test/binary_test.sh).
+  # Every branch climbs to its own root (`detached_root`) rather than being
+  # tested where it sits, which is what makes the answer independent of how the
+  # branches are named: a stack is emitted once, at its top, even when a child
+  # sorts ahead of it. A root whose own parent is a trunk is exactly a branch
+  # the trunk walk already draws, so it is dropped here rather than drawn a
+  # second time -- the duplicate-row shape the 4 KB truncation bug produced (see
+  # test/binary_test.sh). Emitting a root marks its whole subtree covered, which
+  # is what keeps the rest of that stack from being considered again; the marking
+  # (rather than remembering the roots alone) is load-bearing for a hand-edited
+  # cycle, whose members each climb to a DIFFERENT member as their root.
   def detached_roots
-    covered = Set.new
-    @trunks.each do |trunk|
-      order_branches(trunk).each do |name|
-        covered.add(name)
-      end
-    end
-
     # `@parents` is iterated into a list first so the roots come out sorted,
     # the way sibling rows elsewhere in the tree do.
     names = []
@@ -1060,11 +1058,12 @@ class StackContext
     end
 
     roots = []
+    covered = Set.new
     names.sort.each do |name|
       next if covered.include?(name)
 
       root = detached_root(name)
-      next if covered.include?(root)
+      next if trunk?(parent_of(root))
 
       roots << root
       order_branches(root).each do |branch|
@@ -1104,20 +1103,26 @@ class StackContext
     parent = parent_of(branch)
     return false if parent.empty? || trunk?(parent) || tracked?(parent)
 
-    @branches.include?(parent)
+    branch?(parent)
   end
 
   # Walk down from `branch` to the root of its stack (whose parent is a trunk or
-  # is untracked). Returns the root branch name. Reads this context's own parent
-  # map and branch set, not a `git config`+`git show-ref` per level. `seen`
-  # guards cyclic parent chains (A -> B -> A from hand-edited config) so we
-  # terminate instead of hanging.
-  def stack_root(branch, trunks)
+  # no longer a branch). Returns the root branch name. Reads this context's own
+  # parent map and branch set, not a `git config`+`git show-ref` per level.
+  # `seen` guards cyclic parent chains (A -> B -> A from hand-edited config) so
+  # we terminate instead of hanging.
+  #
+  # Deliberately NOT `detached_root`, which stops one condition earlier: what
+  # `restack` wants is the branch whose subtree it must replay, and an untracked
+  # parent is a fine root for that (it is skipped itself, its children are
+  # rebased onto it). What `tree` wants is the topmost branch it can DRAW, and
+  # an untracked branch is never drawn. Same walk, two questions.
+  def stack_root(branch)
     seen = Set.new
     loop do
       seen.add(branch)
       parent = parent_of(branch)
-      break if parent.empty? || is_trunk?(parent, trunks)
+      break if parent.empty? || trunk?(parent)
       break unless branch?(parent)
       break if seen.include?(parent)
 
@@ -1140,7 +1145,7 @@ class StackContext
   # exit codes and still passed, because CRuby is unaffected and its `return`
   # returns. Only the compiled artifact can show it, so test/binary_test.sh is
   # where the guard had to go.
-  def would_cycle?(branch, new_parent, trunks)
+  def would_cycle?(branch, new_parent)
     seen = Set.new
     cur = new_parent
     result = false
@@ -1149,7 +1154,7 @@ class StackContext
         result = true
         break
       end
-      break if cur.empty? || is_trunk?(cur, trunks)
+      break if cur.empty? || trunk?(cur)
       break if seen.include?(cur)
       break unless branch?(cur)
 
@@ -1163,10 +1168,10 @@ class StackContext
   # must not be `branch` itself, and must not create a cycle. `verb` customizes
   # the cycle-error wording for the calling command. This context answers both
   # the existence check and the whole ancestor walk from its one snapshot.
-  def validate_new_parent!(branch, candidate, trunks, verb)
+  def validate_new_parent!(branch, candidate, verb)
     die("branch '#{candidate}' does not exist") unless branch?(candidate)
     die("a branch cannot be its own parent") if candidate == branch
-    die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate, trunks)
+    die("'#{candidate}' is downstream of '#{branch}'; #{verb} would create a cycle") if would_cycle?(branch, candidate)
     nil
   end
 end
@@ -1307,7 +1312,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, trunks, "setting it as parent")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1320,7 +1325,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, trunks, "tracking it")
+  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1499,7 +1504,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
   ctx = StackContext.build_topology(trunks)
-  root = ctx.stack_root(original, trunks)
+  root = ctx.stack_root(original)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
   restack_subtree(root, trunks, heal_orphans, verb, ctx)
