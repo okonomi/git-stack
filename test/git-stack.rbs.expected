@@ -147,6 +147,17 @@ class Set
   def self.check_enum: (untyped) -> untyped # spinel: widened to untyped (slow path)
 end
 
+class Branch
+  @name: String
+  def initialize: (String) -> nil
+  def name: () -> String
+  def exists?: () -> bool
+  def set_parent: (String) -> bool
+  def set_base: (String) -> bool
+  def reparent!: (String, String) -> nil
+  def untrack!: () -> nil
+end
+
 class StackContext
   @parents: Hash[String, untyped]
   @branches: Set
