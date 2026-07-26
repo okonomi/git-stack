@@ -405,6 +405,83 @@ end
 
 # --- stack metadata ---------------------------------------------------------
 
+# EXPERIMENT (not settled -- see the PR): a branch as a value rather than a name
+# threaded through free functions. It bundles the name with the stack-metadata
+# operations that otherwise take it as their first argument.
+#
+# This commit covers the one-shot, single-branch commands only (`create`,
+# `untrack`, `parent`). The traversal keeps passing plain names for now -- an
+# accessor that forks `git config` per node would undo what StackContext's
+# single snapshot buys.
+class Branch
+  def initialize(name)
+    @name = name
+    @ctx = nil
+    nil
+  end
+
+  # Load this record against a preloaded StackContext and hand it back, so a
+  # traversal reads `Branch.new(name).bind(ctx)` -- ActiveRecord's idea of a
+  # record that already carries the eager-loaded association.
+  def bind(ctx)
+    @ctx = ctx
+    self
+  end
+
+  def name
+    @name
+  end
+
+  def exists?
+    git_ok("show-ref --verify --quiet refs/heads/#{sh(@name)}")
+  end
+
+  # The recorded parent NAME. Bound: an in-memory read of the preloaded context
+  # -- no subprocess, which is the whole reason binding exists. Unbound: a live
+  # `git config` read, fine for a one-shot command, ruinous per traversal node.
+  def parent_name
+    return @ctx.parent_of(@name) unless @ctx.nil?
+
+    git_out("config --get branch.#{sh(@name)}.stackParent")
+  end
+
+  def set_parent(parent)
+    git_ok("config branch.#{sh(@name)}.stackParent #{sh(parent)}")
+  end
+
+  def set_base(sha)
+    git_ok("config branch.#{sh(@name)}.stackBase #{sh(sha)}")
+  end
+
+  # Point this branch at `parent` and re-anchor its base to merge-base(self,
+  # parent) -- the object twin of the free `reparent!`.
+  #
+  # The git calls are INLINED rather than delegating to this class's own
+  # `set_parent` / `set_base`. Under Spinel an unqualified `set_parent(parent)`
+  # inside an instance method binds to the top-level free `set_parent(branch,
+  # parent)` (arity 2), not `Branch#set_parent` (arity 1), so the compiled binary
+  # raises "wrong number of arguments (given 1, expected 2)" where CRuby resolves
+  # the instance method. Any Branch method sharing a name with a free function is
+  # the same trap; calling git directly sidesteps it.
+  def reparent!(parent, err)
+    die(err) unless git_ok("config branch.#{sh(@name)}.stackParent #{sh(parent)}")
+    base = git_out("merge-base #{sh(@name)} #{sh(parent)}")
+    if base.empty?
+      info "warning: no common ancestor of '#{@name}' and '#{parent}'; stack base not recorded"
+      return nil
+    end
+    git_ok("config branch.#{sh(@name)}.stackBase #{sh(base)}")
+    nil
+  end
+
+  # Inlined for the same collision reason as `reparent!`.
+  def untrack!
+    git_ok("config --unset branch.#{sh(@name)}.stackParent")
+    git_ok("config --unset branch.#{sh(@name)}.stackBase")
+    nil
+  end
+end
+
 def get_parent(branch)
   git_out("config --get branch.#{sh(branch)}.stackParent")
 end
@@ -447,15 +524,6 @@ def record_reparent_base(branch, parent)
     return
   end
   set_base(branch, base)
-  nil
-end
-
-# Record the stack base when `branch` sits exactly on `parent`'s tip -- freshly
-# created (`create`) or just replayed onto it (`restack`). Counterpart to
-# `record_reparent_base`: here the tip IS where the branch's commits begin, so
-# no merge-base walk is needed.
-def record_tip_base(branch, parent)
-  set_base(branch, git_out("rev-parse #{sh(parent)}"))
   nil
 end
 
@@ -922,7 +990,11 @@ class StackContext
     row.to_s.split("\n").each do |name|
       names << name unless name.empty?
     end
-    names.sort
+    # Branch records already loaded against this context, so a caller can read
+    # their associations from the snapshot rather than re-forking git.
+    result = []
+    names.sort.each { |n| result << Branch.new(n).bind(self) }
+    result
   end
 
   # The whole subtree rooted at `root`, DFS pre-order (each parent before its
@@ -953,12 +1025,12 @@ class StackContext
   # Decoding what `order` encoded is deliberate -- one shared walk can't disagree
   # with itself about traversal order or the cycle guard.
   def order_branches(root)
-    names = []
+    branches = []
     order(root).split("\n").each do |line|
       name = order_line_branch(line)
-      names << name unless name.empty?
+      branches << Branch.new(name).bind(self) unless name.empty?
     end
-    names
+    branches
   end
 
   # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
@@ -1168,14 +1240,15 @@ end
 def cmd_create(args)
   name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
-  die("branch '#{name}' already exists") if branch_exists?(name)
+  branch = Branch.new(name)
+  die("branch '#{name}' already exists") if branch.exists?
 
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
-  die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
+  die("created branch '#{name}' but failed to record its parent") unless branch.set_parent(parent)
   # The base is the parent's tip: a freshly created branch has no commits of its
   # own yet, so its stack begins exactly where the parent currently sits.
-  record_tip_base(name, parent)
+  branch.set_base(git_out("rev-parse #{sh(parent)}"))
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
@@ -1211,7 +1284,7 @@ def cmd_parent(args)
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, trunks, "setting it as parent")
-  reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
+  Branch.new(branch).reparent!(new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
 
@@ -1229,9 +1302,9 @@ def cmd_track(args)
 end
 
 def cmd_untrack(_args)
-  branch = current_branch
-  untrack!(branch)
-  info "'#{branch}' is no longer tracked in a stack"
+  branch = Branch.new(current_branch)
+  branch.untrack!
+  info "'#{branch.name}' is no longer tracked in a stack"
 end
 
 def cmd_down(_args)
@@ -1252,20 +1325,27 @@ def cmd_up(args)
   children = children_of(branch, trunks)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
+  # children_of hands back Branch records; navigation wants names, for
+  # include? / checkout! / interpolation alike -- so the first thing this
+  # command does is unwrap them again. That is the tax of pushing records
+  # through a traversal whose consumers all speak names.
+  child_names = []
+  children.each { |c| child_names << c.name }
+
   unless want.empty?
-    die("'#{want}' is not stacked directly on '#{branch}'") unless children.include?(want)
+    die("'#{want}' is not stacked directly on '#{branch}'") unless child_names.include?(want)
     checkout!(want)
     return
   end
 
-  if children.length == 1
-    checkout!(children[0])
+  if child_names.length == 1
+    checkout!(child_names[0])
     return
   end
 
   info "'#{branch}' has multiple children; pick one:"
-  children.each do |child|
-    info "  #{PROG} up #{child}"
+  child_names.each do |name|
+    info "  #{PROG} up #{name}"
   end
   exit 1
 end
@@ -1355,17 +1435,20 @@ end
 # mid-walk (sync only rewrites config; rebase updates history in place).
 def restack_subtree(root, trunks, heal_orphans, verb, ctx)
   ctx.order_branches(root).each do |branch|
-    parent = ctx.parent_of(branch)
+    name = branch.name
+    # An association read off the bound context -- an in-memory hash lookup, not
+    # a git fork, so the walk costs the same as it did with plain names.
+    parent = branch.parent_name
 
     if heal_orphans && !parent.empty? && !ctx.branch?(parent)
-      trunk = containing_trunk(branch, trunks)
-      info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
-      die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
+      trunk = containing_trunk(name, trunks)
+      info "'#{name}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
+      die("failed to reparent '#{name}'") unless branch.set_parent(trunk)
       parent = trunk
     end
 
     if !parent.empty? && ctx.branch?(parent)
-      behind, ahead = ahead_behind(parent, branch)
+      behind, ahead = ahead_behind(parent, name)
       # `behind == 0`: already on the parent's tip, nothing to move; still falls
       # through to the re-anchor below (which back-fills a missing base).
       if behind > 0
@@ -1373,17 +1456,17 @@ def restack_subtree(root, trunks, heal_orphans, verb, ctx)
           # No commits of its own above the parent -- a strict ancestor whose work
           # already sits there while the parent advanced past it. Nothing to
           # replay (`--onto` would re-apply and conflict); fast-forward instead.
-          info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
-          ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
-          die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
+          info "fast-forwarding #{cyan(name)} to #{cyan(parent)}"
+          ok = git_ok("checkout #{sh(name)}") && git_ok("merge --ff-only #{sh(parent)}")
+          die("failed to fast-forward '#{name}' to '#{parent}'") unless ok
         else
-          replay_onto!(branch, parent, verb)
+          replay_onto!(name, parent, verb)
         end
       end
       # Every path above leaves the branch on the parent's tip (both moving paths
       # `die` on failure), so re-anchor the recorded base there for a later parent
       # advance to replay from.
-      record_tip_base(branch, parent)
+      branch.set_base(git_out("rev-parse #{sh(parent)}"))
     end
   end
   nil
@@ -1474,7 +1557,7 @@ def cmd_drop(args)
   # merge-base(child, parent) so `restack`'s `--onto` replays from the right point.
   moved = ctx.children_of(branch)
   moved.each do |child|
-    reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
+    child.reparent!(parent, "failed to reparent '#{child.name}' onto '#{parent}'")
   end
 
   # Untrack the dropped branch; its ref stays intact unless `--delete` was passed.
@@ -1486,7 +1569,8 @@ def cmd_drop(args)
   ctx = StackContext.build_topology(trunks)
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
-    restack_subtree(child, trunks, false, "restack", ctx)
+    # `restack_subtree` roots on a name String, so unwrap the record again.
+    restack_subtree(child.name, trunks, false, "restack", ctx)
   end
 
   if delete
