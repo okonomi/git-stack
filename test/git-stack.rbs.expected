@@ -46,6 +46,8 @@ class Object
   def tree_name: (String, String, String) -> String
   def tab_head: (String) -> String
   def tab_tail: (String) -> String
+  def pack_lines: (Array[String]) -> String
+  def unpack_lines: (String) -> Array[String]
   def ahead_behind_bases: (String) -> String
   def ahead_behind_refs: (String) -> String
   def ahead_behind_columns: (String, String) -> Hash[String, Integer]

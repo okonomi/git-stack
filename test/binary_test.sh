@@ -18,7 +18,13 @@
 # The `tree` command is exercised against the multiple-sibling stack on
 # purpose: sibling ordering is the only path that reaches the `.sort` calls in
 # `StackContext#children_of` and `#walk_order`, which is exactly where an
-# unsupported runtime method would hide. Those `.sort`s are also load-bearing
+# unsupported runtime method would hide.
+#
+# The large fixture below carries the other half of that job, and has already
+# earned it twice: it is the only test that reaches a SECOND ahead/behind batch,
+# where `scan_ahead_behind`'s `each_slice` receiver has to stay rooted or the
+# binary segfaults mid-`tree` (see the note there). Small fixtures need one
+# batch and never notice. Those `.sort`s are also load-bearing
 # for type inference -- Spinel only dispatches `sort` on a concrete
 # `Array[String]`, never on a poly array -- so this fixture doubles as the
 # runtime proof that the element type stayed narrow.
