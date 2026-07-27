@@ -104,7 +104,7 @@ end
 
 class Set
   @data: Array[untyped]
-  def initialize: (Array[untyped]) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def initialize: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add: (untyped) -> Set # spinel: widened to untyped (slow path)
   def <<: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add?: (untyped) -> Set # spinel: widened to untyped (slow path)
