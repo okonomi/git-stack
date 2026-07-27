@@ -264,16 +264,19 @@ end
 # determined (see `containing_trunk`).
 
 # Every configured trunk, in config order (empty list when none is set yet).
+#
+# `map`/`reject` rather than an `each`/`<<` accumulator -- the shape this file
+# reaches for whenever a `split` is being filtered or transformed. It keeps the
+# split's `Array[String]` element type, where a fresh `[]` fed from a block
+# parameter would come back `Array[untyped]` and widen everything the result
+# reaches. The catch is that Spinel resolves these poly-array methods only on a
+# CONCRETE receiver, so the chain has to start at something already typed (a
+# `split`, `keys`, or a pinned parameter) and stay on that path -- never on a
+# value the analyzer has already widened. `spinel-doctor` and the emitted-RBS
+# golden in CI are what hold that line (see rbs/git-stack.rbs).
 def configured_trunks
   out = git_out("config --get-all stack.trunk")
-  list = []
-  out.split("\n").each do |line|
-    name = line.strip
-    next if name.empty?
-
-    list << name
-  end
-  list
+  out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }
 end
 
 # Replace the trunk list with exactly `trunks`.
@@ -310,11 +313,9 @@ end
 # One `git` call per configured trunk -- one in nearly every repo, never a
 # per-node loop -- so `branch_exists?` is the right check here.
 #
-# `select` rather than an `each`/`<<` accumulator: it keeps `configured`'s
-# element type, where a fresh `[]` fed from a block parameter would come back
-# `Array[untyped]` and widen everything the trunk list reaches. It is also the
-# one poly-array method here that Spinel resolves only on a concrete receiver,
-# which `configured_trunks` is -- see rbs/git-stack.rbs and the doctor step in CI.
+# `select` rather than an `each`/`<<` accumulator, for the reason spelled out
+# on `configured_trunks` -- and this is the concrete receiver that rule asks
+# for, `configured` being that method's own result.
 def live_trunks(configured)
   configured.select do |trunk|
     live = branch_exists?(trunk)
@@ -503,13 +504,8 @@ end
 # reads the branch as missing and sync reparents its children onto trunk.
 def existing_branches
   out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
-  set = Set.new
-  out.split("\n").each do |name|
-    next if name.empty?
-
-    set.add(name.delete_prefix("refs/heads/"))
-  end
-  set
+  refs = out.split("\n").reject { |name| name.empty? }
+  Set.new(refs.map { |name| name.delete_prefix("refs/heads/") })
 end
 
 # Every branch that records `parent` as its parent. Builds a throwaway
@@ -604,31 +600,21 @@ AHEAD_BEHIND_CHUNK = 12
 # lines), newline-joined -- one entry per `%(ahead-behind:<parent>)` atom column
 # the batch's for-each-ref emits. Newline-packed, not Array[String] (see
 # scan_ahead_behind for the Spinel-widening reason).
+#
+# `uniq` dedups in FIRST-OCCURRENCE order, which is load-bearing rather than
+# incidental: `ahead_behind_columns` reads a parent's position here back as its
+# column number, and `ahead_behind_chunk` appends the atoms in the same order.
 def ahead_behind_bases(group)
-  bases = ""
-  seen = Set.new
-  group.split("\n").each do |pl|
-    parent = tab_tail(pl)
-    next if parent.empty? || seen.include?(parent)
-
-    seen.add(parent)
-    bases = "#{bases}#{parent}\n"
-  end
-  bases
+  parents = group.split("\n").map { |pl| tab_tail(pl) }.reject { |parent| parent.empty? }.uniq
+  parents.map { |parent| "#{parent}\n" }.join("")
 end
 
 # The `refs/heads/...` argument tail for the batch's for-each-ref: every branch
 # in `group`, shell-quoted and space-joined. Same packed-String idiom as
 # ahead_behind_bases.
 def ahead_behind_refs(group)
-  refs = ""
-  group.split("\n").each do |pl|
-    branch = tab_head(pl)
-    next if branch.empty?
-
-    refs = "#{refs} refs/heads/#{sh(branch)}"
-  end
-  refs
+  branches = group.split("\n").map { |pl| tab_head(pl) }.reject { |branch| branch.empty? }
+  branches.map { |branch| " refs/heads/#{sh(branch)}" }.join("")
 end
 
 # branch -> the for-each-ref column carrying that branch's counts, for one
@@ -638,12 +624,8 @@ end
 # is a single hash lookup, not two nested scans.
 def ahead_behind_columns(group, bases)
   parent_col = {}
-  n = 0
-  bases.split("\n").each do |b|
-    next if b.empty?
-
-    parent_col[b] = n
-    n += 1
+  bases.split("\n").reject { |b| b.empty? }.each_with_index do |b, col|
+    parent_col[b] = col
   end
 
   cols = {}
@@ -672,13 +654,8 @@ def ahead_behind_readback(output, cols)
     next if idx.nil?
 
     # The idx-th tab-separated ahead-behind column ("<ahead> <behind>").
-    col = ""
-    c = 0
-    tab_tail(row).split("\t").each do |f|
-      col = f if c == idx
-      c += 1
-    end
-    next if col.empty?
+    col = tab_tail(row).split("\t")[idx]
+    next if col.nil? || col.empty?
 
     # The atom prints "<ahead> <behind>"; the consumer wants [behind, ahead].
     ab = col.split(" ")
@@ -702,12 +679,8 @@ def ahead_behind_chunk(group)
   # `%(refname)` + strip, not `%(refname:short)`, and full `refs/heads/<parent>`
   # in the atom, not the bare name: a same-named tag would otherwise shadow the
   # branch (dropping its counts, or being resolved as the ahead-behind base).
-  fmt = "%(refname)"
-  bases.split("\n").each do |b|
-    next if b.empty?
-
-    fmt = "#{fmt}\t%(ahead-behind:refs/heads/#{b})"
-  end
+  atoms = bases.split("\n").reject { |b| b.empty? }.map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
+  fmt = "%(refname)#{atoms.join("")}"
 
   out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
   ahead_behind_readback(out, ahead_behind_columns(group, bases))
@@ -910,20 +883,9 @@ class StackContext
     # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
     # call's captured output stays well under Spinel's ~4 KB backtick cap.
     result = ""
-    count = 0
-    group = ""
-    pairs.split("\n").each do |pl|
-      next if pl.empty?
-
-      group = "#{group}#{pl}\n"
-      count += 1
-      if count == AHEAD_BEHIND_CHUNK
-        result = "#{result}#{ahead_behind_chunk(group)}"
-        group = ""
-        count = 0
-      end
+    pairs.split("\n").reject { |pl| pl.empty? }.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
+      result = "#{result}#{ahead_behind_chunk("#{chunk.join("\n")}\n")}"
     end
-    result = "#{result}#{ahead_behind_chunk(group)}" unless group.empty?
     result
   end
 
@@ -932,18 +894,16 @@ class StackContext
   # `Array[String]`; `.sort` orders siblings and pins the element type.
   #
   # The `.to_s` guards the split: newer Spinel can widen `@children` to
-  # `Hash[String, untyped]`, whose value `.split`s to `unknown`, and `.each` on
-  # `unknown` is a baked-in `NoMethodError`. `.to_s` re-narrows to a String so
-  # the split stays `Array[String]`; a no-op under the pinned Spinel.
+  # `Hash[String, untyped]`, whose value `.split`s to `unknown`, and iterating
+  # `unknown` is a baked-in `NoMethodError` -- all the more so for the
+  # `reject`/`sort` below, which Spinel resolves only on a concrete receiver.
+  # `.to_s` re-narrows to a String so the split stays `Array[String]`; a no-op
+  # under the pinned Spinel.
   def children_of(branch)
     row = @children[branch]
     return [] if row.nil?
 
-    names = []
-    row.to_s.split("\n").each do |name|
-      names << name unless name.empty?
-    end
-    names.sort
+    row.to_s.split("\n").reject { |name| name.empty? }.sort
   end
 
   # The whole subtree rooted at `root`, DFS pre-order (each parent before its
@@ -974,12 +934,7 @@ class StackContext
   # Decoding what `order` encoded is deliberate -- one shared walk can't disagree
   # with itself about traversal order or the cycle guard.
   def order_branches(root)
-    names = []
-    order(root).split("\n").each do |line|
-      name = order_line_branch(line)
-      names << name unless name.empty?
-    end
-    names
+    order(root).split("\n").map { |line| order_line_branch(line) }.reject { |name| name.empty? }
   end
 
   # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
@@ -1240,12 +1195,14 @@ end
 # `drop --delete` (no branch named) still falls back to the current branch. A
 # flag like `--delete` may appear before or after the branch name, so the branch
 # can't just be `args[0]`.
+#
+# An empty argument (`git stack drop ""`) is skipped rather than returned: it
+# names no branch, so the current-branch fallback is the right answer, and the
+# accumulator this replaced took the same view -- its "found one yet?" test was
+# the name being non-empty.
 def first_operand(args)
-  name = ""
-  args.each do |a|
-    name = a if name.empty? && !a.start_with?("-")
-  end
-  name
+  name = args.find { |a| !a.empty? && !a.start_with?("-") }
+  name.nil? ? "" : name
 end
 
 def cmd_init(args)
@@ -1675,9 +1632,8 @@ def parse_global_flags(argv)
   rescue OptionParser::ParseError => e
     die(e.message)
   end
-  argv.each do |arg|
-    die("invalid option: #{arg}") if arg.start_with?("-")
-  end
+  leftover = argv.find { |arg| arg.start_with?("-") }
+  die("invalid option: #{leftover}") unless leftover.nil?
   cmd
 end
 
@@ -1686,15 +1642,8 @@ def main(argv)
   # on any long option the parser doesn't register, so an unregistered `--delete`
   # would be reported as an invalid *global* option. Pulled aside here and
   # re-attached to the subcommand's args below.
-  flags = []
-  cleaned = []
-  argv.each do |a|
-    if COMMAND_FLAGS.include?(a)
-      flags << a
-    else
-      cleaned << a
-    end
-  end
+  flags = argv.select { |a| COMMAND_FLAGS.include?(a) }
+  cleaned = argv.reject { |a| COMMAND_FLAGS.include?(a) }
 
   cmd = parse_global_flags(cleaned)
   rest = []
@@ -1706,7 +1655,7 @@ def main(argv)
       rest = cleaned[1..-1]
     end
   end
-  flags.each { |f| rest << f }
+  rest += flags
 
   repo_optional = cmd == "version" || cmd == "help"
   require_repo unless repo_optional
