@@ -120,6 +120,9 @@ class StackSnapshot
   def topology: () -> StackTopology
   def effective_parent_of: (String) -> String
   def ahead_behind_of: (String) -> Array[Integer]
-  def self.build: (Array[String]) -> StackSnapshot
-  def self.build_topology: (Array[String]) -> StackTopology
+end
+
+class StackRepository
+  def self.load_topology: (Array[String]) -> StackTopology
+  def self.load_snapshot: (Array[String]) -> StackSnapshot
 end

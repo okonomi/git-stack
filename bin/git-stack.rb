@@ -511,7 +511,7 @@ end
 # (one config scan, no ahead/behind walk) -- the one-shot path for `up`,
 # distinct from the snapshot `tree` threads through rendering.
 def children_of(parent, trunks)
-  StackSnapshot.build_topology(trunks).children_of(parent)
+  StackRepository.load_topology(trunks).children_of(parent)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
@@ -1103,11 +1103,10 @@ class StackTopology
   end
 end
 
-# A read-only snapshot used by rendering. It composes the pure topology with
-# Git-history facts that are expensive to ask for repeatedly. Commands that
-# only navigate or rewrite the forest receive StackTopology directly.
-class StackSnapshot
-  def self.build_topology(trunks)
+# The Git-facing read boundary for stack state. It captures config and local
+# refs, then assembles the pure topology or the richer rendering snapshot.
+class StackRepository
+  def self.load_topology(trunks)
     # Preserve the old snapshot order: config first, then local refs. The scan
     # still represents one best-effort Git moment, but this avoids changing the
     # established behavior for a ref/config mutation racing the command.
@@ -1116,11 +1115,15 @@ class StackSnapshot
     StackTopology.from_scan(branches, trunks, scan)
   end
 
-  def self.build(trunks)
-    topology = build_topology(trunks)
-    new(topology, trunks[0])
+  def self.load_snapshot(trunks)
+    StackSnapshot.new(load_topology(trunks), trunks[0])
   end
+end
 
+# A read-only snapshot used by rendering. It composes the pure topology with
+# Git-history facts that are expensive to ask for repeatedly. Commands that
+# only navigate or rewrite the forest receive StackTopology directly.
+class StackSnapshot
   def initialize(topology, fallback_trunk)
     @topology = topology
     @fallback_trunk = fallback_trunk
@@ -1281,7 +1284,7 @@ def cmd_tree(_args)
   cur = current_branch_or_empty
   # One StackSnapshot captures the whole stack up front -- topology, branches, and
   # every node's counts -- so the loops below read it in memory, no `git` per node.
-  snapshot = StackSnapshot.build(trunks)
+  snapshot = StackRepository.load_snapshot(trunks)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   # `order(trunk)` includes the trunk itself at depth 0, which we skip here --
@@ -1308,7 +1311,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  StackSnapshot.build_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
+  StackRepository.load_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1321,7 +1324,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  StackSnapshot.build_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
+  StackRepository.load_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1499,7 +1502,7 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   trunks = trunk_branches
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
-  topology = StackSnapshot.build_topology(trunks)
+  topology = StackRepository.load_topology(trunks)
   root = topology.stack_root(original)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
@@ -1541,7 +1544,7 @@ def cmd_drop(args)
   # One snapshot answers every read the splice needs -- exists?, parent,
   # children -- from a single scan. NOT reused past the rewrites below, which
   # invalidate it.
-  topology = StackSnapshot.build_topology(trunks)
+  topology = StackRepository.load_topology(trunks)
   die("branch '#{branch}' does not exist") unless topology.branch?(branch)
 
   original = current_branch_or_empty
@@ -1579,7 +1582,7 @@ def cmd_drop(args)
 
   # Restack each moved subtree onto its new parent. Rebuild the topology first so
   # it reflects the config rewrites above.
-  topology = StackSnapshot.build_topology(trunks)
+  topology = StackRepository.load_topology(trunks)
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
     restack_subtree(child, trunks, false, "restack", topology)
