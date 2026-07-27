@@ -520,6 +520,13 @@ end
 # display, counts, and navigation can't drift (the rule used to sit copied in
 # three spots).
 #
+# It answers ONE HOP: what does this branch sit on. "Where does its stack start"
+# is the other question, and `StackContext#climb_to_root` is that one's single
+# home -- it stops where this rule does not, at a parent that exists but is
+# tracked nowhere. Two answers were what issue #80 was: `tree` and `restack`
+# each climbed their own way and named different roots for the same stack. If a
+# new traversal needs either question, call the owner rather than re-deriving it.
+#
 # Threading one rule through both worlds pulls the `git`-wrapper family (`sh`,
 # `checkout!`, `branch_exists?`, `ahead_behind`) and `StackContext#branch?` onto
 # Spinel's untyped slow path; the hand-written seed in rbs/ pins them back to
@@ -1056,24 +1063,11 @@ class StackContext
   end
 
   # Climb from `branch` to the top of the stack the trunk walk cannot reach: the
-  # last branch whose own parent is absent from the tracked graph. The same walk
-  # as `stack_root`, stopping one condition wider -- an existing but untracked
-  # parent ends the climb too, because a branch with no record of its own is
-  # never drawn and so cannot carry a subtree. `seen` guards a hand-edited
-  # parent cycle (A -> B -> A), which would otherwise loop forever; breaking out
-  # of it renders the cycle as a root instead of hiding it.
+  # last branch whose own parent is absent from the tracked graph. `tree` draws
+  # what this returns, so it stops wherever the next row up would be a branch
+  # `tree` cannot draw.
   def detached_root(branch)
-    seen = Set.new
-    loop do
-      seen.add(branch)
-      parent = parent_of(branch)
-      break if parent.empty? || trunk?(parent)
-      break unless tracked?(parent)
-      break if seen.include?(parent)
-
-      branch = parent
-    end
-    branch
+    climb_to_root(branch, false)
   end
 
   # True when `branch` records a parent that exists as a branch but that the
@@ -1088,24 +1082,45 @@ class StackContext
     branch?(parent)
   end
 
-  # Walk down from `branch` to the root of its stack (whose parent is a trunk or
-  # no longer a branch). Returns the root branch name. Reads this context's own
-  # parent map and branch set, not a `git config`+`git show-ref` per level.
-  # `seen` guards cyclic parent chains (A -> B -> A from hand-edited config) so
-  # we terminate instead of hanging.
+  # Walk down from `branch` to the root of the stack `restack`/`sync` replay.
   #
-  # Deliberately NOT `detached_root`, which stops one condition earlier: what
-  # `restack` wants is the branch whose subtree it must replay, and an untracked
-  # parent is a fine root for that (it is skipped itself, its children are
-  # rebased onto it). What `tree` wants is the topmost branch it can DRAW, and
-  # an untracked branch is never drawn. Same walk, two questions.
+  # This used to climb PAST an existing-but-untracked parent, where
+  # `detached_root` stopped at it, and the two disagreed about the same stack:
+  # with `feat-a` untracked, `tree` drew the stack from `feat-b` while `restack`
+  # announced "stack rooted at feat-a" -- naming a branch its own output never
+  # draws (issue #80). The set of branches replayed was the same either way (an
+  # untracked root records no parent, so `restack_subtree` skips it and rebases
+  # its children onto it regardless), so this only ever moved the name in the
+  # message; it moved it to a branch the user could not see.
+  #
+  # Both walks now stop at an untracked parent, and share one climb. The `true`
+  # is `climb_to_root`'s `require_ref` -- see its stop list for what that adds;
+  # the reason `restack` wants it is that a parent whose ref is gone is nothing
+  # to replay ONTO, while `tree` keeps climbing to draw the row that says so
+  # ("parent missing; run sync").
   def stack_root(branch)
+    climb_to_root(branch, true)
+  end
+
+  # The shared climb behind `stack_root` and `detached_root`: walk up the
+  # recorded parents from `branch` and answer the last branch reached.
+  #
+  # Stops at a trunk (the floor of every stack), at a branch that records no
+  # parent, and at a parent absent from the tracked graph -- plus, when
+  # `require_ref`, at a parent whose ref no longer exists. `seen` guards a
+  # hand-edited parent cycle (A -> B -> A), which would otherwise loop forever;
+  # breaking out of it renders the cycle as a root instead of hiding it.
+  #
+  # `return` is deliberately absent from the loop body, per `would_cycle?`: under
+  # Spinel a `return` out of a `loop do...end` corrupts a later `exit`.
+  def climb_to_root(branch, require_ref)
     seen = Set.new
     loop do
       seen.add(branch)
       parent = parent_of(branch)
       break if parent.empty? || trunk?(parent)
-      break unless branch?(parent)
+      break unless tracked?(parent)
+      break if require_ref && !branch?(parent)
       break if seen.include?(parent)
 
       branch = parent
