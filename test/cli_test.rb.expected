@@ -306,6 +306,23 @@ $ git stack tree
         feat-c (1 commit(s))
 [exit 0]
 
+### restack and sync name the same root tree draws, with an untracked parent
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+      feat-c (1 commit(s))
+[exit 0]
+$ git stack restack
+restacking stack rooted at feat-b
+done.
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-b
+done.
+[exit 0]
+feat-b stackParent after both: feat-a
+feat-c stackParent after both: feat-b
+
 ### a detached stack is drawn once, from its top, whatever its branches are named
 $ git stack tree
   main (trunk)

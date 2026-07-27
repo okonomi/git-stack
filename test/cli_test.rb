@@ -432,6 +432,27 @@ show("feat-b stackParent (still recorded)", "git config --get branch.feat-b.stac
 gsq("track")
 run("tree")
 
+# `tree` and `restack`/`sync` have to agree on where a stack STARTS; they used
+# not to (issue #80 -- `StackContext#stack_root` carries the story). The three
+# commands run in ONE section on purpose: the regression is only visible as a
+# disagreement between their outputs, so they have to sit next to each other in
+# the transcript for a diff to show it. Nothing else here would notice.
+section "restack and sync name the same root tree draws, with an untracked parent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q feat-b")
+run("tree")
+run("restack")
+run("sync")
+# feat-b still rests on feat-a, and sync did not "heal" it onto the trunk: an
+# untracked parent that still EXISTS is not an orphan.
+show("feat-b stackParent after both", "git config --get branch.feat-b.stackParent")
+show("feat-c stackParent after both", "git config --get branch.feat-c.stackParent")
+
 # The root of a detached stack is found by climbing to it, not by scanning for
 # it, so the branch names cannot decide the shape: here the child sorts BEFORE
 # the root it hangs off. Scanning would emit the child as a root of its own and
