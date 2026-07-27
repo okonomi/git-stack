@@ -37,7 +37,7 @@
 # signatures (`paint`, `green`, `set_trunks`, `is_trunk?`, `clear_parent`,
 # `clear_base`, `untrack!`) that had been concrete.
 #
-# Under the pin in effect now (0d0a8651) most of this file is redundant --
+# Under the pin in effect now (77f5094) the METHOD pins remain redundant --
 # inference holds those signatures on its own, and the golden is byte-identical
 # with them removed. They stay anyway, and that is deliberate: a pin is cheap,
 # and being redundant against TODAY'S compiler is not the same as being
@@ -45,6 +45,11 @@
 # instead of failing the golden diff. This file has already learned that once --
 # `rbs/paint.rbs` was deleted on exactly the "inference no longer needs it"
 # reasoning, and the `paint`/`green` pins had to be written again one bump later.
+#
+# The StackContext ivar pins at the bottom are the working exception: they are
+# NOT redundant today. They are what took the golden from 41 untyped to 39, and
+# what made this very bump safe -- on master tip the same source emits 49
+# without them (see the ci.yml note that measures each candidate ref).
 #
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
@@ -76,14 +81,30 @@ end
 # answers `trunk?` itself, so the parameter (always the same list the context
 # was built from) is gone and only the branch names are left to pin.
 #
-# Note that the seed reaches methods but NOT instance variables: `@parents` and
-# `@children` still emit as `Hash[String, untyped]` / `Hash[untyped, untyped]`
-# under this Spinel (they were `Hash[String, String]` before). That widening is
-# exactly what `StackContext#children_of` and `#walk_order` predicted in their
-# comments, and it is why their `.to_s` guards before `.split` are now
-# load-bearing rather than defensive -- removing them costs six more untyped
-# signatures.
+# The three ivar pins below are the seed's other half, and they are what keeps
+# this file's method pins from being fought uphill: `@parents` and `@children`
+# had drifted to `Hash[String, untyped]` / `Hash[untyped, untyped]` on their
+# own, and every reader of a widened `@children` widens with it -- `order`,
+# `order_branches`, `walk_order`, `detached_root(s)`, `effective_parent_of`, and
+# `print_order` / `cmd_tree` one call further out. Pinning the fields is one
+# assertion each instead of eight, and it holds them at the source.
+#
+# They are faithful, and the class comment on StackContext is where they are
+# spelled out: `@parents` maps a branch name to its recorded parent, `@children`
+# a parent to its newline-PACKED child rows, `@ab` a branch to its packed
+# "<behind>\t<ahead>". All String -> String; the packing is exactly what makes
+# that true, which is why those fields are packed Strings and not Arrays.
+#
+# Pinning them also puts `children_of` / `walk_order` back where their comments
+# assume they are: with `@children` concrete, their `.to_s` guards before
+# `.split` are no-ops again (measured: removing both leaves the golden
+# unchanged) rather than the load-bearing re-narrowing they had become. The
+# guards stay anyway, on this file's standing rule -- a pin is cheap, and being
+# redundant against today's compiler is not the same as being unnecessary.
 class StackContext
+  @parents: Hash[String, String]
+  @children: Hash[String, String]
+  @ab: Hash[String, String]
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
