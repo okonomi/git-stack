@@ -195,3 +195,24 @@ jobs:
         run: |
           spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs
           diff -u test/git-stack.rbs.expected /tmp/emitted.rbs
+
+      # The ratchet the SPINEL_REF note states, enforced rather than merely
+      # written down. The golden diff above cannot see the count RISE: the
+      # documented way to land an intended type shift is to regenerate the
+      # golden, and a regenerated file always matches itself. So the ceiling
+      # lives here, in a literal that a regeneration does not touch.
+      #
+      # Lowering RATCHET is an ordinary part of a change that narrows types
+      # (do it in the same commit). Raising it is the move this step exists to
+      # stop being silent -- it stays a deliberate, reviewable line in the diff,
+      # next to the note explaining which widening bought it.
+      - name: Check the untyped ratchet has not risen
+        run: |
+          RATCHET=39
+          count="$(grep -c untyped test/git-stack.rbs.expected)"
+          echo "untyped signatures in the golden: $count (ceiling: $RATCHET)"
+          if [ "$count" -gt "$RATCHET" ]; then
+            echo "type regression: the golden gained $((count - RATCHET)) untyped signature(s)." >&2
+            echo "Find where the widening starts (an ivar or a poly-array receiver) rather than raising RATCHET." >&2
+            exit 1
+          fi

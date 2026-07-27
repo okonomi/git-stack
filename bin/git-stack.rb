@@ -504,8 +504,7 @@ end
 # reads the branch as missing and sync reparents its children onto trunk.
 def existing_branches
   out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
-  refs = out.split("\n").reject { |name| name.empty? }
-  Set.new(refs.map { |name| name.delete_prefix("refs/heads/") })
+  Set.new(unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") })
 end
 
 # Every branch that records `parent` as its parent. Builds a throwaway
@@ -591,6 +590,24 @@ def tab_tail(line)
   line[(tab + 1)..-1]
 end
 
+# The same two readers for the file's OTHER separator. Wherever a list has to
+# survive as a single value -- a Hash value, an ivar, anything Spinel would widen
+# to `untyped` as an `Array[String]` -- it is packed one entry per line, and these
+# are the pair that packs and unpacks it. Callers never spell the separator, the
+# trailing newline, or the empty-line skip themselves.
+#
+# `unpack_lines` also re-introduces the concrete element type: its `split` is an
+# `Array[String]`, which is the receiver the poly-array methods downstream
+# (`map`, `reject`, `sort`, `each_slice`) need. `pack_lines` is its inverse, and
+# answers "" for an empty list -- not "\n" -- so a round trip is a no-op.
+def pack_lines(lines)
+  lines.map { |line| "#{line}\n" }.join("")
+end
+
+def unpack_lines(packed)
+  packed.split("\n").reject { |line| line.empty? }
+end
+
 # How many branches per batched `git for-each-ref` in scan_ahead_behind. A batch
 # emits at most CHUNK rows of CHUNK+1 columns, so its bytes grow as CHUNK^2; 12
 # keeps it ~2 KB worst case, comfortably under git_out's ~4 KB backtick cap.
@@ -605,15 +622,14 @@ AHEAD_BEHIND_CHUNK = 12
 # incidental: `ahead_behind_columns` reads a parent's position here back as its
 # column number, and `ahead_behind_chunk` appends the atoms in the same order.
 def ahead_behind_bases(group)
-  parents = group.split("\n").map { |pl| tab_tail(pl) }.reject { |parent| parent.empty? }.uniq
-  parents.map { |parent| "#{parent}\n" }.join("")
+  pack_lines(unpack_lines(group).map { |pl| tab_tail(pl) }.reject { |parent| parent.empty? }.uniq)
 end
 
 # The `refs/heads/...` argument tail for the batch's for-each-ref: every branch
 # in `group`, shell-quoted and space-joined. Same packed-String idiom as
 # ahead_behind_bases.
 def ahead_behind_refs(group)
-  branches = group.split("\n").map { |pl| tab_head(pl) }.reject { |branch| branch.empty? }
+  branches = unpack_lines(group).map { |pl| tab_head(pl) }.reject { |branch| branch.empty? }
   branches.map { |branch| " refs/heads/#{sh(branch)}" }.join("")
 end
 
@@ -622,14 +638,19 @@ end
 # atoms are appended, so a parent's position in it IS its column number; `group`
 # maps each branch to its parent. Built once per batch so the readback's row loop
 # is a single hash lookup, not two nested scans.
+#
+# `bases` is split raw rather than through `unpack_lines`: `ahead_behind_bases`
+# is its only producer and drops the empties itself, so a blank-line skip here
+# would be dead code claiming otherwise. `ahead_behind_chunk` splits it the same
+# way, which is what keeps a parent's position identical in both.
 def ahead_behind_columns(group, bases)
   parent_col = {}
-  bases.split("\n").reject { |b| b.empty? }.each_with_index do |b, col|
+  bases.split("\n").each_with_index do |b, col|
     parent_col[b] = col
   end
 
   cols = {}
-  group.split("\n").each do |pl|
+  unpack_lines(group).each do |pl|
     branch = tab_head(pl)
     next if branch.empty?
 
@@ -679,7 +700,8 @@ def ahead_behind_chunk(group)
   # `%(refname)` + strip, not `%(refname:short)`, and full `refs/heads/<parent>`
   # in the atom, not the bare name: a same-named tag would otherwise shadow the
   # branch (dropping its counts, or being resolved as the ahead-behind base).
-  atoms = bases.split("\n").reject { |b| b.empty? }.map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
+  # Raw split, matching ahead_behind_columns -- see the note there.
+  atoms = bases.split("\n").map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
   fmt = "%(refname)#{atoms.join("")}"
 
   out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
@@ -693,9 +715,7 @@ end
 # scan_ahead_behind). `ahead_behind_of` unpacks back into a fresh Array[Integer].
 def ahead_behind_index(ab)
   index = {}
-  ab.split("\n").each do |line|
-    next if line.empty?
-
+  unpack_lines(ab).each do |line|
     fields = line.split("\t")
     next if fields.length != 3
 
@@ -777,9 +797,7 @@ class StackContext
     # was built from, and an `Array[String]` parameter is exactly what widens to
     # Spinel's untyped slow path (see rbs/git-stack.rbs).
     @trunks = Set.new(trunks)
-    scan.split("\n").each do |line|
-      next if line.empty?
-
+    unpack_lines(scan).each do |line|
       space = line.index(" ")
       next if space.nil?
 
@@ -882,9 +900,24 @@ class StackContext
 
     # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
     # call's captured output stays well under Spinel's ~4 KB backtick cap.
+    #
+    # THE LOCAL IS LOAD-BEARING. `unpack_lines(pairs).each_slice(...)` -- the
+    # same call without `lines` -- SEGFAULTS the compiled binary once the repo is
+    # big enough to need a second batch: `each_slice` alone among the poly-array
+    # methods fails to root its receiver, so a receiver that is only a temporary
+    # (a method's return value, referenced by nothing) is collected out from
+    # under the iteration as soon as the block allocates -- and this block calls
+    # `git` and builds strings per batch. Binding it to `lines` roots it.
+    #
+    # Measured, not guessed: `each` / `map` / `sort` on the very same temporary
+    # are all safe, and so is `each_slice` on an inline `split(...).reject { }`
+    # chain -- only `each_slice` on an unrooted temporary dies. CRuby is
+    # unaffected, so cli_test.rb cannot see it; test/binary_test.sh's 72-branch
+    # fixture is what caught it and what keeps it caught.
     result = ""
-    pairs.split("\n").reject { |pl| pl.empty? }.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
-      result = "#{result}#{ahead_behind_chunk("#{chunk.join("\n")}\n")}"
+    lines = unpack_lines(pairs)
+    lines.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
+      result = "#{result}#{ahead_behind_chunk(pack_lines(chunk))}"
     end
     result
   end
@@ -904,7 +937,7 @@ class StackContext
     row = @children[branch]
     return [] if row.nil?
 
-    row.to_s.split("\n").reject { |name| name.empty? }.sort
+    unpack_lines(row.to_s).sort
   end
 
   # The whole subtree rooted at `root`, DFS pre-order (each parent before its
@@ -953,9 +986,7 @@ class StackContext
     # `.to_s` before the split for the reason spelled out in `children_of`: it
     # re-narrows a `@children` value Spinel may have widened, keeping the split
     # an `Array[String]`. No-op under the pinned Spinel.
-    row.to_s.split("\n").sort.each do |child|
-      next if child.empty?
-
+    unpack_lines(row.to_s).sort.each do |child|
       acc = walk_order(child, depth + 1, visited, acc)
     end
     acc

@@ -37,9 +37,9 @@
 # signatures (`paint`, `green`, `set_trunks`, `is_trunk?`, `clear_parent`,
 # `clear_base`, `untrack!`) that had been concrete.
 #
-# Under the pin in effect now (77f5094) the METHOD pins remain redundant --
-# inference holds those signatures on its own, and the golden is byte-identical
-# with them removed. They stay anyway, and that is deliberate: a pin is cheap,
+# Under the Spinel pinned now (ci.yml holds the ref; this file deliberately does
+# not repeat it) the METHOD pins remain redundant -- inference holds those
+# signatures on its own, and the golden is byte-identical with them removed. They stay anyway, and that is deliberate: a pin is cheap,
 # and being redundant against TODAY'S compiler is not the same as being
 # unnecessary. It is what stops the next bump from quietly widening a signature
 # instead of failing the golden diff. This file has already learned that once --
@@ -48,8 +48,9 @@
 #
 # The StackContext ivar pins at the bottom are the working exception: they are
 # NOT redundant today. They are what took the golden from 41 untyped to 39, and
-# what made this very bump safe -- on master tip the same source emits 49
-# without them (see the ci.yml note that measures each candidate ref).
+# what made the bump to master tip safe -- without them the same source emits 49
+# there, and 40 with only `@ab` dropped (see the ci.yml note that measures each
+# candidate ref).
 #
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
