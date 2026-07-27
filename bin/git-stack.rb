@@ -483,7 +483,7 @@ def untrack!(branch)
 end
 
 # One scan of git config listing every `branch.<name>.stackParent` entry.
-# StackContext parses it once up front so the tree/restack recursions read
+# StackTopology parses it once up front so tree/restack recursions read
 # children in memory instead of re-spawning `git` per node (O(N^2) otherwise).
 #
 # Through `git_out_full`, not `git_out`: this output grows with the tracked
@@ -507,28 +507,28 @@ def existing_branches
   Set.new(unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") })
 end
 
-# Every branch that records `parent` as its parent. Builds a throwaway
-# StackContext (one config scan, no ahead/behind walk) -- the one-shot path for
-# `up`, distinct from the context `tree`/`restack`/`sync` thread through recursion.
+# Every branch that records `parent` as its parent. Builds a throwaway topology
+# (one config scan, no ahead/behind walk) -- the one-shot path for `up`,
+# distinct from the snapshot `tree` threads through rendering.
 def children_of(parent, trunks)
-  StackContext.build_topology(trunks).children_of(parent)
+  StackSnapshot.build_topology(trunks).children_of(parent)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
 # rule. Every effective-parent path funnels through here -- the single-command
-# `effective_parent` and the in-memory `StackContext#effective_parent_of` -- so
+# `effective_parent` and the snapshot's `effective_parent_of` -- so
 # display, counts, and navigation can't drift (the rule used to sit copied in
 # three spots).
 #
 # It answers ONE HOP: what does this branch sit on. "Where does its stack start"
-# is the other question, and `StackContext#climb_to_root` is that one's single
+# is the other question, and `StackTopology#climb_to_root` is that one's single
 # home -- it stops where this rule does not, at a parent that exists but is
 # tracked nowhere. Two answers were what issue #80 was: `tree` and `restack`
 # each climbed their own way and named different roots for the same stack. If a
 # new traversal needs either question, call the owner rather than re-deriving it.
 #
 # Threading one rule through both worlds pulls the `git`-wrapper family (`sh`,
-# `checkout!`, `branch_exists?`, `ahead_behind`) and `StackContext#branch?` onto
+# `checkout!`, `branch_exists?`, `ahead_behind`) and `StackTopology#branch?` onto
 # Spinel's untyped slow path; the hand-written seed in rbs/ pins them back to
 # concrete types (fed via `--rbs`, checked by the CI golden). See rbs/git-stack.rbs.
 def effective_parent_rule(parent, trunk)
@@ -578,7 +578,7 @@ def tree_name(branch, cur, default_code)
 end
 
 # Readers for the `"<left>\t<right>"` lines that several indexes below are
-# packed as (see StackContext for why packing beats an Array/nested Hash). Every
+# packed as (see StackTopology for why packing beats an Array/nested Hash). Every
 # consumer asks for a side by name, so the separator's position is known only here.
 #
 # A line with no tab answers "" -- which every caller already skips on, so it
@@ -731,57 +731,42 @@ def ahead_behind_index(ab)
   index
 end
 
-# One snapshot of the stack, captured up front and threaded through the tree /
-# restack / sync recursions. It bundles the git state a traversal reads
-# repeatedly, so every lookup is in memory and a whole traversal costs the two or
-# three `git` calls `build` makes up front rather than a subprocess per node:
+# The pure, in-memory topology of a stack forest. Its source of truth is the
+# recorded-parent relation; `@children` is an inverted index built from it.
+#
+# The domain is deliberately broader than a valid tree. Git config may contain
+# a parent whose ref has been deleted, an existing but untracked parent, or a
+# hand-written cycle. Those states remain representable so `tree` can diagnose
+# them and `sync`/`drop` can repair them. Normal mutations preserve the forest
+# invariant by using `validate_new_parent!`.
 #
 #   @parents   branch -> recorded parent           (config scan, trunks dropped)
 #   @branches  the set of existing local branches   (existing_branches)
 #   @children  parent -> "<child>\n<child>\n..."    (`@parents` inverted)
-#   @ab        branch -> "<behind>\t<ahead>"        (ahead_behind_index)
-#   @trunk     the primary trunk a parentless branch falls back to (`trunks[0]`)
 #
-# `@trunk` lets the in-memory traversal resolve a parentless branch through the
-# shared `effective_parent_rule`, so display, counts, and navigation agree.
-#
-# @children and @ab are newline-PACKED Strings, and that is what makes them
+# @children is newline-PACKED Strings, and that is what makes it
 # concrete fields: the `Hash[String, Array[String]]` an array value would force
 # widens to `Hash[String, untyped]` (Spinel has no tag for it). Packed, they are
 # `Hash[String, String]`; callers `.split("\n")` a row back into a fresh
 # `Array[String]`, which is where the concrete element type is (re)introduced.
 #
-# Build with `build` (with ahead/behind counts, for `tree`) or `build_topology`
-# (topology only, for restack/sync, which never render counts).
-class StackContext
-  def initialize
+# Build this class from already-read Git state with `from_scan`; the reader and
+# history-derived display data live in StackSnapshot below.
+class StackTopology
+  def self.from_scan(branches, trunks, scan)
+    topology = new(branches, trunks)
+    topology.load(scan)
+    topology
+  end
+
+  def initialize(branches, trunks)
     @parents = {}
-    @branches = Set.new
-    @trunks = Set.new
+    @branches = branches
+    @trunks = Set.new(trunks)
     @children = {}
-    @ab = {}
-    @trunk = ""
     # Explicit nil so Spinel infers `initialize` as `() -> nil`, not `-> String`
     # from the trailing assignment.
     nil
-  end
-
-  # Full snapshot including ahead/behind counts, for `tree`. The scan is parsed
-  # once (into `@parents`); the ahead/behind walk then reads `@parents` rather
-  # than re-parsing the raw config.
-  def self.build(trunks)
-    ctx = new
-    ctx.load(scan_stack_config, trunks)
-    ctx.load_ahead_behind(trunks[0])
-    ctx
-  end
-
-  # Topology and branch existence only -- no ahead/behind git walk. For
-  # restack/sync (which never render counts) and the one-shot `children_of`.
-  def self.build_topology(trunks)
-    ctx = new
-    ctx.load(scan_stack_config, trunks)
-    ctx
   end
 
   # Parse one `scan_stack_config` string into the parent and child indexes and
@@ -789,21 +774,14 @@ class StackContext
   # variable name, so the stored key is `branch.<name>.stackparent`.
   #
   # A trunk's recorded parent is DROPPED here, which is what makes "trunks are
-  # roots by topology" true of every context rather than a convention `track` and
+  # roots by topology" true of every topology rather than a convention `track` and
   # `parent` merely refuse to break. `branch.<trunk>.stackParent` still exists in
   # the wild -- written before those guards landed, or by hand -- and reading it
   # back would let `restack` rebase a shared trunk onto another trunk (rewriting
   # published history) and make `tree` print the trunk's subtree twice. The
   # single-command `effective_parent` already answers a trunk with itself; this
   # is the same rule for the in-memory traversals.
-  def load(scan, trunks)
-    @branches = existing_branches
-    # Kept as a Set so every graph query below can ask "is this parent a trunk?"
-    # (the walk's floor) from the context itself. That list used to be threaded
-    # back in as a parameter by each of them -- always the same list the context
-    # was built from, and an `Array[String]` parameter is exactly what widens to
-    # Spinel's untyped slow path (see rbs/git-stack.rbs).
-    @trunks = Set.new(trunks)
+  def load(scan)
     unpack_lines(scan).each do |line|
       space = line.index(" ")
       next if space.nil?
@@ -819,7 +797,7 @@ class StackContext
     nil
   end
 
-  # True when `name` is one of this context's trunks -- the in-memory twin of
+  # True when `name` is one of this topology's trunks -- the in-memory twin of
   # the top-level `is_trunk?`, reading the set `load` captured.
   def trunk?(name)
     @trunks.include?(name)
@@ -833,7 +811,7 @@ class StackContext
     !@parents[name].nil?
   end
 
-  # Invert `@parents` into the packed `@children` index, once per context (the
+  # Invert `@parents` into the packed `@children` index, once per topology (the
   # traversal reads children at every step, so it isn't re-derived per call).
   #
   # Rebuilds from empty: rows accumulate with `"#{row}#{name}\n"`, so without the
@@ -851,82 +829,11 @@ class StackContext
     nil
   end
 
-  # Record the fallback trunk, then populate the ahead/behind index from a
-  # batched walk (see `scan_ahead_behind`). `@trunk` is set first because
-  # `scan_ahead_behind` reads it to know where a parentless branch rests.
-  def load_ahead_behind(trunk)
-    @trunk = trunk
-    @ab = ahead_behind_index(scan_ahead_behind)
-    nil
-  end
-
   # The parent recorded for `branch`, or "" when none is recorded -- and always
   # "" for a trunk, whose record `load` drops on the way in.
   def parent_of(branch)
     parent = @parents[branch]
     parent.nil? ? "" : parent
-  end
-
-  # The effective parent of `branch`: its recorded parent, or `@trunk` when none
-  # is recorded. The in-memory entry point to the shared `effective_parent_rule`,
-  # used by `print_tree_row` and `scan_ahead_behind` so display and counts agree.
-  def effective_parent_of(branch)
-    effective_parent_rule(parent_of(branch), @trunk)
-  end
-
-  # Precompute [behind, ahead] for every branch against its effective parent in a
-  # HANDFUL of batched `git for-each-ref` calls, instead of one `git rev-list` per
-  # tree node -- the dominant cost of a large tree once every other lookup was
-  # collapsed to a single `git` call. Reads the `@parents` snapshot, resolving
-  # each branch through the same `effective_parent_of` the tree render uses, so
-  # counts and displayed parent can't disagree.
-  #
-  # The `%(ahead-behind:<base>)` atom reports "<ahead> <behind>" for every listed
-  # ref against <base> in one graph walk. Branches are processed in chunks of
-  # AHEAD_BEHIND_CHUNK (one call each, one atom per distinct parent), which cuts
-  # ~N git calls to ~N/12 AND bounds each call's output under the ~4 KB backtick
-  # cap that a single O(N^2)-output call would blow past. Returns one
-  # `"<branch>\t<behind>\t<ahead>"` line per branch (tabs are safe: refnames have
-  # no control chars), parsed back by `ahead_behind_index` into `@ab`.
-  #
-  # The atom requires git 2.41+; on older git the call fails, a chunk yields
-  # nothing, and `print_tree_row` falls back to per-node `ahead_behind`.
-  def scan_ahead_behind
-    # "<branch>\t<parent>" lines for branches whose effective parent exists. One
-    # packed string, NOT an Array[String] -- whose element reads Spinel widens to
-    # untyped, bleeding into the emitted Set signatures (test/git-stack.rbs.expected).
-    pairs = ""
-    @parents.each do |name, value|
-      next unless @branches.include?(name)
-
-      parent = effective_parent_of(name)
-      next if parent.empty? || !@branches.include?(parent)
-
-      pairs = "#{pairs}#{name}\t#{parent}\n"
-    end
-
-    # One batched `git for-each-ref` per AHEAD_BEHIND_CHUNK branches, so each
-    # call's captured output stays well under Spinel's ~4 KB backtick cap.
-    #
-    # THE LOCAL IS LOAD-BEARING. `unpack_lines(pairs).each_slice(...)` -- the
-    # same call without `lines` -- SEGFAULTS the compiled binary once the repo is
-    # big enough to need a second batch: `each_slice` alone among the poly-array
-    # methods fails to root its receiver, so a receiver that is only a temporary
-    # (a method's return value, referenced by nothing) is collected out from
-    # under the iteration as soon as the block allocates -- and this block calls
-    # `git` and builds strings per batch. Binding it to `lines` roots it.
-    #
-    # Measured, not guessed: `each` / `map` / `sort` on the very same temporary
-    # are all safe, and so is `each_slice` on an inline `split(...).reject { }`
-    # chain -- only `each_slice` on an unrooted temporary dies. CRuby is
-    # unaffected, so cli_test.rb cannot see it; test/binary_test.sh's 72-branch
-    # fixture is what caught it and what keeps it caught.
-    result = ""
-    lines = unpack_lines(pairs)
-    lines.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
-      result = "#{result}#{ahead_behind_chunk(pack_lines(chunk))}"
-    end
-    result
   end
 
   # Sorted list of branches that record `branch` as their parent (empty when
@@ -945,6 +852,13 @@ class StackContext
     return [] if row.nil?
 
     unpack_lines(row.to_s).sort
+  end
+
+  # The names with a recorded parent. This is intentionally the only way the
+  # snapshot layer reads the canonical parent index; it needs the names to add
+  # history-derived ahead/behind data, but not the relation's representation.
+  def tracked_branches
+    @parents.keys
   end
 
   # The whole subtree rooted at `root`, DFS pre-order (each parent before its
@@ -978,6 +892,19 @@ class StackContext
     order(root).split("\n").map { |line| order_line_branch(line) }.reject { |name| name.empty? }
   end
 
+  # Visit a subtree in its canonical pre-order. The packed traversal rows stay
+  # inside StackTopology: callers receive domain values (branch, depth), never
+  # the string transport used to keep Spinel's types concrete.
+  def each_preorder(root)
+    order(root).split("\n").each do |line|
+      branch = order_line_branch(line)
+      next if branch.empty?
+
+      yield branch, order_line_depth(line)
+    end
+    nil
+  end
+
   # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
   # reading children from packed `@children`. `visited` guards cyclic parent
   # chains (A -> B -> A) so the walk terminates, emitting each branch at most
@@ -1002,21 +929,6 @@ class StackContext
   # True when `name` is an existing local branch.
   def branch?(name)
     @branches.include?(name)
-  end
-
-  # [behind, ahead] for `branch` from the index -- a single `Hash` lookup.
-  # Returns the sentinel [-1, -1] when `branch` has no entry (git too old for the
-  # atom, or a context built without counts), signalling `print_tree_row` to fall
-  # back to per-node `ahead_behind`. Rebuilt into a fresh literal so the return
-  # type stays a plain `Array[Integer]`.
-  def ahead_behind_of(branch)
-    packed = @ab[branch]
-    return [-1, -1] if packed.nil?
-
-    fields = packed.split("\t")
-    return [-1, -1] if fields.length != 2
-
-    [fields[0].to_i, fields[1].to_i]
   end
 
   # The extra roots `tree` draws: the top of every tracked stack the walk down
@@ -1082,6 +994,24 @@ class StackContext
     branch?(parent)
   end
 
+  # True when a recorded parent cannot be resolved to a local branch. This is
+  # distinct from an untracked parent: that parent still exists and must remain
+  # a valid edge for restack and drop.
+  def parent_missing?(branch)
+    parent = parent_of(branch)
+    !parent.empty? && !branch?(parent)
+  end
+
+  # The parent a dropped branch's children should reconnect to. A live recorded
+  # parent -- tracked or not -- remains the exact target. A missing or absent
+  # parent cannot be a target, so callers supply the history-resolved trunk.
+  def reconnect_target(branch, fallback_trunk)
+    parent = parent_of(branch)
+    return fallback_trunk if parent.empty? || !branch?(parent)
+
+    parent
+  end
+
   # Walk down from `branch` to the root of the stack `restack`/`sync` replay.
   #
   # This used to climb PAST an existing-but-untracked parent, where
@@ -1130,7 +1060,7 @@ class StackContext
 
   # True if making `new_parent` the parent of `branch` would create a cycle --
   # i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks this
-  # context (like `stack_root`), so the whole walk costs no `git` per level.
+  # topology (like `stack_root`), so the whole walk costs no `git` per level.
   #
   # The hit is recorded in `result` and reported after a `break`, NOT with a
   # `return true` from inside the `loop`. Under Spinel a `return` out of a `loop
@@ -1163,7 +1093,7 @@ class StackContext
 
   # Validate that `candidate` can become the parent of `branch`: it must exist,
   # must not be `branch` itself, and must not create a cycle. `verb` customizes
-  # the cycle-error wording for the calling command. This context answers both
+  # the cycle-error wording for the calling command. This topology answers both
   # the existence check and the whole ancestor walk from its one snapshot.
   def validate_new_parent!(branch, candidate, verb)
     die("branch '#{candidate}' does not exist") unless branch?(candidate)
@@ -1173,16 +1103,87 @@ class StackContext
   end
 end
 
+# A read-only snapshot used by rendering. It composes the pure topology with
+# Git-history facts that are expensive to ask for repeatedly. Commands that
+# only navigate or rewrite the forest receive StackTopology directly.
+class StackSnapshot
+  def self.build_topology(trunks)
+    # Preserve the old snapshot order: config first, then local refs. The scan
+    # still represents one best-effort Git moment, but this avoids changing the
+    # established behavior for a ref/config mutation racing the command.
+    scan = scan_stack_config
+    branches = existing_branches
+    StackTopology.from_scan(branches, trunks, scan)
+  end
+
+  def self.build(trunks)
+    topology = build_topology(trunks)
+    new(topology, trunks[0])
+  end
+
+  def initialize(topology, fallback_trunk)
+    @topology = topology
+    @fallback_trunk = fallback_trunk
+    @ab = ahead_behind_index(scan_ahead_behind)
+    nil
+  end
+
+  def topology
+    @topology
+  end
+
+  # This retains the current display fallback for a parentless row. Topology
+  # itself never invents an edge to a trunk: it represents only recorded edges.
+  def effective_parent_of(branch)
+    effective_parent_rule(@topology.parent_of(branch), @fallback_trunk)
+  end
+
+  # [behind, ahead] from the cached index. The sentinel asks the renderer to
+  # fall back to the compatible per-branch Git query on older Git versions.
+  def ahead_behind_of(branch)
+    packed = @ab[branch]
+    return [-1, -1] if packed.nil?
+
+    fields = packed.split("\t")
+    return [-1, -1] if fields.length != 2
+
+    [fields[0].to_i, fields[1].to_i]
+  end
+
+  # Precompute history status for tracked branches without making history a
+  # property of the topology. The batched protocol is unchanged; keeping the
+  # `lines` local remains required by the compiled Spinel binary.
+  def scan_ahead_behind
+    pairs = ""
+    @topology.tracked_branches.each do |name|
+      next unless @topology.branch?(name)
+
+      parent = effective_parent_of(name)
+      next if parent.empty? || !@topology.branch?(parent)
+
+      pairs = "#{pairs}#{name}\t#{parent}\n"
+    end
+
+    result = ""
+    lines = unpack_lines(pairs)
+    lines.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
+      result = "#{result}#{ahead_behind_chunk(pack_lines(chunk))}"
+    end
+    result
+  end
+end
+
 # Print one tree row for `branch`, indented two spaces per `depth`. One node of
 # the traversal, no recursion: `cmd_tree` drives the order and calls this per
-# line, reading the pre-built `ctx` so the whole tree costs no `git` per node.
-def print_tree_row(branch, depth, cur, ctx)
+# line, reading the pre-built snapshot so the whole tree costs no `git` per node.
+def print_tree_row(branch, depth, cur, snapshot)
   extra = ""
-  parent = ctx.effective_parent_of(branch)
-  if !parent.empty? && ctx.branch?(parent)
+  topology = snapshot.topology
+  parent = snapshot.effective_parent_of(branch)
+  if !parent.empty? && topology.branch?(parent)
     # Counts from the batched `for-each-ref` (see scan_ahead_behind); the
     # sentinel guards the git-too-old case with a per-node fallback.
-    behind, ahead = ctx.ahead_behind_of(branch)
+    behind, ahead = snapshot.ahead_behind_of(branch)
     if behind < 0
       behind, ahead = ahead_behind(parent, branch)
     end
@@ -1194,7 +1195,7 @@ def print_tree_row(branch, depth, cur, ctx)
     # An untracked parent is never drawn, so this row sits at root indent as if
     # it rested on the trunk. Name the parent it actually rests on -- silence
     # here is what made the whole subtree look like it belonged to the trunk.
-    if ctx.untracked_parent?(branch)
+    if topology.untracked_parent?(branch)
       note = yellow("(parent '#{parent}' is untracked)")
       extra = extra.empty? ? note : "#{extra} #{note}"
     end
@@ -1206,19 +1207,15 @@ def print_tree_row(branch, depth, cur, ctx)
   nil
 end
 
-# Print the subtree `ctx.order(root)` produced, offset `base` levels deep.
+# Print the topology subtree, offset `base` levels deep.
 # `tree` calls this once per trunk (base 0, and skipping the depth-0 root, which
 # it prints itself with the trunk styling) and once per detached root (base 1, so
 # a stack the trunks cannot reach renders where a trunk's children would).
-def print_order(root, base, skip_root, cur, ctx)
-  ctx.order(root).split("\n").each do |line|
-    branch = ctx.order_line_branch(line)
-    next if branch.empty?
-
-    depth = ctx.order_line_depth(line)
+def print_order(root, base, skip_root, cur, snapshot)
+  snapshot.topology.each_preorder(root) do |branch, depth|
     next if skip_root && depth == 0
 
-    print_tree_row(branch, depth + base, cur, ctx)
+    print_tree_row(branch, depth + base, cur, snapshot)
   end
   nil
 end
@@ -1282,23 +1279,23 @@ end
 def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
-  # One StackContext captures the whole stack up front -- topology, branches, and
+  # One StackSnapshot captures the whole stack up front -- topology, branches, and
   # every node's counts -- so the loops below read it in memory, no `git` per node.
-  ctx = StackContext.build(trunks)
+  snapshot = StackSnapshot.build(trunks)
 
   # Each trunk is a visual root; its children are the stack roots resting on it.
   # `order(trunk)` includes the trunk itself at depth 0, which we skip here --
   # the trunk row is printed with its own (cyan, "(trunk)") styling.
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
-    print_order(trunk, 0, true, cur, ctx)
+    print_order(trunk, 0, true, cur, snapshot)
   end
 
   # Stacks the trunks cannot reach -- a parent merged and deleted, or untracked
   # while it still had children -- render as extra roots, indented one level
   # (base 1) so they line up with the stack roots that rest on a trunk.
-  ctx.detached_roots.each do |root|
-    print_order(root, 1, false, cur, ctx)
+  snapshot.topology.detached_roots.each do |root|
+    print_order(root, 1, false, cur, snapshot)
   end
 end
 
@@ -1311,7 +1308,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
-  StackContext.build_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
+  StackSnapshot.build_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1324,7 +1321,7 @@ def cmd_track(args)
   # No parent named: the branch already sits on a trunk, so track it there --
   # the trunk its history actually rests on, not just the primary one.
   parent = containing_trunk(branch, trunks) if parent.empty?
-  StackContext.build_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
+  StackSnapshot.build_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -1433,7 +1430,7 @@ def replay_onto!(branch, parent, verb)
 end
 
 # Rebase the whole stack rooted at `root`, each branch onto its parent, in
-# `ctx.order_branches(root)` order (each parent before its children). That order,
+# `topology.order_branches(root)` order (each parent before its children). That order,
 # and the cycle guard, are fixed up front, so this is a flat loop.
 #
 # `verb` is the subcommand to name on conflict, passed in rather than derived
@@ -1444,28 +1441,28 @@ end
 # onto a trunk. When `heal_orphans` is true (`sync`), a branch whose recorded
 # parent no longer exists is reparented onto the trunk it rests on first; when
 # false (`restack`) it is left untouched. Reparenting rewrites config but not
-# `ctx`, and an orphan roots its own subtree, so the pre-computed order still holds.
+# `topology`, and an orphan roots its own subtree, so the pre-computed order still holds.
 #
 # The heal takes the whole trunk LIST, not one trunk chosen by the caller: which
 # trunk an orphan belongs to is per-branch (`containing_trunk`), and getting it
 # wrong here doesn't just mis-record a parent -- the replay below then rebases the
 # branch onto the wrong trunk, dropping the commits of the one it was built on.
 #
-# `ctx` is built with `build_topology` (no counts). Safe to reuse across the
+# `topology` is built with `build_topology` (no counts). Safe to reuse across the
 # traversal because neither restack nor sync creates or deletes branch refs
 # mid-walk (sync only rewrites config; rebase updates history in place).
-def restack_subtree(root, trunks, heal_orphans, verb, ctx)
-  ctx.order_branches(root).each do |branch|
-    parent = ctx.parent_of(branch)
+def restack_subtree(root, trunks, heal_orphans, verb, topology)
+  topology.order_branches(root).each do |branch|
+    parent = topology.parent_of(branch)
 
-    if heal_orphans && !parent.empty? && !ctx.branch?(parent)
+    if heal_orphans && topology.parent_missing?(branch)
       trunk = containing_trunk(branch, trunks)
       info "'#{branch}': parent '#{parent}' no longer exists; reparenting onto trunk '#{trunk}'"
       die("failed to reparent '#{branch}'") unless set_parent(branch, trunk)
       parent = trunk
     end
 
-    if !parent.empty? && ctx.branch?(parent)
+    if !parent.empty? && topology.branch?(parent)
       behind, ahead = ahead_behind(parent, branch)
       # `behind == 0`: already on the parent's tip, nothing to move; still falls
       # through to the re-anchor below (which back-fills a missing base).
@@ -1502,11 +1499,11 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   trunks = trunk_branches
   # Built before the root walk, which reads topology out of it, not a subprocess
   # per level.
-  ctx = StackContext.build_topology(trunks)
-  root = ctx.stack_root(original)
+  topology = StackSnapshot.build_topology(trunks)
+  root = topology.stack_root(original)
 
   info "#{gerund} stack rooted at #{cyan(root)}"
-  restack_subtree(root, trunks, heal_orphans, verb, ctx)
+  restack_subtree(root, trunks, heal_orphans, verb, topology)
 
   unless git_ok("checkout #{sh(original)}")
     die("#{verb} completed, but returning to '#{original}' failed;\n" \
@@ -1544,36 +1541,34 @@ def cmd_drop(args)
   # One snapshot answers every read the splice needs -- exists?, parent,
   # children -- from a single scan. NOT reused past the rewrites below, which
   # invalidate it.
-  ctx = StackContext.build_topology(trunks)
-  die("branch '#{branch}' does not exist") unless ctx.branch?(branch)
+  topology = StackSnapshot.build_topology(trunks)
+  die("branch '#{branch}' does not exist") unless topology.branch?(branch)
 
   original = current_branch_or_empty
 
-  # Where the children reconnect: the dropped branch's own parent, or -- when it
-  # was untracked and so sat directly on a trunk -- the trunk it rested on. This
-  # is `effective_parent_rule` applied by hand, the ONE place that doesn't call
-  # it, so a change to that rule must be mirrored here. Routing it through the
-  # helper was measured to widen this file's whole reparent chain to Spinel's
-  # untyped slow path (see effective_parent_rule); the rule is also trunk-blind,
-  # while the children need the trunk their history is actually built on.
-  parent = ctx.parent_of(branch)
+  # StackTopology owns the reconnect rule. It preserves a live untracked parent,
+  # but a missing or absent parent needs the trunk this branch's history rests on.
+  parent = topology.parent_of(branch)
   # A recorded parent that no longer exists is no reconnect target either, and
   # the restack below doesn't heal orphans -- writing that dead name onto each
   # child would turn one orphan into N, silently. `validate_new_parent!` would
   # die on it; this is the one reparent site whose parent is read rather than
   # typed by the user, so a missing one heals onto trunk, as `sync` does. Same
   # guard as `restack_subtree`'s heal, minus its `heal_orphans` opt-in.
-  if !parent.empty? && !ctx.branch?(parent)
+  if topology.parent_missing?(branch)
     trunk = containing_trunk(branch, trunks)
     info "'#{branch}': parent '#{parent}' no longer exists; reconnecting children onto trunk '#{trunk}'"
-    parent = trunk
+  elsif parent.empty?
+    trunk = containing_trunk(branch, trunks)
+  else
+    trunk = ""
   end
-  parent = containing_trunk(branch, trunks) if parent.empty?
+  parent = topology.reconnect_target(branch, trunk)
 
   # Capture children BEFORE rewriting config. Each is reparented as `parent`/
   # `track` do it (set_parent + record_reparent_base), re-anchoring stackBase to
   # merge-base(child, parent) so `restack`'s `--onto` replays from the right point.
-  moved = ctx.children_of(branch)
+  moved = topology.children_of(branch)
   moved.each do |child|
     reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
   end
@@ -1584,10 +1579,10 @@ def cmd_drop(args)
 
   # Restack each moved subtree onto its new parent. Rebuild the topology first so
   # it reflects the config rewrites above.
-  ctx = StackContext.build_topology(trunks)
+  topology = StackSnapshot.build_topology(trunks)
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
-    restack_subtree(child, trunks, false, "restack", ctx)
+    restack_subtree(child, trunks, false, "restack", topology)
   end
 
   if delete

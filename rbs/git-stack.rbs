@@ -6,7 +6,7 @@
 #
 # The single shared `effective_parent_rule` (bin/git-stack.rb) threads one
 # parent-resolution rule through both the subprocess wrappers and the
-# StackContext traversal. That unifies these methods' branch-name parameters
+# StackSnapshot rendering. That unifies these methods' branch-name parameters
 # with the rule's result and, left to inference alone, widens them to Spinel's
 # untyped slow path. Each takes a branch (or parent) name -- always a String --
 # so pinning them here is a faithful assertion, not a fib to the compiler; it
@@ -25,11 +25,9 @@
 # widens the same way `effective_parent` does. Both are faithful: a branch name
 # and the trunk list, String and Array[String] at every call site.
 #
-# The `StackContext` builders and the top-level `children_of` are the newest
-# members of the same family: a context is now built FROM the trunk list (it
-# drops a trunk's recorded parent as it parses the config), so the list crosses
-# `build` / `build_topology` / `load` and, uninferred, widens the same way --
-# taking `@trunk`, `effective_parent_rule`, and `effective_parent_of` with it.
+# StackTopology is built from an already-read config scan and the current ref
+# set. StackSnapshot owns the Git-reading factory and the history-derived
+# ahead/behind index, keeping the topology itself pure.
 #
 # Everything below the first four entries was added when Spinel moved to
 # 0b8527df4b87, whose inference propagated that same unification further than
@@ -46,7 +44,7 @@
 # `rbs/paint.rbs` was deleted on exactly the "inference no longer needs it"
 # reasoning, and the `paint`/`green` pins had to be written again one bump later.
 #
-# The StackContext ivar pins at the bottom are the working exception: they are
+# The StackTopology / StackSnapshot ivar pins at the bottom are the working exception: they are
 # NOT redundant today. They are what took the golden from 41 untyped to 39, and
 # what made the bump to master tip safe -- without them the same source emits 49
 # there, and 40 with only `@ab` dropped (see the ci.yml note that measures each
@@ -70,16 +68,16 @@ class Object
   def clear_parent: (String) -> bool
   def clear_base: (String) -> bool
   def untrack!: (String) -> nil
-  def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def children_of: (String, Array[String]) -> Array[String]
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
 # queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
-# becoming methods on the context relocated their pins here rather than retiring
+# becoming methods on the topology relocated their pins here rather than retiring
 # them. They used to take the trunk LIST besides, which widened exactly as
-# `effective_parent`'s does; the context now keeps its trunks in a Set and
-# answers `trunk?` itself, so the parameter (always the same list the context
+# `effective_parent`'s does; the topology now keeps its trunks in a Set and
+# answers `trunk?` itself, so the parameter (always the same list the topology
 # was built from) is gone and only the branch names are left to pin.
 #
 # The three ivar pins below are the seed's other half, and they are what keeps
@@ -90,11 +88,9 @@ end
 # `print_order` / `cmd_tree` one call further out. Pinning the fields is one
 # assertion each instead of eight, and it holds them at the source.
 #
-# They are faithful, and the class comment on StackContext is where they are
-# spelled out: `@parents` maps a branch name to its recorded parent, `@children`
-# a parent to its newline-PACKED child rows, `@ab` a branch to its packed
-# "<behind>\t<ahead>". All String -> String; the packing is exactly what makes
-# that true, which is why those fields are packed Strings and not Arrays.
+# They are faithful: StackTopology's `@parents` maps a branch name to its
+# recorded parent and `@children` a parent to its newline-PACKED child rows.
+# StackSnapshot owns `@ab`, mapping a branch to packed "<behind>\t<ahead>".
 #
 # Pinning them also puts `children_of` / `walk_order` back where their comments
 # assume they are: with `@children` concrete, their `.to_s` guards before
@@ -102,17 +98,28 @@ end
 # unchanged) rather than the load-bearing re-narrowing they had become. The
 # guards stay anyway, on this file's standing rule -- a pin is cheap, and being
 # redundant against today's compiler is not the same as being unnecessary.
-class StackContext
+class StackTopology
   @parents: Hash[String, String]
   @children: Hash[String, String]
-  @ab: Hash[String, String]
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def tracked_branches: () -> Array[String]
+  def parent_missing?: (String) -> bool
+  def reconnect_target: (String, String) -> String
   def stack_root: (String) -> String
   def would_cycle?: (String, String) -> bool
   def validate_new_parent!: (String, String, String) -> nil
-  def load: (String, Array[String]) -> nil
-  def self.build: (Array[String]) -> StackContext
-  def self.build_topology: (Array[String]) -> StackContext
+  def load: (String) -> nil
+  def self.from_scan: (Set, Array[String], String) -> StackTopology
+end
+
+class StackSnapshot
+  @topology: StackTopology
+  @ab: Hash[String, String]
+  def topology: () -> StackTopology
+  def effective_parent_of: (String) -> String
+  def ahead_behind_of: (String) -> Array[Integer]
+  def self.build: (Array[String]) -> StackSnapshot
+  def self.build_topology: (Array[String]) -> StackTopology
 end
