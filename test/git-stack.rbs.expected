@@ -148,10 +148,10 @@ class Set
 end
 
 class StackContext
-  @parents: Hash[String, untyped]
+  @parents: Hash[String, String]
   @branches: Set
   @trunks: Set
-  @children: Hash[untyped, untyped]
+  @children: Hash[String, String]
   @ab: Hash[String, String]
   @trunk: String
   def initialize: () -> nil

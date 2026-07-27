@@ -893,12 +893,13 @@ class StackContext
   # none). Reads one packed `@children` row and splits it into a concrete
   # `Array[String]`; `.sort` orders siblings and pins the element type.
   #
-  # The `.to_s` guards the split: newer Spinel can widen `@children` to
-  # `Hash[String, untyped]`, whose value `.split`s to `unknown`, and iterating
-  # `unknown` is a baked-in `NoMethodError` -- all the more so for the
+  # The `.to_s` guards the split: Spinel has widened `@children` to
+  # `Hash[String, untyped]` before, whose value `.split`s to `unknown`, and
+  # iterating `unknown` is a baked-in `NoMethodError` -- all the more so for the
   # `reject`/`sort` below, which Spinel resolves only on a concrete receiver.
-  # `.to_s` re-narrows to a String so the split stays `Array[String]`; a no-op
-  # under the pinned Spinel.
+  # `.to_s` re-narrows to a String so the split stays `Array[String]`. A no-op
+  # under the pinned Spinel, whose seed now pins `@children` itself (see
+  # rbs/git-stack.rbs); kept as the guard for the bump that widens it again.
   def children_of(branch)
     row = @children[branch]
     return [] if row.nil?
