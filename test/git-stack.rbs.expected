@@ -54,8 +54,8 @@ class Object
   def ahead_behind_readback: (String, Hash[String, Integer]) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
-  def print_tree_row: (String, Integer, String, StackContext) -> nil
-  def print_order: (String, Integer, bool, String, StackContext) -> nil
+  def print_tree_row: (String, Integer, String, StackSnapshot) -> nil
+  def print_order: (String, Integer, bool, String, StackSnapshot) -> nil
   def arg0: (Array[String]) -> String
   def has_flag?: (Array[String], String) -> bool
   def first_operand: (Array[String]) -> String
@@ -69,7 +69,7 @@ class Object
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
   def replay_onto!: (String, String, String) -> nil
-  def restack_subtree: (String, Array[String], bool, String, StackContext) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
@@ -149,38 +149,52 @@ class Set
   def self.check_enum: (untyped) -> untyped # spinel: widened to untyped (slow path)
 end
 
-class StackContext
+class StackTopology
   @parents: Hash[String, String]
   @branches: Set
   @trunks: Set
   @children: Hash[String, String]
-  @ab: Hash[String, String]
-  @trunk: String
-  def initialize: () -> nil
-  def load: (String, Array[String]) -> nil
+  def initialize: (Set, Array[String]) -> nil
+  def load: (String) -> nil
   def trunk?: (String) -> bool
   def tracked?: (String) -> bool
   def index_children: () -> nil
-  def load_ahead_behind: (String) -> nil
   def parent_of: (String) -> String
-  def effective_parent_of: (String) -> String
-  def scan_ahead_behind: () -> String
   def children_of: (String) -> Array[String]
+  def tracked_branches: () -> Array[String]
   def order: (String) -> String
   def order_line_branch: (String) -> String
   def order_line_depth: (String) -> Integer
   def order_branches: (String) -> Array[String]
+  def each_preorder: (String) -> nil
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
-  def ahead_behind_of: (String) -> Array[Integer]
   def detached_roots: () -> Array[String]
   def detached_root: (String) -> String
   def untracked_parent?: (String) -> bool
+  def parent_missing?: (String) -> bool
+  def reconnect_needs_trunk?: (String) -> bool
+  def reconnect_target: (String, String) -> String
   def stack_root: (String) -> String
   def climb_to_root: (String, bool) -> String
   def would_cycle?: (String, String) -> bool
   def validate_new_parent!: (String, String, String) -> nil
-  def self.build: (Array[String]) -> StackContext
-  def self.build_topology: (Array[String]) -> StackContext
+  def self.from_scan: (Set, Array[String], String) -> StackTopology
+end
+
+class StackRepository
+  def self.load_topology: (Array[String]) -> StackTopology
+  def self.load_snapshot: (Array[String]) -> StackSnapshot
+end
+
+class StackSnapshot
+  @topology: StackTopology
+  @fallback_trunk: String
+  @ab: Hash[String, String]
+  def initialize: (StackTopology, String) -> nil
+  def topology: () -> StackTopology
+  def effective_parent_of: (String) -> String
+  def ahead_behind_of: (String) -> Array[Integer]
+  def scan_ahead_behind: () -> String
 end
 

@@ -37,9 +37,9 @@ jobs:
       # disagree (a comment alone did not hold -- they have silently drifted
       # across bumps before).
       #
-      # This one IS master tip, which the two bumps before it were not: tip kept
+      # 77f5094 was master tip, which the two bumps before it were not: tip kept
       # measuring worse. 1f747d86 took the emitted golden from 42 untyped to 48,
-      # and 77f5094 (this ref) measured 49 on its own -- both times with
+      # and 77f5094 itself measured 49 on its own -- both times with
       # print_order / cmd_tree / effective_parent_of / order / walk_order /
       # detached_roots widening to the slow path behind @children / @ab dropping
       # to bare untyped. What changed is the fix rather than the compiler: the
@@ -49,12 +49,17 @@ jobs:
       # 41 that stood before -- and emits it byte-identically under the old ref,
       # so the golden is not tied to either.
       #
+      # 4803e38e (this ref) is master tip again, and is the quiet kind of bump
+      # the ivar pin was supposed to make possible: it emits the golden
+      # byte-identically to 77f5094 for this source, so the count holds at 39
+      # rather than moving at all. Nothing widened, nothing narrowed.
+      #
       # The procedure is unchanged, and it is what caught this: before bumping,
       # re-run the golden check against the candidate. 39 today. The number is a
       # ratchet, not a constant: it may fall, never rise. A candidate that raises
       # it is not automatically disqualified -- find where the widening starts,
       # as the ivar pin did -- but it does not land until the count is back down.
-      SPINEL_REF: 77f5094fc4247726442347272dcaef2e1a4f4c80
+      SPINEL_REF: 4803e38ea7f0911de74d92593641163a81484c7e
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
     steps:
@@ -163,7 +168,7 @@ jobs:
       #
       # `tree` runs against the multi-sibling stack on purpose: sibling
       # ordering is the only path that reaches the `.sort` calls in
-      # StackContext#children_of / #walk_order, where an unsupported runtime
+      # StackTopology#children_of / #walk_order, where an unsupported runtime
       # method would otherwise slip through unseen.
       - name: Run compiled binary against fixture
         run: |

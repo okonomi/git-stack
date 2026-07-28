@@ -433,7 +433,7 @@ gsq("track")
 run("tree")
 
 # `tree` and `restack`/`sync` have to agree on where a stack STARTS; they used
-# not to (issue #80 -- `StackContext#stack_root` carries the story). The three
+# not to (issue #80 -- `StackTopology#stack_root` carries the story). The three
 # commands run in ONE section on purpose: the regression is only visible as a
 # disagreement between their outputs, so they have to sit next to each other in
 # the transcript for a diff to show it. Nothing else here would notice.

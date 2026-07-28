@@ -17,7 +17,7 @@
 #
 # The `tree` command is exercised against the multiple-sibling stack on
 # purpose: sibling ordering is the only path that reaches the `.sort` calls in
-# `StackContext#children_of` and `#walk_order`, which is exactly where an
+# `StackTopology#children_of` and `#walk_order`, which is exactly where an
 # unsupported runtime method would hide.
 #
 # The large fixture below carries the other half of that job, and has already
