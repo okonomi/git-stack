@@ -625,6 +625,22 @@ error: already at the bottom of the stack
 [exit 1]
 HEAD: main
 
+### parent and down name the untracked parent they walk to
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+      feat-c (1 commit(s))
+[exit 0]
+$ git stack parent
+feat-a
+(parent 'feat-a' is untracked)
+[exit 0]
+$ git stack down
+(parent 'feat-a' is untracked)
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+
 ### parent notes a parent whose ref is gone
 $ git stack tree
   main (trunk)

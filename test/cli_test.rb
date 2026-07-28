@@ -903,6 +903,26 @@ show("HEAD", "git branch --show-current")
 run("down")
 show("HEAD", "git branch --show-current")
 
+# The round trip above cannot exercise the untracked note on `parent`/`down` by
+# itself: `up` still errors (Task 3 has not landed), so HEAD never leaves `main`
+# and those two calls only ever hit the trunk-is-its-own-parent case. Reach
+# feat-b with a plain `git checkout` instead of `up`, so this proof does not
+# wait on Task 3 -- and put `tree` right next to `parent` so the transcript
+# shows them printing the SAME words for the SAME branch, from the SAME
+# parent_note (issue #85).
+section "parent and down name the untracked parent they walk to"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q feat-b")
+run("tree")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+
 # The other half of the same sentence-sharing: a parent whose ref is gone. `tree`
 # has always printed the sync hint for it; `parent` printed the dead name with no
 # hint at all. Both rows come from parent_note now, so they are the same words.
