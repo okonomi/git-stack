@@ -995,6 +995,72 @@ class StackTopology
     roots
   end
 
+  # Every branch `sync` has to heal, wherever in the forest it sits: one that
+  # exists but whose recorded parent no longer resolves to a ref -- the classic
+  # "parent squash-merged and deleted", which `tree` flags with "run sync".
+  #
+  # They are ROOTS in the sense `rebase_roots` below needs: nothing above an
+  # orphan can be walked down to it (its parent is gone), so the subtree it heads
+  # is reachable only by starting AT it. That is what made `sync` narrower
+  # than the hint `tree` prints: `sync` walked one stack, the one `stack_root`
+  # found from the current branch, so an orphan anywhere else in the repository
+  # was told about but never repaired -- healing it required guessing that you
+  # had to check out the orphaned subtree first, which neither the hint nor
+  # sync's own "done." ever said (issue #55).
+  #
+  # Only branches that EXIST are answered. A recorded parent whose own ref is
+  # gone leaves a phantom node in `@parents` (config outlives the branch when
+  # the ref is deleted without `git branch -d`, which prunes `branch.<name>.*`),
+  # and "healing" one would write a parent onto a name no ref answers to. Its
+  # real children are orphans in their own right -- their parent is exactly that
+  # missing name -- so they are each answered here instead, and nothing is lost
+  # by skipping the phantom itself.
+  #
+  # Not to be confused with `detached_roots` above, which answers the rows `tree`
+  # DRAWS as extra roots -- a wider set (an untracked-but-live parent detaches a
+  # stack without orphaning it) reached by climbing rather than by testing each
+  # branch where it sits. This one is the repair list, so it names the branches
+  # that are actually broken, each exactly where it stands.
+  #
+  # Sorted for the reason `detached_roots` sorts, and safe on `.keys` for the
+  # reason spelled out there.
+  def orphan_roots
+    @parents.keys.sort.select { |name| branch?(name) && parent_missing?(name) }
+  end
+
+  # The roots one rebase pass must start from to cover `root`'s own stack AND
+  # every orphaned stack in the repository -- `sync`'s scope stated as a list,
+  # rather than a second sweep run after the first walk finishes. `restack` asks
+  # for no such thing: it passes `[root]` itself, so the difference between the
+  # two commands stays one expression at one call site.
+  #
+  # An orphan already inside an earlier root's subtree is dropped, which is what
+  # keeps a stack from being replayed twice. That is not a rare case in either
+  # direction: `stack_root` stops AT an orphan when you are standing inside its
+  # subtree (its `require_ref`), so `root` is frequently an orphan itself; and a
+  # phantom node -- config outliving the ref -- can carry a live orphan below it,
+  # so one root's subtree really can hold another's.
+  #
+  # Same "emit a stack once, then mark its whole subtree covered" idiom as
+  # `detached_roots`, over a different candidate list: that one answers the roots
+  # `tree` DRAWS, this one the roots a rebase REPLAYS. The orphan test comes
+  # first so a repository with no orphans -- every repository, most days -- pays
+  # a hash scan and not one walk.
+  def rebase_roots(root)
+    orphans = orphan_roots
+    return [root] if orphans.empty?
+
+    roots = [root]
+    covered = Set.new(order_branches(root))
+    orphans.each do |orphan|
+      next if covered.include?(orphan)
+
+      roots << orphan
+      covered.merge(order_branches(orphan))
+    end
+    roots
+  end
+
   # Climb from `branch` to the top of the stack the trunk walk cannot reach: the
   # last branch whose own parent is absent from the tracked graph. `tree` draws
   # what this returns, so it stops wherever the next row up would be a branch
@@ -1526,23 +1592,43 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology)
   nil
 end
 
-# The shared body of `restack` and `sync`: restack the current branch's stack,
-# then return to it. The two are the same walk and differ only in whether a
-# branch whose parent was deleted is healed onto trunk first -- `heal_orphans`.
+# The shared body of `restack` and `sync`: replay each stack so every branch
+# sits on its parent, then return to the branch the command was run from. The
+# two differ in the two ways `heal_orphans` carries -- whether a branch whose
+# parent was deleted is healed onto trunk first, and how much of the forest is
+# in scope. `restack` replays the stack it was run in and nothing else; reaching
+# outside it would rebase branches the user never named. `sync` also takes the
+# orphaned stacks that one cannot reach, because `tree` prints "run `git stack
+# sync`" beside every orphan it draws, wherever it is run -- and from `main` the
+# command it recommended used to answer "done." and repair nothing, the missing
+# precondition (stand inside the orphaned subtree) appearing in neither output
+# (issue #55).
+#
+# Only orphans widen the scope, never the other detached roots `tree` draws: a
+# parent that is untracked but still EXISTS is not broken, `restack` rebases
+# onto it, and `tree` says so in its own words ("(parent 'x' is untracked)")
+# rather than sending the user here.
 #
 # `verb`/`gerund` are the calling command's own name, passed in rather than
 # derived from `heal_orphans`, so each command states its wording once (see the
-# same separation in `restack_subtree`).
+# same separation in `restack_subtree`). One `info` line serves every root: an
+# orphan needs no special wording here, since the heal announces itself per
+# branch, naming the parent that went missing.
 def run_stack_rebase(heal_orphans, verb, gerund)
   original = current_branch
   trunks = trunk_branches
   # Built before the root walk, which reads topology out of it, not a subprocess
-  # per level.
+  # per level. It stays the pre-heal picture throughout, reused for the reason
+  # `restack_subtree` documents: the heal rewrites config, not the in-memory
+  # graph, so every root below is planned from one consistent snapshot.
   topology = StackRepository.load_topology(trunks)
   root = topology.stack_root(original)
+  roots = heal_orphans ? topology.rebase_roots(root) : [root]
 
-  info "#{gerund} stack rooted at #{cyan(root)}"
-  restack_subtree(root, trunks, heal_orphans, verb, topology)
+  roots.each do |stack|
+    info "#{gerund} stack rooted at #{cyan(stack)}"
+    restack_subtree(stack, trunks, heal_orphans, verb, topology)
+  end
 
   unless git_ok("checkout #{sh(original)}")
     die("#{verb} completed, but returning to '#{original}' failed;\n" \

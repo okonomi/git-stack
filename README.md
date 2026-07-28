@@ -137,7 +137,7 @@ only when there is nothing to detect.
 | `git stack untrack`       | Stop tracking the current branch in a stack.                    |
 | `git stack drop [branch]` | Splice `[branch]` (or the current branch) out of the stack, reconnecting its children to its parent. (`--delete` also removes the branch) |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
-| `git stack sync`          | Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. |
+| `git stack sync`          | Restack the current stack, and reparent every branch whose parent was deleted (e.g. merged via a PR) onto trunk — wherever in the repository it sits. |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 
 ## Walkthrough
@@ -202,9 +202,12 @@ after the fact:
 git checkout main && git pull
 git branch -d feature-a         # merged and deleted first
 
-git checkout feature-b
 git stack sync                  # reparents the orphaned feature-b onto main
 ```
+
+It heals every orphan in the repository, not just the stack you happen to be
+standing in — so the `sync` `git stack tree` recommends beside an orphaned
+branch repairs it from wherever you run it, no checkout first.
 
 `git stack tree` flags branches that have drifted from their parent:
 

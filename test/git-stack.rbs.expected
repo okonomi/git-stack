@@ -169,6 +169,8 @@ class StackTopology
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
   def detached_roots: () -> Array[String]
+  def orphan_roots: () -> Array[String]
+  def rebase_roots: (String) -> Array[String]
   def detached_root: (String) -> String
   def untracked_parent?: (String) -> bool
   def parent_missing?: (String) -> bool

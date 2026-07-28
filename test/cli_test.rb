@@ -712,6 +712,61 @@ run("tree")
 gsq("sync")
 run("tree")
 
+# `tree` prints "run `git stack sync`" beside every orphan it draws, from
+# wherever it is run -- so sync has to be able to repair every one of them from
+# wherever IT is run. It used to walk only the stack holding the current branch:
+# standing on `main`, the command tree had just recommended answered "done." and
+# changed nothing, and the missing precondition (be inside the orphaned subtree)
+# appeared in neither output (issue #55). The two commands run in one section
+# because the regression is exactly a disagreement between them.
+#
+# other-b is here to be left alone: it is detached from the trunk walk too, but
+# its parent still exists and is merely untracked, so it is no orphan and sync
+# has no business rebasing it.
+section "sync heals an orphan in another stack when run from the trunk"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+gsq("create other-a"); commit("o.txt", "o1")
+gsq("create other-b"); commit("p.txt", "p1")
+setup("git checkout -q other-a")
+gsq("untrack")
+# merge feat-a into main and delete it, as a merged PR would, then run sync from
+# the trunk -- not from the orphaned subtree
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+run("tree")
+run("sync")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("feat-b behind main", "git rev-list --count feat-b..main")
+show("other-b stackParent (untouched)", "git config --get branch.other-b.stackParent")
+show("HEAD", "git branch --show-current")
+run("tree")
+
+# Every orphan in the repository is healed, not just the first one found, and
+# the sweep runs even when the current branch is itself inside an orphaned
+# stack: feat-b is the root of the walk sync starts with, so it must not be
+# replayed a second time by the sweep that repairs other-b.
+section "sync heals every orphaned stack in one pass, without repeating its own"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+gsq("create other-a"); commit("o.txt", "o1")
+gsq("create other-b"); commit("p.txt", "p1")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git merge -q --no-edit other-a")
+setup("git branch -d feat-a")
+setup("git branch -d other-a")
+setup("git checkout -q feat-b")
+run("sync")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+show("other-b stackParent", "git config --get branch.other-b.stackParent")
+show("HEAD", "git branch --show-current")
+
 # The reason `restack` uses `git rebase --onto <parent> <stackBase>` instead of a
 # plain `git rebase <parent>`: when a parent is squash-merged into trunk and
 # deleted, its several commits become ONE new commit whose patch-id matches none
