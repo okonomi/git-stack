@@ -1277,6 +1277,26 @@ class StackSnapshot
   end
 end
 
+# The note printed beside a branch whose recorded parent is not a normal tracked
+# edge -- "" when it is one. This is the SINGLE home of these two sentences.
+#
+# `tree` used to own them inline, and `parent`/`down` said nothing at all: `down`
+# checked out a branch `tree` never drew, and `parent` printed its name with no
+# hint that the stack above it renders somewhere else (issue #85). They now print
+# THIS, not a copy of it, so the two commands cannot drift into describing the
+# same branch differently.
+#
+# The two cases are exclusive by construction, so the order of the tests below
+# carries no meaning: `untracked_parent?` requires the parent's ref to EXIST,
+# `parent_missing?` requires it not to.
+def parent_note(branch, topology)
+  parent = topology.parent_of(branch)
+  return yellow("(parent '#{parent}' is untracked)") if topology.untracked_parent?(branch)
+  return yellow("(parent '#{parent}' missing; run `#{PROG} sync`)") if topology.parent_missing?(branch)
+
+  ""
+end
+
 # Print one tree row for `branch`, indented two spaces per `depth`. One node of
 # the traversal, no recursion: `cmd_tree` drives the order and calls this per
 # line, reading the pre-built snapshot so the whole tree costs no `git` per node.
@@ -1296,15 +1316,16 @@ def print_tree_row(branch, depth, cur, snapshot)
     elsif ahead > 0
       extra = dim("(#{ahead} commit(s))")
     end
-    # An untracked parent is never drawn, so this row sits at root indent as if
-    # it rested on the trunk. Name the parent it actually rests on -- silence
-    # here is what made the whole subtree look like it belonged to the trunk.
-    if topology.untracked_parent?(branch)
-      note = yellow("(parent '#{parent}' is untracked)")
-      extra = extra.empty? ? note : "#{extra} #{note}"
-    end
-  elsif !parent.empty?
-    extra = yellow("(parent '#{parent}' missing; run `#{PROG} sync`)")
+  end
+
+  # An untracked parent is never drawn, so this row sits at root indent as if it
+  # rested on the trunk. Name the parent it actually rests on -- silence here is
+  # what made the whole subtree look like it belonged to the trunk. A parent
+  # whose ref is gone gets the sync hint from the same place, which is what keeps
+  # this row and `git stack parent` from saying different things (see parent_note).
+  note = parent_note(branch, topology)
+  unless note.empty?
+    extra = extra.empty? ? note : "#{extra} #{note}"
   end
 
   puts "#{"  " * depth}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"

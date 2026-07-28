@@ -49,6 +49,13 @@
 # there, and 40 with only `@ab` dropped (see the ci.yml note that measures each
 # candidate ref).
 #
+# `parent_note` and `untracked_parent?` are the issue #85 pair: the note `tree`
+# prints is now also read by `parent`/`down`, so its branch-name parameter is
+# unified across three call sites instead of one. That is exactly the shape the
+# first four entries were written for, and both assertions are faithful -- a
+# branch name and the topology it is asked about, String and StackTopology at
+# every call site.
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
 # and the trunk list, all String / Array[String] at every call site -- so none of
@@ -69,6 +76,7 @@ class Object
   def untrack!: (String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def children_of: (String, Array[String]) -> Array[String]
+  def parent_note: (String, StackTopology) -> String
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
@@ -105,6 +113,7 @@ class StackTopology
   def children_of: (String) -> Array[String]
   def tracked_branches: () -> Array[String]
   def parent_missing?: (String) -> bool
+  def untracked_parent?: (String) -> bool
   def reconnect_target: (String, String) -> String
   def stack_root: (String) -> String
   def would_cycle?: (String, String) -> bool
