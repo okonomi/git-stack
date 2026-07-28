@@ -20,8 +20,8 @@
   - `mise x -- ruby test/cli_test.rb | diff -u test/cli_test.rb.expected -`
   - `spinel-doctor bin/git-stack.rb && spinel-doctor test/cli_test.rb`
   - `spin build && test/binary_test.sh | diff -u test/binary_test.sh.expected -`
-  - `spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | diff -u test/git-stack.rbs.expected -`
-- emitted RBS ゴールデンの `untyped (slow path)` 行数は **ラチェット: 現在 39、下がるのは可・上がるのは不可**。上がったら widening の起点を探して潰すまでマージしない。
+  - `spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && diff -u test/git-stack.rbs.expected /tmp/emitted.rbs`
+- emitted RBS ゴールデンの `untyped (slow path)` 行数は **ラチェット: 下がるのは可・上がるのは不可**。Task 1 実施時にこのブランチで計測した実測値は **35**（`ci.yml` のコメントが言う 39 は別の数え方なので、比較対象は 35 のほう）。上がったら widening の起点を探して潰すまでマージしない。
 - ブランチは `fix/untracked-parent-navigation`（作成済み、spec がコミット済み）。
 
 ## File Structure
@@ -162,13 +162,13 @@ Run:
 spinel-doctor bin/git-stack.rb
 spinel-doctor test/cli_test.rb
 spin build && test/binary_test.sh | diff -u test/binary_test.sh.expected -
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | diff -u test/git-stack.rbs.expected -
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && diff -u test/git-stack.rbs.expected /tmp/emitted.rbs
 ```
 Expected: doctor は error-severity の指摘なし、binary_test は差分なし。emitted RBS に差分が出た場合は `untyped (slow path)` の行数を数える:
 ```bash
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | grep -c 'untyped (slow path)'
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && grep -c 'untyped (slow path)' /tmp/emitted.rbs
 ```
-39 以下なら `spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=test/git-stack.rbs.expected` で再生成してよい。40 以上なら widening の起点を潰すまで進めない。
+35 以下なら `spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=test/git-stack.rbs.expected` で再生成してよい。36 以上なら widening の起点を潰すまで進めない。
 
 - [ ] **Step 7: コミット**
 
@@ -332,9 +332,9 @@ Run:
 spinel-doctor bin/git-stack.rb
 spinel-doctor test/cli_test.rb
 spin build && test/binary_test.sh | diff -u test/binary_test.sh.expected -
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | grep -c 'untyped (slow path)'
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && grep -c 'untyped (slow path)' /tmp/emitted.rbs
 ```
-Expected: doctor は error なし、binary_test は差分なし、untyped は 39 以下。
+Expected: doctor は error なし、binary_test は差分なし、untyped は 35 以下。
 
 - [ ] **Step 8: コミット**
 
@@ -491,11 +491,11 @@ Run:
 spinel-doctor bin/git-stack.rb
 spinel-doctor test/cli_test.rb
 spin build && test/binary_test.sh | diff -u test/binary_test.sh.expected -
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | grep -c 'untyped (slow path)'
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && grep -c 'untyped (slow path)' /tmp/emitted.rbs
 ```
-Expected: doctor は error なし、binary_test は差分なし、untyped は 39 以下。
+Expected: doctor は error なし、binary_test は差分なし、untyped は 35 以下。
 
-このタスクは新しい配列を組み立てるので、**ここが binary_test の一番効く場所**。`spin test` と CRuby スナップショットが両方通ってもバイナリだけが落ちる形があり得るので、必ず `spin build` まで走らせること。emitted RBS に差分が出て untyped が 39 以下なら再生成:
+このタスクは新しい配列を組み立てるので、**ここが binary_test の一番効く場所**。`spin test` と CRuby スナップショットが両方通ってもバイナリだけが落ちる形があり得るので、必ず `spin build` まで走らせること。emitted RBS に差分が出て untyped が 35 以下なら再生成:
 ```bash
 spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=test/git-stack.rbs.expected
 ```
@@ -553,10 +553,10 @@ spinel-doctor bin/git-stack.rb
 spinel-doctor test/cli_test.rb
 spin test
 spin build && test/binary_test.sh | diff -u test/binary_test.sh.expected -
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | diff -u test/git-stack.rbs.expected -
-spinel --emit-rbs --rbs rbs/ bin/git-stack.rb | grep -c 'untyped (slow path)'
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && diff -u test/git-stack.rbs.expected /tmp/emitted.rbs
+spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs && grep -c 'untyped (slow path)' /tmp/emitted.rbs
 ```
-Expected: すべて差分なし・error なし、untyped は 39 以下。
+Expected: すべて差分なし・error なし、untyped は 35 以下。
 
 - [ ] **Step 5: コミット（差分があれば）**
 
