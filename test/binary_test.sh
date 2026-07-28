@@ -133,6 +133,18 @@ git_q branch -d feat-x
 section "tree renders siblings, nesting, and the orphan"
 run tree
 
+# `children_of` for a TRUNK appends `detached_roots` via `each`/`<<` (issue #85)
+# -- an array built at run time and then handed to `cmd_up`'s `include?` /
+# `length` / `[0]`. That shape compiles clean and passes both the CRuby and
+# `spin test` snapshots; only the SHIPPED binary can show a Spinel array method
+# choking on it. `main` is still checked out from the fixture above, with
+# `feat-a` (a recorded child) and `feat-x-child` (the orphan `tree` just drew at
+# trunk-child indent) both reachable from it, so this is ambiguous on purpose:
+# the point is that `feat-x-child` appears in the pick list at all, proving
+# `up` reaches the row `tree` draws, not the exit code.
+section "up from the trunk offers the orphan's root alongside feat-a (issue #85)"
+run up
+
 section "parent reports the recorded parent"
 git_q checkout -q feat-b
 run parent
