@@ -1002,14 +1002,23 @@ class StackTopology
     !parent.empty? && !branch?(parent)
   end
 
+  # The one place the reconnect rule is spelled. True when a dropped branch's
+  # children cannot reconnect to its recorded parent -- because there is none,
+  # or because the recorded one no longer resolves to a local branch -- and a
+  # trunk has to stand in. Callers ask this before resolving that trunk, so the
+  # rule is never re-derived outside this class.
+  def reconnect_needs_trunk?(branch)
+    parent = parent_of(branch)
+    parent.empty? || !branch?(parent)
+  end
+
   # The parent a dropped branch's children should reconnect to. A live recorded
   # parent -- tracked or not -- remains the exact target. A missing or absent
   # parent cannot be a target, so callers supply the history-resolved trunk.
   def reconnect_target(branch, fallback_trunk)
-    parent = parent_of(branch)
-    return fallback_trunk if parent.empty? || !branch?(parent)
+    return fallback_trunk if reconnect_needs_trunk?(branch)
 
-    parent
+    parent_of(branch)
   end
 
   # Walk down from `branch` to the root of the stack `restack`/`sync` replay.
@@ -1451,9 +1460,10 @@ end
 # wrong here doesn't just mis-record a parent -- the replay below then rebases the
 # branch onto the wrong trunk, dropping the commits of the one it was built on.
 #
-# `topology` is built with `build_topology` (no counts). Safe to reuse across the
-# traversal because neither restack nor sync creates or deletes branch refs
-# mid-walk (sync only rewrites config; rebase updates history in place).
+# `topology` is built with `StackRepository.load_topology` (no ahead/behind
+# counts). Safe to reuse across the traversal because neither restack nor sync
+# creates or deletes branch refs mid-walk (sync only rewrites config; rebase
+# updates history in place).
 def restack_subtree(root, trunks, heal_orphans, verb, topology)
   topology.order_branches(root).each do |branch|
     parent = topology.parent_of(branch)
@@ -1550,21 +1560,24 @@ def cmd_drop(args)
   original = current_branch_or_empty
 
   # StackTopology owns the reconnect rule. It preserves a live untracked parent,
-  # but a missing or absent parent needs the trunk this branch's history rests on.
-  parent = topology.parent_of(branch)
+  # but a missing or absent parent needs the trunk this branch's history rests
+  # on. `reconnect_needs_trunk?` is that rule, and `reconnect_target` answers
+  # with the same predicate -- so this caller only asks whether a trunk is worth
+  # resolving (`containing_trunk` spends a `git rev-list` per trunk), never what
+  # the target should be.
+  #
   # A recorded parent that no longer exists is no reconnect target either, and
   # the restack below doesn't heal orphans -- writing that dead name onto each
   # child would turn one orphan into N, silently. `validate_new_parent!` would
   # die on it; this is the one reparent site whose parent is read rather than
   # typed by the user, so a missing one heals onto trunk, as `sync` does. Same
   # guard as `restack_subtree`'s heal, minus its `heal_orphans` opt-in.
+  parent = topology.parent_of(branch)
+  trunk = topology.reconnect_needs_trunk?(branch) ? containing_trunk(branch, trunks) : ""
+  # `parent_missing?` only picks the message: an absent parent reconnects to the
+  # same trunk but has no dead name to report.
   if topology.parent_missing?(branch)
-    trunk = containing_trunk(branch, trunks)
     info "'#{branch}': parent '#{parent}' no longer exists; reconnecting children onto trunk '#{trunk}'"
-  elsif parent.empty?
-    trunk = containing_trunk(branch, trunks)
-  else
-    trunk = ""
   end
   parent = topology.reconnect_target(branch, trunk)
 

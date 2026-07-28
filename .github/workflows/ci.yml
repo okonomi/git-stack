@@ -163,7 +163,7 @@ jobs:
       #
       # `tree` runs against the multi-sibling stack on purpose: sibling
       # ordering is the only path that reaches the `.sort` calls in
-      # StackContext#children_of / #walk_order, where an unsupported runtime
+      # StackTopology#children_of / #walk_order, where an unsupported runtime
       # method would otherwise slip through unseen.
       - name: Run compiled binary against fixture
         run: |
