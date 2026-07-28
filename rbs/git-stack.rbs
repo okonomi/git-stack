@@ -105,12 +105,18 @@ end
 # unchanged) rather than the load-bearing re-narrowing they had become. The
 # guards stay anyway, on this file's standing rule -- a pin is cheap, and being
 # redundant against today's compiler is not the same as being unnecessary.
+#
+# `detached_roots` joins them for the third piece of the same change: `up` now
+# reads it, so its hand-built `[]` is unified with the concrete children list it
+# is appended to, and an `Array[untyped]` there would take `cmd_up`'s `include?`
+# / `length` / `[0]` down with it.
 class StackTopology
   @parents: Hash[String, String]
   @children: Hash[String, String]
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def detached_roots: () -> Array[String]
   def tracked_branches: () -> Array[String]
   def parent_missing?: (String) -> bool
   def untracked_parent?: (String) -> bool

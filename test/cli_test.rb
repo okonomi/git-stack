@@ -923,6 +923,42 @@ run("parent")
 run("down")
 show("HEAD", "git branch --show-current")
 
+# The "pick one" menu has to read in the same order as the tree above it:
+# recorded children first, then the detached roots -- which is the order `tree`
+# prints those same rows in. `other` is the trunk's tracked child, feat-b the
+# detached root, and both are rows under main.
+section "up lists a detached root alongside the trunk's tracked children"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+gsq("create other"); commit("o.txt", "o1")
+setup("git checkout -q main")
+run("tree")
+run("up")
+
+# Trunks are peers, and `up` MOVES HEAD -- so a detached root belongs to the one
+# trunk its history rests on, not to whichever trunk you happen to stand on.
+# This is the same question #73 made `track`/`sync`/`drop` ask. `tree` draws the
+# root without saying whose it is; `up` has to decide, and it decides by history.
+section "up offers a detached root only from the trunk its stack rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+run("tree")
+setup("git checkout -q main")
+run("up")
+setup("git checkout -q develop")
+run("up")
+show("HEAD", "git branch --show-current")
+
 # The other half of the same sentence-sharing: a parent whose ref is gone. `tree`
 # has always printed the sync hint for it; `parent` printed the dead name with no
 # hint at all. Both rows come from parent_note now, so they are the same words.

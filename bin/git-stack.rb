@@ -507,11 +507,42 @@ def existing_branches
   Set.new(unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") })
 end
 
-# Every branch that records `parent` as its parent. Builds a throwaway topology
-# (one config scan, no ahead/behind walk) -- the one-shot path for `up`,
-# distinct from the snapshot `tree` threads through rendering.
+# Every branch `up` can move to from `parent`: the rows `tree` draws directly
+# under it. Builds a throwaway topology (one config scan, no ahead/behind walk)
+# -- the one-shot path for `up`, distinct from the snapshot `tree` threads
+# through rendering.
+#
+# For an ordinary branch that is exactly its recorded children. For a TRUNK it is
+# those PLUS the detached roots: the stacks `tree` renders at trunk-child indent
+# because nothing tracked reaches them -- a parent that was untracked while it
+# still had children, or one that was merged and deleted. `tree` drew them there
+# and `up` could not reach them, which is the contradiction issue #85 names; the
+# rule now is one sentence, "up offers the rows tree draws under this branch".
+#
+# Trunks are peers, so a detached root belongs to the ONE trunk its history rests
+# on -- `containing_trunk`, the same question `track` / `sync`'s orphan heal /
+# `drop`'s reconnect each ask (issue #73). Without it `up` from `main` would
+# offer a develop-based stack and then check it out, which is #73's mistake in a
+# command that moves HEAD. It costs nothing in the single-trunk repo, where
+# `containing_trunk` short-circuits before spending a `git`.
+#
+# No root can appear twice: `detached_roots` already drops any whose own parent
+# is a trunk, and that is exactly the set `children_of` answers.
+#
+# Appended with `each` and `<<` rather than `+` or `concat`: nothing in this file
+# concatenates arrays, and the array methods Spinel resolves only on a concrete
+# receiver are the ones that compile clean and die on the shipped binary (see
+# test/binary_test.sh). The list being appended to is freshly built by
+# `StackTopology#children_of`, so mutating it here shares nothing.
 def children_of(parent, trunks)
-  StackRepository.load_topology(trunks).children_of(parent)
+  topology = StackRepository.load_topology(trunks)
+  children = topology.children_of(parent)
+  return children unless is_trunk?(parent, trunks)
+
+  topology.detached_roots.each do |root|
+    children << root if containing_trunk(root, trunks) == parent
+  end
+  children
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"

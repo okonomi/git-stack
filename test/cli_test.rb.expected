@@ -610,19 +610,21 @@ $ git stack tree
       feat-c (1 commit(s))
 [exit 0]
 $ git stack up
-error: no branch stacked on top of 'main'
-[exit 1]
-HEAD: main
+Switched to branch 'feat-b'
+[exit 0]
+HEAD: feat-b
 $ git stack parent
-main
+feat-a
+(parent 'feat-a' is untracked)
 [exit 0]
 $ git stack down
-error: already at the bottom of the stack
-[exit 1]
-HEAD: main
+(parent 'feat-a' is untracked)
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
 $ git stack down
-error: already at the bottom of the stack
-[exit 1]
+Switched to branch 'main'
+[exit 0]
 HEAD: main
 
 ### parent and down name the untracked parent they walk to
@@ -640,6 +642,32 @@ $ git stack down
 Switched to branch 'feat-a'
 [exit 0]
 HEAD: feat-a
+
+### up lists a detached root alongside the trunk's tracked children
+$ git stack tree
+* main (trunk)
+    other (1 commit(s))
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+[exit 0]
+$ git stack up
+'main' has multiple children; pick one:
+  git stack up other
+  git stack up feat-b
+[exit 1]
+
+### up offers a detached root only from the trunk its stack rests on
+$ git stack tree
+  main (trunk)
+  develop (trunk)
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'main'
+[exit 1]
+$ git stack up
+Switched to branch 'feat-b'
+[exit 0]
+HEAD: feat-b
 
 ### parent notes a parent whose ref is gone
 $ git stack tree
