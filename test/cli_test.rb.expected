@@ -602,3 +602,38 @@ $ git stack tree
     feat-a (1 commit(s))
     * feat-b (1 commit(s))
 [exit 0]
+
+### up and down round-trip through an untracked parent
+$ git stack tree
+* main (trunk)
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+      feat-c (1 commit(s))
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'main'
+[exit 1]
+HEAD: main
+$ git stack parent
+main
+[exit 0]
+$ git stack down
+error: already at the bottom of the stack
+[exit 1]
+HEAD: main
+$ git stack down
+error: already at the bottom of the stack
+[exit 1]
+HEAD: main
+
+### parent notes a parent whose ref is gone
+$ git stack tree
+  main (trunk)
+  * feat-b (parent 'feat-a' missing; run `git stack sync`)
+[exit 0]
+$ git stack parent
+feat-a
+(parent 'feat-a' missing; run `git stack sync`)
+[exit 0]
+$ git stack down
+error: parent branch 'feat-a' no longer exists
+[exit 1]

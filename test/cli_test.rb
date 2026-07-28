@@ -875,3 +875,47 @@ gsq("create feat-a"); commit("a.txt", "a1")
 gsq("create feat-b"); commit("b.txt", "b1")
 setup("git tag feat-a") # tag sharing feat-a's name triggers the %(refname:short) disambiguation
 run("tree")
+
+# `tree` draws feat-b at trunk-child indent and names the untracked parent it
+# actually rests on; `up`, `parent` and `down` all have to agree with it. The
+# whole loop runs in ONE section on purpose -- the bug was a disagreement
+# BETWEEN these commands, so only their outputs side by side in the transcript
+# can show it (issue #85). Nothing else here would notice.
+#
+# `down` deliberately lands on feat-a, a branch tree never drew as a row: it is
+# where `restack` replays feat-b onto, so refusing to go there would be its own
+# kind of lie. The note is what makes the jump legible.
+section "up and down round-trip through an untracked parent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+run("tree")
+run("up")
+show("HEAD", "git branch --show-current")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+# feat-a records no parent of its own, so the walk down ends at the trunk
+run("down")
+show("HEAD", "git branch --show-current")
+
+# The other half of the same sentence-sharing: a parent whose ref is gone. `tree`
+# has always printed the sync hint for it; `parent` printed the dead name with no
+# hint at all. Both rows come from parent_note now, so they are the same words.
+# `down` does not reach the note -- it dies on the missing ref first, saying the
+# same thing in its own way -- and that is shown here rather than assumed.
+section "parent notes a parent whose ref is gone"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q feat-b")
+run("tree")
+run("parent")
+run("down")

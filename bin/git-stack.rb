@@ -1430,6 +1430,16 @@ def cmd_parent(args)
   trunks = trunk_branches
   if new_parent.empty?
     puts effective_parent(branch, trunks)
+    # The name goes to stdout, where a script reads it; the note goes to stderr,
+    # where a person does. Piping `git stack parent` still yields exactly the
+    # branch name it always did.
+    #
+    # It is `tree`'s own sentence from `tree`'s own function (see parent_note),
+    # so the two commands cannot answer this question differently. The topology
+    # is loaded only on this read path -- setting a parent below has no note to
+    # print and should not pay for one.
+    note = parent_note(branch, StackRepository.load_topology(trunks))
+    info note unless note.empty?
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
@@ -1464,6 +1474,13 @@ def cmd_down(_args)
   # True for every trunk, and for a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
+  # `down` walks to the branch `restack` actually replays onto, and that is not
+  # always a branch `tree` drew a row for: an untracked parent is a real edge
+  # with no row. Say so before moving HEAD somewhere the user has never seen
+  # (issue #85). Only the untracked case reaches this line -- a parent whose ref
+  # is gone already died above, with a message that says the same thing.
+  note = parent_note(branch, StackRepository.load_topology(trunks))
+  info note unless note.empty?
   checkout!(parent)
 end
 
