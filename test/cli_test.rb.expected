@@ -77,6 +77,7 @@ $ git stack tree
 
 ### an emptied stackParent is read as untracked, not as the primary trunk
 feat-d stackParent is empty: 1
+feat-w stackParent is blank: 1
 $ git stack tree
   main (trunk)
   * feat-m (1 commit(s))

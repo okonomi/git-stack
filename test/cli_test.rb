@@ -208,11 +208,17 @@ gsq("init main develop")
 setup("git checkout -q develop"); commit("d.txt", "d1")
 setup("git checkout -q -b feat-d"); commit("x.txt", "x1")
 setup("git config branch.feat-d.stackParent ''")
+# a whitespace-only value is the same non-answer, and has to read the same way
+# through both doors into this key: `get_parent` normalizes it through
+# `git_out`'s strip, so the scan strips too. Untreated it was a parent NAMED " ".
+setup("git checkout -q -b feat-w develop"); commit("w.txt", "w1")
+setup("git config branch.feat-w.stackParent ' '")
 setup("git checkout -q main")
 gsq("create feat-m"); commit("m.txt", "m1")
 show("feat-d stackParent is empty", "git config --list | grep -c '^branch\\.feat-d\\.stackparent=$'")
+show("feat-w stackParent is blank", "git config --list | grep -c '^branch\\.feat-w\\.stackparent= $'")
 # feat-d is one commit past develop and two past main, so a row for it here
-# would have named the count that gives it away. It draws no row at all.
+# would have named the count that gives it away. Neither draws a row at all.
 run("tree")
 # navigation was already right (it reads the branch's own history) and stays so
 setup("git checkout -q feat-d")

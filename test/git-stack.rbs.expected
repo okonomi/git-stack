@@ -40,7 +40,6 @@ class Object
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String, Array[String]) -> Array[String]
-  def effective_parent_rule: (String, String) -> String
   def effective_parent: (String, Array[String]) -> String
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
@@ -192,7 +191,6 @@ class StackSnapshot
   @ab: Hash[String, String]
   def initialize: (StackTopology) -> nil
   def topology: () -> StackTopology
-  def effective_parent_of: (String) -> String
   def ahead_behind_of: (String) -> Array[Integer]
   def scan_ahead_behind: () -> String
 end

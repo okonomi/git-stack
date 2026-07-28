@@ -515,15 +515,27 @@ def children_of(parent, trunks)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
-# rule (it used to sit copied in three spots).
+# rule (it used to sit copied in three spots), and the parent `parent`/`down`
+# answer with: the recorded parent, or the trunk the branch rests on.
 #
-# Its callers are now the one-shot commands alone, through `effective_parent`.
-# The snapshot used to apply it too, with a build-time `trunks[0]` for the trunk
-# -- the wrong trunk for a branch built on `develop`, and unfixable at snapshot
-# scale (see `StackSnapshot#effective_parent_of`, issue #73). Rendering asks only
-# for recorded parents now, so nothing there needs the rule. It stays one method
-# because the rule is a rule: the next path that needs a trunk fallback should
-# reach for this rather than write `parent.empty? ? ... : parent` again.
+# This is now the ONLY path that resolves a trunk for a parentless branch.
+# Rendering used to apply the same rule through a `StackSnapshot`, against a
+# single `trunks[0]` fixed at build time -- the wrong trunk for a branch built on
+# `develop` (issue #73). A snapshot cannot ask per branch (see StackSnapshot), so
+# it stopped asking: it reads recorded parents and nothing else. One-shot
+# commands can afford the question, and this is where it is asked.
+#
+# Trunks are peers, which this answers in two places. A trunk resolves to itself,
+# the self-parent fixed point `down` already reads as "the bottom"; without it a
+# secondary trunk, recording no parent, would fall through and report `develop`'s
+# parent as `main`. And an unrecorded parent resolves through `containing_trunk`,
+# so a branch built on `develop` walks down to `develop` rather than being handed
+# the primary trunk.
+#
+# `containing_trunk` is spent only when there is no recorded parent -- it costs a
+# `git rev-list` per trunk (it short-circuits in the single-trunk repo, but not
+# in the git-flow one this exists for), and a recorded parent is the answer
+# already.
 #
 # It answers ONE HOP: what does this branch sit on. "Where does its stack start"
 # is the other question, and `StackTopology#climb_to_root` is that one's single
@@ -533,37 +545,14 @@ end
 # new traversal needs either question, call the owner rather than re-deriving it.
 #
 # Unifying branch names through this rule pulls the `git`-wrapper family (`sh`,
-# `checkout!`, `branch_exists?`, `ahead_behind`) and `StackTopology#branch?` onto
-# Spinel's untyped slow path; the hand-written seed in rbs/ pins them back to
-# concrete types (fed via `--rbs`, checked by the CI golden). See rbs/git-stack.rbs.
-def effective_parent_rule(parent, trunk)
-  parent.empty? ? trunk : parent
-end
-
-# The parent used for display and navigation: the recorded parent, or -- when
-# none is recorded -- the trunk the branch rests on. The single-command path for
-# `parent`/`down`.
-#
-# Trunks are peers, which this answers in two places. A trunk resolves to itself,
-# the self-parent fixed point `down` already reads as "the bottom"; without it a
-# secondary trunk, recording no parent, would fall through the rule and report
-# `develop`'s parent as `main`. And an untracked branch resolves through
-# `containing_trunk`, so a branch built on `develop` walks down to `develop`
-# rather than being handed the primary trunk.
-#
-# The rule itself stays trunk-blind -- it knows only "unrecorded parent means a
-# trunk", never which one -- so both answers live here. That is also why this is
-# the only path that resolves a trunk at all: rendering reads recorded parents
-# directly, where a per-node `containing_trunk` would not fit.
-#
-# The trunk is resolved eagerly, for the recorded-parent case too, so this stays
-# one call into the shared rule. It is not worth avoiding: `containing_trunk`
-# returns before spending a `git` call in a single-trunk repo, and `down`/`parent`
-# are one-shot commands, not a per-node traversal.
+# `checkout!`, `branch_exists?`) onto Spinel's untyped slow path; the
+# hand-written seed in rbs/ pins them back to concrete types (fed via `--rbs`,
+# checked by the CI golden). See rbs/git-stack.rbs.
 def effective_parent(branch, trunks)
   return branch if is_trunk?(branch, trunks)
 
-  effective_parent_rule(get_parent(branch), containing_trunk(branch, trunks))
+  parent = get_parent(branch)
+  parent.empty? ? containing_trunk(branch, trunks) : parent
 end
 
 # --- tree rendering ---------------------------------------------------------
@@ -803,13 +792,20 @@ class StackTopology
   # `scan_stack_config` only `.strip`s the output as a whole -- so the same
   # config parsed as an empty parent on any line but the last, and as a
   # space-less (hence skipped) line when it happened to be last.
+  #
+  # The value is `.strip`ped for the same reason, which is what keeps this door
+  # into `branch.<name>.stackParent` agreeing with the other one: `get_parent`
+  # normalizes through `git_out`'s strip, so a hand-written `" "` reads as "no
+  # parent" there. Without the strip here it read as a parent NAMED " ", and
+  # `tree` answered "parent ' ' missing; run sync" for a branch `parent`
+  # resolved to a trunk.
   def load(scan)
     unpack_lines(scan).each do |line|
       space = line.index(" ")
       next if space.nil?
 
       key = line[0...space]
-      value = line[(space + 1)..-1]
+      value = line[(space + 1)..-1].strip
       next if value.empty?
 
       name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
@@ -1157,6 +1153,18 @@ end
 # A read-only snapshot used by rendering. It composes the pure topology with
 # Git-history facts that are expensive to ask for repeatedly. Commands that
 # only navigate or rewrite the forest receive StackTopology directly.
+#
+# It knows nothing about trunks, deliberately. It used to hold one -- a single
+# `trunks[0]` handed in at build time, standing in for "the trunk this branch
+# rests on" the way `restack_subtree` once did (issues #69 / #71) -- and every
+# row a snapshot renders was measured against it. That was the last of those
+# stand-ins, and unlike the one-shot `effective_parent`, a snapshot cannot
+# answer the question per branch: `containing_trunk` costs a `rev-list` per
+# trunk PER NODE, in the very scan built to keep `tree` off per-node
+# subprocesses. It is gone rather than generalized because the only rows that
+# could reach it are the ones `load` now drops (issue #73), leaving the fallback
+# no correct answer to give -- only a wrong one, against the primary trunk.
+# Rendering reads recorded parents (`StackTopology#parent_of`) and nothing else.
 class StackSnapshot
   def initialize(topology)
     @topology = topology
@@ -1166,24 +1174,6 @@ class StackSnapshot
 
   def topology
     @topology
-  end
-
-  # The parent rendering measures and names a row against: the recorded one,
-  # full stop. No trunk fallback lives here.
-  #
-  # There used to be one -- a single `trunks[0]` handed in at build time, standing
-  # in for "the trunk this branch rests on" the way `restack_subtree` once did
-  # (issues #69 / #71). It was the last of those, and unlike the one-shot
-  # `effective_parent`, a snapshot cannot answer that question per branch without
-  # spending `containing_trunk`'s `rev-list` per trunk PER NODE -- in the very
-  # scan built to keep `tree` off per-node subprocesses.
-  #
-  # It is gone rather than generalized because the only rows that could reach it
-  # were the ones `load` now drops (a branch recording an empty parent). Every
-  # branch a snapshot renders has a real recorded parent, so the fallback had no
-  # correct answer left to give -- only a wrong one, against the primary trunk.
-  def effective_parent_of(branch)
-    @topology.parent_of(branch)
   end
 
   # [behind, ahead] from the cached index. The sentinel asks the renderer to
@@ -1206,8 +1196,8 @@ class StackSnapshot
     @topology.tracked_branches.each do |name|
       next unless @topology.branch?(name)
 
-      parent = effective_parent_of(name)
-      next if parent.empty? || !@topology.branch?(parent)
+      parent = @topology.parent_of(name)
+      next unless @topology.branch?(parent)
 
       pairs = "#{pairs}#{name}\t#{parent}\n"
     end
@@ -1227,7 +1217,7 @@ end
 def print_tree_row(branch, depth, cur, snapshot)
   extra = ""
   topology = snapshot.topology
-  parent = snapshot.effective_parent_of(branch)
+  parent = topology.parent_of(branch)
   if !parent.empty? && topology.branch?(parent)
     # Counts from the batched `for-each-ref` (see scan_ahead_behind); the
     # sentinel guards the git-too-old case with a per-node fallback.
