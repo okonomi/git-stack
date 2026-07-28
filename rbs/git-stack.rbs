@@ -4,19 +4,18 @@
 # an input: signatures we assert so the analyzer keeps these methods on the
 # concrete fast path.
 #
-# The single shared `effective_parent_rule` (bin/git-stack.rb) threads one
-# parent-resolution rule through both the subprocess wrappers and the
-# StackSnapshot rendering. That unifies these methods' branch-name parameters
-# with the rule's result and, left to inference alone, widens them to Spinel's
-# untyped slow path. Each takes a branch (or parent) name -- always a String --
-# so pinning them here is a faithful assertion, not a fib to the compiler; it
-# keeps the compiled binary unboxed and the emitted golden free of new untyped.
+# The single shared `effective_parent_rule` (bin/git-stack.rb) unifies these
+# methods' branch-name parameters with the rule's result and, left to inference
+# alone, widens them to Spinel's untyped slow path. Each takes a branch (or
+# parent) name -- always a String -- so pinning them here is a faithful
+# assertion, not a fib to the compiler; it keeps the compiled binary unboxed and
+# the emitted golden free of new untyped.
 #
 # `effective_parent` is pinned for the same reason one step out: it takes the
 # trunk LIST (it answers "is this branch itself a trunk?" before applying the
 # rule), and an `Array[String]` parameter inferred from scratch widens to
-# `Array[untyped]`, which then flows into the rule and back out through
-# `effective_parent_of`.
+# `Array[untyped]`, which then flows into the rule and out through every
+# reparent the result feeds.
 #
 # `containing_trunk` and `restack_subtree` are the trunk-list pair: the first
 # picks the trunk a branch rests on, so its untyped result would spread through

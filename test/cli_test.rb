@@ -194,6 +194,32 @@ setup("git checkout -q develop")
 gsq("create feat-d"); commit("d.txt", "d1")
 run("tree")
 
+# A hand-emptied `branch.<name>.stackParent` is untracked config, not an edge.
+# Admitting it put the branch in the parent index with a parent nothing could
+# resolve: `tree` drew it as a detached root and measured the row against the
+# snapshot's single build-time trunk -- main, for a branch built on develop
+# (issue #73). Two entries are written so the empty one is not the last line of
+# `git config --get-regexp`, whose trailing space the scan's `.strip` removed:
+# the same config used to parse two different ways depending on its position.
+section "an emptied stackParent is read as untracked, not as the primary trunk"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q -b feat-d"); commit("x.txt", "x1")
+setup("git config branch.feat-d.stackParent ''")
+setup("git checkout -q main")
+gsq("create feat-m"); commit("m.txt", "m1")
+show("feat-d stackParent is empty", "git config --list | grep -c '^branch\\.feat-d\\.stackparent=$'")
+# feat-d is one commit past develop and two past main, so a row for it here
+# would have named the count that gives it away. It draws no row at all.
+run("tree")
+# navigation was already right (it reads the branch's own history) and stays so
+setup("git checkout -q feat-d")
+run("parent")
+run("track")
+run("tree")
+
 section "restack stops at the secondary trunk it rests on"
 new_repo
 setup("git branch develop main")

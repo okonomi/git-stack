@@ -75,6 +75,26 @@ $ git stack tree
   * feat-d (1 commit(s))
 [exit 0]
 
+### an emptied stackParent is read as untracked, not as the primary trunk
+feat-d stackParent is empty: 1
+$ git stack tree
+  main (trunk)
+  * feat-m (1 commit(s))
+  develop (trunk)
+[exit 0]
+$ git stack parent
+develop
+[exit 0]
+$ git stack track
+tracking 'feat-d' on top of 'develop'
+[exit 0]
+$ git stack tree
+  main (trunk)
+    feat-m (1 commit(s))
+  develop (trunk)
+  * feat-d (1 commit(s))
+[exit 0]
+
 ### restack stops at the secondary trunk it rests on
 $ git stack restack
 restacking stack rooted at feat-d

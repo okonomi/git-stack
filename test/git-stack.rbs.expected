@@ -189,9 +189,8 @@ end
 
 class StackSnapshot
   @topology: StackTopology
-  @fallback_trunk: String
   @ab: Hash[String, String]
-  def initialize: (StackTopology, String) -> nil
+  def initialize: (StackTopology) -> nil
   def topology: () -> StackTopology
   def effective_parent_of: (String) -> String
   def ahead_behind_of: (String) -> Array[Integer]

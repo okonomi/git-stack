@@ -515,10 +515,15 @@ def children_of(parent, trunks)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
-# rule. Every effective-parent path funnels through here -- the single-command
-# `effective_parent` and the snapshot's `effective_parent_of` -- so
-# display, counts, and navigation can't drift (the rule used to sit copied in
-# three spots).
+# rule (it used to sit copied in three spots).
+#
+# Its callers are now the one-shot commands alone, through `effective_parent`.
+# The snapshot used to apply it too, with a build-time `trunks[0]` for the trunk
+# -- the wrong trunk for a branch built on `develop`, and unfixable at snapshot
+# scale (see `StackSnapshot#effective_parent_of`, issue #73). Rendering asks only
+# for recorded parents now, so nothing there needs the rule. It stays one method
+# because the rule is a rule: the next path that needs a trunk fallback should
+# reach for this rather than write `parent.empty? ? ... : parent` again.
 #
 # It answers ONE HOP: what does this branch sit on. "Where does its stack start"
 # is the other question, and `StackTopology#climb_to_root` is that one's single
@@ -527,7 +532,7 @@ end
 # each climbed their own way and named different roots for the same stack. If a
 # new traversal needs either question, call the owner rather than re-deriving it.
 #
-# Threading one rule through both worlds pulls the `git`-wrapper family (`sh`,
+# Unifying branch names through this rule pulls the `git`-wrapper family (`sh`,
 # `checkout!`, `branch_exists?`, `ahead_behind`) and `StackTopology#branch?` onto
 # Spinel's untyped slow path; the hand-written seed in rbs/ pins them back to
 # concrete types (fed via `--rbs`, checked by the CI golden). See rbs/git-stack.rbs.
@@ -547,8 +552,9 @@ end
 # rather than being handed the primary trunk.
 #
 # The rule itself stays trunk-blind -- it knows only "unrecorded parent means a
-# trunk", never which one -- so both answers live here. Its other callers go
-# through a `ctx`, where trunks are roots by topology, never lookups.
+# trunk", never which one -- so both answers live here. That is also why this is
+# the only path that resolves a trunk at all: rendering reads recorded parents
+# directly, where a per-node `containing_trunk` would not fit.
 #
 # The trunk is resolved eagerly, for the recorded-parent case too, so this stays
 # one call into the shared rule. It is not worth avoiding: `containing_trunk`
@@ -781,6 +787,22 @@ class StackTopology
   # published history) and make `tree` print the trunk's subtree twice. The
   # single-command `effective_parent` already answers a trunk with itself; this
   # is the same rule for the in-memory traversals.
+  #
+  # An EMPTY value is dropped too, which makes "a recorded parent is a real
+  # branch name" true of the index rather than something each reader retests.
+  # `set_parent` never writes one, but `branch.<name>.stackParent = ""` exists in
+  # the wild (hand-edited, or left by an editor), and admitting it put a branch
+  # in the index whose parent no reader could resolve: `detached_roots` drew it
+  # as a root, and the row's ahead/behind was then measured against whatever
+  # trunk the snapshot had been handed -- `main` for a branch built on `develop`
+  # (issue #73). Dropping it here reads that config the way the rest of the tool
+  # already does, as untracked.
+  #
+  # It also settles a split that depended on line position. `git config
+  # --get-regexp` emits the key followed by one space for an empty value, and
+  # `scan_stack_config` only `.strip`s the output as a whole -- so the same
+  # config parsed as an empty parent on any line but the last, and as a
+  # space-less (hence skipped) line when it happened to be last.
   def load(scan)
     unpack_lines(scan).each do |line|
       space = line.index(" ")
@@ -788,6 +810,8 @@ class StackTopology
 
       key = line[0...space]
       value = line[(space + 1)..-1]
+      next if value.empty?
+
       name = key.sub(/^branch\./, "").sub(/\.stackparent$/, "")
       next if trunk?(name)
 
@@ -818,11 +842,12 @@ class StackTopology
   # reset a second `load` would append every child again and `children_of` would
   # answer ["a", "a", ...] -- enough for `cmd_up` to see "multiple children"
   # where there's one.
+  #
+  # Every value is a real branch name, so none of them is skipped: `load` is the
+  # one gate, and it drops the empty ones before they reach the index.
   def index_children
     @children = {}
     @parents.each do |name, value|
-      next if value.empty?
-
       row = @children[value]
       @children[value] = row.nil? ? "#{name}\n" : "#{row}#{name}\n"
     end
@@ -1125,7 +1150,7 @@ class StackRepository
   end
 
   def self.load_snapshot(trunks)
-    StackSnapshot.new(load_topology(trunks), trunks[0])
+    StackSnapshot.new(load_topology(trunks))
   end
 end
 
@@ -1133,9 +1158,8 @@ end
 # Git-history facts that are expensive to ask for repeatedly. Commands that
 # only navigate or rewrite the forest receive StackTopology directly.
 class StackSnapshot
-  def initialize(topology, fallback_trunk)
+  def initialize(topology)
     @topology = topology
-    @fallback_trunk = fallback_trunk
     @ab = ahead_behind_index(scan_ahead_behind)
     nil
   end
@@ -1144,10 +1168,22 @@ class StackSnapshot
     @topology
   end
 
-  # This retains the current display fallback for a parentless row. Topology
-  # itself never invents an edge to a trunk: it represents only recorded edges.
+  # The parent rendering measures and names a row against: the recorded one,
+  # full stop. No trunk fallback lives here.
+  #
+  # There used to be one -- a single `trunks[0]` handed in at build time, standing
+  # in for "the trunk this branch rests on" the way `restack_subtree` once did
+  # (issues #69 / #71). It was the last of those, and unlike the one-shot
+  # `effective_parent`, a snapshot cannot answer that question per branch without
+  # spending `containing_trunk`'s `rev-list` per trunk PER NODE -- in the very
+  # scan built to keep `tree` off per-node subprocesses.
+  #
+  # It is gone rather than generalized because the only rows that could reach it
+  # were the ones `load` now drops (a branch recording an empty parent). Every
+  # branch a snapshot renders has a real recorded parent, so the fallback had no
+  # correct answer left to give -- only a wrong one, against the primary trunk.
   def effective_parent_of(branch)
-    effective_parent_rule(@topology.parent_of(branch), @fallback_trunk)
+    @topology.parent_of(branch)
   end
 
   # [behind, ahead] from the cached index. The sentinel asks the renderer to
