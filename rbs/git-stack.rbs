@@ -62,6 +62,20 @@
 # Faithful for the same reason `children_of` is -- a parent name and the trunk
 # list, String and Array[String].
 #
+# `live_trunks` / `trunk_branches` are pinned against a CRASH, not a widening,
+# and they are the entries that stop being redundant the moment the compiler
+# widens `live_trunks`'s `select` to `Array[untyped]` (Spinel master tip does;
+# the pinned SPINEL_REF does not). Widened, `trunk_branches` answers two
+# different array representations -- a poly array on the configured path, the
+# `[trunk]` literal's string array on the detect path -- so it returns Spinel's
+# boxed value, and every caller unboxes it with a straight `(sp_StrArray *)v.p`
+# cast that never checks which kind it holds. On the configured path (any repo
+# with `stack.trunk` set, i.e. every repo past its first command) that reads a
+# poly array's 16-byte elements as `char *`: the trunk list's first entry
+# becomes the pointer 0x1, and the first `trunk?` segfaults in `strcmp` inside
+# `Set#include?`. Pinned, the list stays a string array end to end and Spinel
+# converts on the way out instead of casting.
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
 # and the trunk list, all String / Array[String] at every call site -- so none of
@@ -74,6 +88,8 @@ class Object
   def paint: (String, String) -> String
   def green: (String) -> String
   def set_trunks: (Array[String]) -> Array[String]
+  def live_trunks: (Array[String]) -> Array[String]
+  def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
   def containing_trunk: (String, Array[String]) -> String
   def effective_parent: (String, Array[String]) -> String
