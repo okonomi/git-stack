@@ -970,6 +970,46 @@ setup("git checkout -q --detach")
 run("parent")
 run("tree")
 
+# The same hazard on the WRITING side, which is where it stops being a wrong
+# reading and starts destroying commits. The sections above hardened everything
+# that MEASURES history; `restack` then hands the answer to `merge-base` and
+# `rebase --onto`, and those still resolved a bare name -- so with a tag on main
+# named after the parent, feat-b was replayed onto main and feat-a's a1/a2 were
+# simply gone, under a "restacking feat-b onto feat-a" that named the branch it
+# had not used. Exit 0, no warning: only the commit list shows it (issue #96).
+section "restack replays onto the parent branch, not a tag that shadows it"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# feat-a advances, so feat-b is behind and restack has real work to do
+setup("git checkout -q feat-a"); commit("a2.txt", "a2")
+setup("git tag feat-a main") # tag on main sharing the PARENT's name
+setup("git checkout -q feat-b")
+run("restack")
+# the whole assertion: a1 and a2 must still be under b1
+show("feat-b commits", "git log --format=%s refs/heads/feat-b | tr '\\n' ' '")
+# and the base re-anchored after the replay must be feat-a's tip, not the tag's
+show("feat-b stackBase == feat-a tip",
+     'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse refs/heads/feat-a)" && echo yes || echo no')
+
+# `parent` re-anchors an EXISTING branch through `merge-base <branch> <parent>`
+# (record_reparent_base), a second bare-name site the restack above never reaches
+# -- feat-c has diverged rather than been created on the parent's tip. Anchoring
+# to the tag's commit records a base BELOW where the two actually diverge, which
+# is the range a later `restack --onto` would replay from.
+section "reparenting anchors the base to the parent branch, not a tag that shadows it"
+new_repo
+# main gains m1 so the tag can sit BELOW it: with the tag on main's tip both
+# merge-bases would land on the same commit and the check could not tell them
+# apart. Against `main~1` the branch answers m1 and the tag answers base.
+commit("m.txt", "m1")
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q -b feat-c main"); commit("c.txt", "c1")
+setup("git tag feat-a main~1")
+run("parent feat-a")
+show("feat-c stackBase == merge-base(feat-c, feat-a)",
+     'test "$(git config --get branch.feat-c.stackBase)" = "$(git merge-base refs/heads/feat-c refs/heads/feat-a)" && echo yes || echo no')
+
 # `tree` draws feat-b at trunk-child indent and names the untracked parent it
 # actually rests on; `up`, `parent` and `down` all have to agree with it. The
 # whole loop runs in ONE section on purpose -- the bug was a disagreement

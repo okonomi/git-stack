@@ -665,6 +665,21 @@ $ git stack tree
     feat-a (1 commit(s))
 [exit 0]
 
+### restack replays onto the parent branch, not a tag that shadows it
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b commits: b1 a2 a1 base
+feat-b stackBase == feat-a tip: yes
+
+### reparenting anchors the base to the parent branch, not a tag that shadows it
+$ git stack parent feat-a
+parent of 'feat-c' set to 'feat-a'
+[exit 0]
+feat-c stackBase == merge-base(feat-c, feat-a): yes
+
 ### up and down round-trip through an untracked parent
 $ git stack tree
 * main (trunk)
