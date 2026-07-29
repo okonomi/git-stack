@@ -108,7 +108,7 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
-# `origin/HEAD` is a symbolic ref like any other, so these three point it at a
+# `origin/HEAD` is a symbolic ref like any other, so these four point it at a
 # remote-tracking ref directly rather than cloning: detect_trunk only ever reads
 # `git symbolic-ref refs/remotes/origin/HEAD`, and a real remote would make the
 # snapshot depend on a second throwaway repo's path.
@@ -125,6 +125,20 @@ section "init ignores the remote's default branch when it has no local ref"
 new_repo
 setup("git update-ref refs/remotes/origin/gone main")
 setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone")
+run("init")
+show("stack.trunk", "git config --get stack.trunk")
+
+# Why `--short` answers `remotes/origin/develop` here is on `detect_trunk`; what
+# it costs is what this section is for. Nothing looks wrong from outside: the
+# remote's answer is thrown away and detection falls through to main, which is
+# indistinguishable from a repo that simply has no `origin/HEAD`. `develop` is
+# what origin/HEAD names, so `develop` is what init must record.
+section "init reads the remote's default branch past a local branch named origin/<name>"
+new_repo
+setup("git branch develop main")
+setup("git branch origin/develop main") # the local ref that makes `origin/develop` ambiguous
+setup("git update-ref refs/remotes/origin/develop develop")
+setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop")
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
