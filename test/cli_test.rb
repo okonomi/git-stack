@@ -1124,14 +1124,13 @@ run("tree")
 run("parent")
 run("down")
 
-# Fix-wave finding 1 (issue #85's own shape, relocated): `tree` draws every
-# detached root after ALL trunks, at the same indent as the LAST trunk's own
-# children -- so a main-grown root sits visually right under `develop`. The
-# MENU still refuses it from `develop` (`containing_trunk` says it's `main`'s),
-# but naming it is not the silent jump that gate exists to stop, so `up m-b`
-# has to reach it anyway -- `tree` drew this exact row for the user to read the
-# name off of. Both halves are asserted: the menu still says no, the name
-# still works.
+# Issue #85's own shape. `tree` now draws `m-b` under `main`, the trunk
+# `containing_trunk` assigns it to (issue #91) -- so the refusal below reads as
+# the obvious consequence of the picture rather than a contradiction of it:
+# `develop` is drawn with no children, and `up` from `develop` says exactly
+# that. Naming the branch is not the silent jump that gate exists to stop, so
+# `up m-b` still has to reach across. Both halves are asserted: the menu says
+# no, the name works.
 section "up <name> reaches another trunk's detached root; the menu still refuses it"
 new_repo
 setup("git branch develop main")
@@ -1146,6 +1145,42 @@ setup("git checkout -q develop")
 run("tree")
 run("up")
 run("up m-b")
+show("HEAD", "git branch --show-current")
+
+# The shape that made #91 worth fixing rather than annotating: one detached root
+# per trunk. Emitted after ALL trunks, BOTH landed at `develop`'s child indent --
+# so `develop` showed two rows and offered one (the menu is per-trunk), moving
+# HEAD with no prompt from a picture that showed a choice, while `main` drew no
+# children and offered `m-b` anyway. The section is one `tree` and an `up` from
+# EACH trunk, because the bug was that those two disagreed; only side by side
+# does the agreement show.
+#
+# `d-b` is what makes it an answer rather than a default: `main` is `trunks[0]`,
+# so a repo whose only detached root grows from `main` is passed by an
+# implementation that just draws everything under the primary -- which is also
+# where `containing_trunk` falls back when it cannot answer at all.
+section "tree and up agree on which trunk a detached root belongs to"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q main")
+gsq("create m-a"); commit("a.txt", "a1")
+gsq("create m-b"); commit("b.txt", "b1")
+setup("git checkout -q m-a")
+gsq("untrack")
+# develop's own detached root, the mirror of m-b on the non-primary trunk
+setup("git checkout -q develop")
+gsq("create d-a"); commit("da.txt", "da1")
+gsq("create d-b"); commit("db.txt", "db1")
+setup("git checkout -q d-a")
+gsq("untrack")
+setup("git checkout -q develop")
+run("tree")
+run("up")
+show("HEAD", "git branch --show-current")
+setup("git checkout -q main")
+run("up")
 show("HEAD", "git branch --show-current")
 
 # Fix-wave finding 2, a regression this branch itself introduced (in the

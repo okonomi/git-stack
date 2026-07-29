@@ -586,19 +586,18 @@ end
 # `tree` drew them there and the menu could not reach them, which is the
 # contradiction issue #85 names.
 #
-# It is only a slice, not "every row `tree` draws here", because `tree` and the
-# menu answer different questions about a detached root. `tree` draws each one
-# exactly once, after ALL trunks, without saying which one it belongs to --
-# visually at the same indent as the LAST trunk's own children, whichever trunk
-# actually grew it. The menu has to say, because it MOVES HEAD: a detached root
-# belongs to the ONE trunk its history rests on -- `containing_trunk`, the same
-# question `track` / `sync`'s orphan heal / `drop`'s reconnect each ask (issue
-# #73) -- and only that trunk's menu offers it. Without the gate, `up` from
-# `main` would offer a develop-grown stack and then check it out, which is
-# #73's mistake in a command that moves HEAD. So the two commands can
-# legitimately disagree in a multi-trunk repo (tree draws a row the menu on
-# that trunk refuses): 結果として up は tree より厳密になる（tree は帰属を
-# 言わない）-- not a bug, tree's own ambiguity showing through.
+# The gate is `containing_trunk`: a detached root belongs to the ONE trunk its
+# history rests on -- the same question `track` / `sync`'s orphan heal / `drop`'s
+# reconnect each ask (issue #73) -- and only that trunk's menu offers it. Without
+# it, `up` from `main` would offer a develop-grown stack and then check it out,
+# which is #73's mistake in a command that MOVES HEAD.
+#
+# `cmd_tree` now asks the same question to decide where to DRAW each root, so the
+# two agree by construction rather than by coincidence. They used to not: `tree`
+# emitted every root after ALL trunks, at the indent of the LAST trunk's own
+# children, so a trunk could show a row its own menu refused -- and with a real
+# child alongside it, `up` moved HEAD with no prompt from a picture that showed a
+# choice (issue #91). What still differs is liveness, below, and `named_children_of`.
 #
 # `named_children_of` below is the other half of that disagreement: `up <name>`
 # accepts ANY trunk's detached root, because naming it is not the silent jump
@@ -1598,16 +1597,43 @@ def cmd_tree(_args)
   # Each trunk is a visual root; its children are the stack roots resting on it.
   # `order(trunk)` includes the trunk itself at depth 0, which we skip here --
   # the trunk row is printed with its own (cyan, "(trunk)") styling.
+  #
+  # Stacks the trunks cannot reach -- a parent merged and deleted, or untracked
+  # while it still had children -- render as extra roots, drawn UNDER the trunk
+  # `containing_trunk` assigns them to. That placement is the whole point:
+  # trunk-child indent reads as a claim about which trunk a stack rests on, and
+  # emitted in one batch after the LAST trunk the claim was simply wrong. `up`'s
+  # menu has always answered per-trunk (`children_of` asks `containing_trunk`
+  # too), so a trunk could show two children here and then move HEAD without
+  # asking, having only ever counted one (issue #91).
+  #
+  # Each root's trunk is resolved ONCE, before the trunk loop, and read back
+  # positionally. This is the only `git` `tree` spends outside the snapshot, so
+  # what it costs is worth being exact about: `containing_trunk` is itself a
+  # `rev-list` PER TRUNK, so asking it again inside the loop -- the obvious way
+  # to write this -- would cost trunks^2 x roots rather than trunks x roots, and
+  # the latter is what `up` already spends to build the menu this now agrees
+  # with. A single-trunk repo pays nothing at all (`containing_trunk`
+  # short-circuits) and its output is unchanged.
+  #
+  # Two parallel arrays, not a Hash: `roots` stays the concrete `Array[String]`
+  # the topology pins, so the name reaching `print_order` keeps its type. Routing
+  # it through a packed `"<root>\t<trunk>"` index instead measured worse -- it
+  # widened `print_order` / `order` / `each_preorder` / `walk_order` to untyped
+  # and needed three fresh seed pins to claw back (see rbs/git-stack.rbs).
+  #
+  # A phantom root -- drawn here, but with its ref gone -- has no answerable
+  # trunk: every range comes back empty and it lands on the primary. `up` never
+  # faces that (it filters to `live_detached_roots` precisely so a phantom cannot
+  # be walked to); `tree` still draws the row, so it has to place it somewhere.
+  roots = snapshot.topology.detached_roots
+  homes = roots.map { |root| containing_trunk(root, trunks) }
   trunks.each do |trunk|
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
     print_order(trunk, 0, true, cur, snapshot)
-  end
-
-  # Stacks the trunks cannot reach -- a parent merged and deleted, or untracked
-  # while it still had children -- render as extra roots, indented one level
-  # (base 1) so they line up with the stack roots that rest on a trunk.
-  snapshot.topology.detached_roots.each do |root|
-    print_order(root, 1, false, cur, snapshot)
+    roots.each_with_index do |root, i|
+      print_order(root, 1, false, cur, snapshot) if homes[i] == trunk
+    end
   end
 end
 

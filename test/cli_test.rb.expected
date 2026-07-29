@@ -768,13 +768,29 @@ error: parent branch 'feat-a' no longer exists
 ### up <name> reaches another trunk's detached root; the menu still refuses it
 $ git stack tree
   main (trunk)
-* develop (trunk)
     m-b (1 commit(s)) (parent 'm-a' is untracked)
+* develop (trunk)
 [exit 0]
 $ git stack up
 error: no branch stacked on top of 'develop'
 [exit 1]
 $ git stack up m-b
+Switched to branch 'm-b'
+[exit 0]
+HEAD: m-b
+
+### tree and up agree on which trunk a detached root belongs to
+$ git stack tree
+  main (trunk)
+    m-b (1 commit(s)) (parent 'm-a' is untracked)
+* develop (trunk)
+    d-b (1 commit(s)) (parent 'd-a' is untracked)
+[exit 0]
+$ git stack up
+Switched to branch 'd-b'
+[exit 0]
+HEAD: d-b
+$ git stack up
 Switched to branch 'm-b'
 [exit 0]
 HEAD: m-b
