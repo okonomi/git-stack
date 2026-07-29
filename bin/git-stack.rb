@@ -116,6 +116,35 @@ def sh(arg)
   "'" + arg.to_s.gsub("'") { "'\\''" } + "'"
 end
 
+# A branch name as an UNAMBIGUOUS ref argument, shell-quoted. This is the
+# canonical home for a hazard the rest of the file keeps meeting: git resolves
+# `refs/tags/` before `refs/heads/`, so a tag sharing a branch's name silently
+# wins every place a bare name is handed to git as a rev. Reading it wrong gives
+# a wrong answer (`containing_trunk` picking the wrong trunk, `ahead_behind`
+# counting against the tag); writing it wrong destroys work -- `restack` replayed
+# a stack onto the tag's commit and dropped its parent's commits (issue #96).
+#
+# Use it for every argument git resolves AS A REV. Do NOT use it for an argument
+# that NAMES A BRANCH TO CHECK OUT OR UPDATE -- those take checkout's DWIM, which
+# already prefers `refs/heads/`, and qualifying them breaks the command instead
+# of hardening it. `git rebase <upstream> refs/heads/<branch>` is the trap:
+# it checks the ref out DETACHED, reports "updated detached HEAD", and leaves the
+# branch where it was. So `rebase`'s upstream/`--onto` are qualified while its
+# trailing branch, `checkout`, `checkout -b` and `branch -D` stay bare -- the
+# bare sites say so where they sit, so a later "the last unqualified name" sweep
+# reads as deliberate rather than missed.
+#
+# One rev site deliberately does NOT route through here: the `%(ahead-behind:)`
+# atom in `ahead_behind_chunk` spells the prefix by hand, because it goes inside
+# a format string that is `sh`-quoted whole and cannot carry these quotes.
+#
+# Quotes only the name, not the whole ref: `refs/heads/` is a constant with no
+# shell metacharacters, so quoting it would be noise -- and it keeps the emitted
+# command byte-identical to the hand-written form each call site replaced.
+def branch_ref(name)
+  "refs/heads/#{sh(name)}"
+end
+
 # Every git call goes through one of the three wrappers below. Pick by
 # answering two questions in order:
 #
@@ -217,6 +246,10 @@ end
 #
 # Uses git_run (not git_ok) so git's own "Switched to branch" message reaches
 # the terminal instead of being redirected away.
+#
+# Bare name, NOT `branch_ref`: this is the exempt role that helper warns about --
+# checkout's DWIM already prefers `refs/heads/`, and qualifying it would detach
+# HEAD instead. Same for `checkout -b` and `branch -D` elsewhere in the file.
 def checkout!(branch)
   die("failed to check out '#{branch}'") unless git_run("checkout #{sh(branch)}")
 end
@@ -253,7 +286,7 @@ end
 # it in a per-node loop over a stack -- use the pre-captured `existing_branches`
 # set there instead (see `print_tree_row`/`restack_subtree`).
 def branch_exists?(name)
-  git_ok("show-ref --verify --quiet refs/heads/#{sh(name)}")
+  git_ok("show-ref --verify --quiet #{branch_ref(name)}")
 end
 
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
@@ -263,13 +296,11 @@ end
 # The per-branch path, for `restack`'s up-to-date check and as `tree`'s fallback
 # when git is too old for the batched `for-each-ref` atom (see scan_ahead_behind).
 #
-# Full `refs/heads/` on both ends for the reason `ahead_behind_chunk` spells out
-# for the batched path: a same-named tag outranks the branch in git's ambiguous
-# resolution, and these counts pick restack's branch -- fast-forward, replay, or
-# "already up to date" -- so measuring the wrong commit skips work or does the
-# wrong kind. Both ends are local branch names here, same as in the batch.
+# Both ends through `branch_ref` (which says why): these counts pick restack's
+# branch -- fast-forward, replay, or "already up to date" -- so measuring the
+# wrong commit skips work or does the wrong kind.
 def ahead_behind(parent, branch)
-  out = git_out("rev-list --left-right --count refs/heads/#{sh(parent)}...refs/heads/#{sh(branch)}")
+  out = git_out("rev-list --left-right --count #{branch_ref(parent)}...#{branch_ref(branch)}")
   parts = out.split("\t")
   return [0, 0] if parts.length != 2
 
@@ -412,13 +443,10 @@ def containing_trunk(branch, trunks)
   best = trunks[0]
   best_count = -1
   trunks.each do |trunk|
-    # Full `refs/heads/`, not the bare names the callers hand us: git resolves
-    # `refs/tags/` before `refs/heads/`, so a tag sharing a branch's name would
-    # make this count ancestry against the TAG's commit and hand the branch to
-    # whichever trunk that tag happens to sit on -- `up` then checks the stack
-    # out from the wrong trunk and `sync` rebases it there. Both ends are always
-    # local branch names, so spelling the namespace out costs nothing.
-    out = git_out("rev-list --count refs/heads/#{sh(trunk)}..refs/heads/#{sh(branch)}")
+    # Through `branch_ref` (which says why): read bare, a tag sharing a branch's
+    # name would hand that branch to whichever trunk the tag sits on -- `up` then
+    # checks the stack out from the wrong trunk and `sync` rebases it there.
+    out = git_out("rev-list --count #{branch_ref(trunk)}..#{branch_ref(branch)}")
     # Empty only when the range failed to resolve (a trunk ref that vanished
     # mid-run); skip it rather than let `"".to_i`'s 0 win every comparison.
     next if out.empty?
@@ -470,7 +498,7 @@ end
 # When they share no common ancestor (unrelated histories) leave stackBase unset
 # and warn -- `restack` then falls back to a fresh merge-base at replay time.
 def record_reparent_base(branch, parent)
-  base = git_out("merge-base #{sh(branch)} #{sh(parent)}")
+  base = git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
   if base.empty?
     info "warning: no common ancestor of '#{branch}' and '#{parent}'; stack base not recorded"
     return
@@ -484,7 +512,7 @@ end
 # `record_reparent_base`: here the tip IS where the branch's commits begin, so
 # no merge-base walk is needed.
 def record_tip_base(branch, parent)
-  set_base(branch, git_out("rev-parse #{sh(parent)}"))
+  set_base(branch, git_out("rev-parse #{branch_ref(parent)}"))
   nil
 end
 
@@ -733,7 +761,7 @@ end
 # ahead_behind_bases.
 def ahead_behind_refs(group)
   branches = unpack_lines(group).map { |pl| tab_head(pl) }.reject { |branch| branch.empty? }
-  branches.map { |branch| " refs/heads/#{sh(branch)}" }.join("")
+  branches.map { |branch| " #{branch_ref(branch)}" }.join("")
 end
 
 # branch -> the for-each-ref column carrying that branch's counts, for one
@@ -801,8 +829,10 @@ def ahead_behind_chunk(group)
 
   bases = ahead_behind_bases(group)
   # `%(refname)` + strip, not `%(refname:short)`, and full `refs/heads/<parent>`
-  # in the atom, not the bare name: a same-named tag would otherwise shadow the
-  # branch (dropping its counts, or being resolved as the ahead-behind base).
+  # in the atom, not the bare name -- the hazard `branch_ref` documents. NOT
+  # `branch_ref` itself, and this is the one deliberate exception to that sweep:
+  # the atom goes inside `fmt`, which `sh`-quotes as a whole below, so the quotes
+  # `branch_ref` adds would land nested inside the format string and break it.
   # Raw split, matching ahead_behind_columns -- see the note there.
   atoms = bases.split("\n").map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
   fmt = "%(refname)#{atoms.join("")}"
@@ -1680,10 +1710,10 @@ def resolve_stack_base(branch, parent)
   base = get_base(branch)
   # Both the clamp target for a stale recorded base and the fallback when the
   # recorded base is unusable; "" disables the clamp and signals plain-rebase.
-  mb = parent.empty? ? "" : git_out("merge-base #{sh(branch)} #{sh(parent)}")
+  mb = parent.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
   if !base.empty? &&
      git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
-     git_ok("merge-base --is-ancestor #{sh(base)} #{sh(branch)}")
+     git_ok("merge-base --is-ancestor #{sh(base)} #{branch_ref(branch)}")
     return mb if !mb.empty? && git_ok("merge-base --is-ancestor #{sh(base)} #{sh(mb)}")
     return base
   end
@@ -1700,11 +1730,13 @@ end
 def replay_onto!(branch, parent, verb)
   info "restacking #{cyan(branch)} onto #{cyan(parent)}"
   base = resolve_stack_base(branch, parent)
+  # Both arms: the rev (upstream, or `--onto`'s new base) is qualified, the
+  # trailing branch stays bare because git CHECKS IT OUT -- see `branch_ref`.
   if base.empty?
     info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
-    ok = git_ok("rebase #{sh(parent)} #{sh(branch)}")
+    ok = git_ok("rebase #{branch_ref(parent)} #{sh(branch)}")
   else
-    ok = git_ok("rebase --onto #{sh(parent)} #{sh(base)} #{sh(branch)}")
+    ok = git_ok("rebase --onto #{branch_ref(parent)} #{sh(base)} #{sh(branch)}")
   end
   return nil if ok
 
@@ -1761,7 +1793,9 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology)
           # already sits there while the parent advanced past it. Nothing to
           # replay (`--onto` would re-apply and conflict); fast-forward instead.
           info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
-          ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{sh(parent)}")
+          # Two branch names, one bare and one qualified, on purpose: `checkout`
+          # names the branch to move onto, `merge` takes a rev -- see `branch_ref`.
+          ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{branch_ref(parent)}")
           die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
         else
           replay_onto!(branch, parent, verb)
@@ -1900,6 +1934,8 @@ def cmd_drop(args)
   if delete
     # Can't delete the branch you're on; step onto its former parent first.
     git_ok("checkout #{sh(parent)}") if current_branch_or_empty == branch
+    # Bare on purpose: `branch -D` works in the branch namespace, so a same-named
+    # tag cannot be the thing deleted here (see `branch_ref` for the split).
     die("dropped '#{branch}' but failed to delete its ref") unless git_ok("branch -D #{sh(branch)}")
     info "deleted branch #{green(branch)}"
   end

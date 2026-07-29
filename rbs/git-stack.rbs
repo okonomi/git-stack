@@ -86,6 +86,14 @@
 # calls pass `order_branches`'s `Array[String]`, and the element type is lost
 # on the way in without it.
 #
+# `branch_ref` is the one entry here that was NOT written after a golden diff:
+# it is a new method (issue #96), and it is the exact shape this file's first
+# paragraph describes -- a branch-name parameter reached from a dozen call sites,
+# `effective_parent`'s unification among them. Unpinned it emits `(untyped) ->
+# String` and takes the golden to 43, one over RATCHET; pinned it is concrete and
+# the count holds at 42. Faithful for the usual reason: every caller passes a
+# branch name, String at all of them.
+#
 # `ahead_behind_columns` / `ahead_behind_readback` widened in that same wave and
 # are deliberately NOT pinned, which is this file's one worked example of an
 # unfaithful assertion. Their `Hash[String, Integer]` is what the old ref
@@ -107,6 +115,7 @@
 # -- so none of them can lie to the compiler, whatever inference does next.
 class Object
   def sh: (String) -> String
+  def branch_ref: (String) -> String
   def checkout!: (String) -> nil
   def branch_exists?: (String) -> bool
   def ahead_behind: (String, String) -> Array[Integer]

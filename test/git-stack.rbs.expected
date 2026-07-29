@@ -10,6 +10,7 @@ class Object
   def die: (String) -> void
   def info: (String) -> nil
   def sh: (String) -> String
+  def branch_ref: (String) -> String
   def git_ok: (String) -> bool
   def git_out: (String) -> String
   def git_run: (String) -> bool
