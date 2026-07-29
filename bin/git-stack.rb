@@ -348,9 +348,21 @@ end
 # rejected by every `track`/`parent`). `origin/HEAD` pointing at a branch the
 # clone lacks is ordinary (merged and cleaned up, or never checked out), so we
 # fall through to main/master rather than trust it.
+#
+# Full refname stripped ourselves, not `--short` -- same defence, same reason, as
+# `current_branch_or_empty`, with this site's own prefix and its own collision:
+# `refs/remotes/origin/<name>` shortens to `origin/<name>`, which a LOCAL BRANCH
+# of that exact name makes ambiguous (no tag involved here, unlike the rest of
+# the family), so `--short` answers `remotes/origin/<name>` and the strip misses.
+# What follows is milder than elsewhere -- the mangled name has no local ref, so
+# the remote's answer is discarded rather than misread -- but discarded silently,
+# and a fall-through to main/master looks exactly like having no `origin/HEAD`.
+#
+# The strip is total rather than heuristic: we asked for that exact symref path,
+# so the answer is under `refs/remotes/origin/` by construction. A HEAD pointed
+# outside it keeps its full refname and `branch_exists?` rejects it below.
 def detect_trunk
-  head = git_out("symbolic-ref --quiet --short refs/remotes/origin/HEAD")
-  name = head.sub(/^origin\//, "")
+  name = git_out("symbolic-ref --quiet refs/remotes/origin/HEAD").delete_prefix("refs/remotes/origin/")
   return name if !name.empty? && branch_exists?(name)
   return "main" if branch_exists?("main")
   return "master" if branch_exists?("master")

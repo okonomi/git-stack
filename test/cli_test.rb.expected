@@ -17,6 +17,12 @@ trunk(s): main
 [exit 0]
 stack.trunk: main
 
+### init reads the remote's default branch past a local branch named origin/<name>
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
 ### init dies when the remote's default branch is the only candidate
 $ git stack init
 error: cannot determine trunk branch; run 'git stack init <branch>'
