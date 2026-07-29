@@ -249,8 +249,14 @@ end
 #
 # The per-branch path, for `restack`'s up-to-date check and as `tree`'s fallback
 # when git is too old for the batched `for-each-ref` atom (see scan_ahead_behind).
+#
+# Full `refs/heads/` on both ends for the reason `ahead_behind_chunk` spells out
+# for the batched path: a same-named tag outranks the branch in git's ambiguous
+# resolution, and these counts pick restack's branch -- fast-forward, replay, or
+# "already up to date" -- so measuring the wrong commit skips work or does the
+# wrong kind. Both ends are local branch names here, same as in the batch.
 def ahead_behind(parent, branch)
-  out = git_out("rev-list --left-right --count #{sh(parent)}...#{sh(branch)}")
+  out = git_out("rev-list --left-right --count refs/heads/#{sh(parent)}...refs/heads/#{sh(branch)}")
   parts = out.split("\t")
   return [0, 0] if parts.length != 2
 
@@ -393,7 +399,13 @@ def containing_trunk(branch, trunks)
   best = trunks[0]
   best_count = -1
   trunks.each do |trunk|
-    out = git_out("rev-list --count #{sh(trunk)}..#{sh(branch)}")
+    # Full `refs/heads/`, not the bare names the callers hand us: git resolves
+    # `refs/tags/` before `refs/heads/`, so a tag sharing a branch's name would
+    # make this count ancestry against the TAG's commit and hand the branch to
+    # whichever trunk that tag happens to sit on -- `up` then checks the stack
+    # out from the wrong trunk and `sync` rebases it there. Both ends are always
+    # local branch names, so spelling the namespace out costs nothing.
+    out = git_out("rev-list --count refs/heads/#{sh(trunk)}..refs/heads/#{sh(branch)}")
     # Empty only when the range failed to resolve (a trunk ref that vanished
     # mid-run); skip it rather than let `"".to_i`'s 0 win every comparison.
     next if out.empty?
