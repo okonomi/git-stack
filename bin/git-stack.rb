@@ -315,7 +315,10 @@ end
 #
 # `select` rather than an `each`/`<<` accumulator, for the reason spelled out
 # on `configured_trunks` -- and this is the concrete receiver that rule asks
-# for, `configured` being that method's own result.
+# for, `configured` being that method's own result. Widening here costs more
+# than an `untyped` line: `trunk_branches` then hands callers two different
+# array representations and the unchecked cast segfaults, which is why the
+# result is pinned in rbs/git-stack.rbs.
 def live_trunks(configured)
   configured.select do |trunk|
     live = branch_exists?(trunk)
