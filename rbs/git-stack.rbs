@@ -62,19 +62,16 @@
 # Faithful for the same reason `children_of` is -- a parent name and the trunk
 # list, String and Array[String].
 #
-# `live_trunks` / `trunk_branches` are pinned against a CRASH, not a widening,
-# and they are the entries that stop being redundant the moment the compiler
-# widens `live_trunks`'s `select` to `Array[untyped]` (Spinel master tip does;
-# the pinned SPINEL_REF does not). Widened, `trunk_branches` answers two
-# different array representations -- a poly array on the configured path, the
-# `[trunk]` literal's string array on the detect path -- so it returns Spinel's
-# boxed value, and every caller unboxes it with a straight `(sp_StrArray *)v.p`
-# cast that never checks which kind it holds. On the configured path (any repo
-# with `stack.trunk` set, i.e. every repo past its first command) that reads a
-# poly array's 16-byte elements as `char *`: the trunk list's first entry
-# becomes the pointer 0x1, and the first `trunk?` segfaults in `strcmp` inside
-# `Set#include?`. Pinned, the list stays a string array end to end and Spinel
-# converts on the way out instead of casting.
+# `live_trunks` / `trunk_branches` are pinned against a CRASH rather than a
+# golden diff -- the one failure mode this file's rule does not cover. Widen
+# `live_trunks`'s `select` and `trunk_branches` answers a poly array on the
+# configured path and the `[trunk]` literal's string array on the detect path;
+# callers unbox both with the same unchecked cast, so the first `trunk?`
+# segfaults on any repo with `stack.trunk` set rather than surfacing as a new
+# `untyped` line (17447ac has the codegen). `live_trunks` is the entry doing
+# that work -- pinned, both of `trunk_branches`' return paths are `Array[String]`
+# already, so its own entry is this file's cheap-pin rule, not a second
+# assertion. Both faithful: the trunk list, `Array[String]` at every call site.
 #
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
