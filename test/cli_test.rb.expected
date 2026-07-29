@@ -603,6 +603,30 @@ $ git stack tree
     * feat-b (1 commit(s))
 [exit 0]
 
+### trunk detection ignores a tag sharing a branch's name
+$ git stack tree
+* main (trunk)
+  develop (trunk)
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'main'
+[exit 1]
+HEAD: main
+$ git stack up
+warning: refname 'feat-b' is ambiguous.
+Switched to branch 'feat-b'
+[exit 0]
+HEAD: feat-b
+$ git stack sync
+syncing stack rooted at develop
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'develop'
+done.
+[exit 0]
+feat-b stackParent: develop
+feat-b behind/ahead of develop: 0	2
+
 ### up and down round-trip through an untracked parent
 $ git stack tree
 * main (trunk)

@@ -876,6 +876,53 @@ gsq("create feat-b"); commit("b.txt", "b1")
 setup("git tag feat-a") # tag sharing feat-a's name triggers the %(refname:short) disambiguation
 run("tree")
 
+# The other half of the same hazard, one layer down: `containing_trunk` answers
+# "which of these trunks does this branch rest on" by counting `<trunk>..<branch>`
+# and taking the smallest, and a bare refname there resolves `refs/tags/` BEFORE
+# `refs/heads/`. feat-b is on develop's stack while a tag of that name points at
+# main, so `main..feat-b` measures the tag, counts 0, and main wins as the
+# "nearest" trunk. That is not a cosmetic slip -- both callers below act on the
+# answer: `up` checks a develop stack out from main, and `sync`'s orphan heal
+# REBASES onto the trunk it names, dropping the commits of the one the branch was
+# really built on. `tree` is the control: it reads the recorded stack rather than
+# history, so it was never fooled and must keep saying develop throughout.
+section "trunk detection ignores a tag sharing a branch's name"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+# develop gains a commit of its own, so a branch stacked on it is strictly
+# further from main -- the distance containing_trunk compares
+setup("git checkout -q develop"); commit("d.txt", "d1")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+# untracking feat-a leaves feat-b a detached root, the shape that sends `up`
+# through containing_trunk to decide which trunk's menu it belongs on
+setup("git checkout -q feat-a"); gsq("untrack")
+setup("git tag feat-b main")
+setup("git checkout -q main")
+run("tree")
+# main has no stack of its own: the tag is the only thing that could put feat-b here
+run("up")
+show("HEAD", "git branch --show-current")
+# ...and from the trunk feat-b really rests on, `up` still reaches it. git's own
+# ambiguity warning on the checkout stays -- the ref it lands on is the branch.
+setup("git checkout -q develop")
+run("up")
+show("HEAD", "git branch --show-current")
+# Deleting feat-a leaves feat-b an orphan, which is what sends `sync` through
+# containing_trunk. Run it from develop, not feat-b: `symbolic-ref --short` has
+# the same tag-collision hazard and would report HEAD as `heads/feat-b`, which
+# resolves unambiguously and would hide the bug under test.
+setup("git branch -D feat-a")
+setup("git checkout -q develop")
+run("sync")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+# Spelled with refs/heads on both ends, or this check reads the tag too and
+# reports the distance from main. 0 behind / 2 ahead is feat-b sitting on
+# develop's tip carrying its own a1 and b1.
+show("feat-b behind/ahead of develop",
+     "git rev-list --left-right --count refs/heads/develop...refs/heads/feat-b")
+
 # `tree` draws feat-b at trunk-child indent and names the untracked parent it
 # actually rests on; `up`, `parent` and `down` all have to agree with it. The
 # whole loop runs in ONE section on purpose -- the bug was a disagreement
