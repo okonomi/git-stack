@@ -627,6 +627,44 @@ done.
 feat-b stackParent: develop
 feat-b behind/ahead of develop: 0	2
 
+### commands read HEAD past a tag sharing the branch's name
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+$ git stack untrack
+'feat-a' is no longer tracked in a stack
+[exit 0]
+feat-a stackParent after untrack: 
+$ git stack track
+tracking 'feat-a' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-a.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed
+branch.feat-a.stackparent main
+feat-b stackParent: feat-a
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-a
+done.
+[exit 0]
+feat-b stackParent after sync: feat-a
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+
+### a detached HEAD is still detached without --short
+$ git stack parent
+error: you are in 'detached HEAD' state; check out a branch first
+[exit 1]
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+[exit 0]
+
 ### up and down round-trip through an untracked parent
 $ git stack tree
 * main (trunk)

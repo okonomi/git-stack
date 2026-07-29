@@ -923,6 +923,53 @@ show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 show("feat-b behind/ahead of develop",
      "git rev-list --left-right --count refs/heads/develop...refs/heads/feat-b")
 
+# The third leak of the same hazard, and the widest: reading HEAD. Why `--short`
+# answers `heads/feat-a` here is on `current_branch_or_empty`; what it costs is
+# what this section is for.
+#
+# The damage is quiet rather than loud, which is why this section drives a whole
+# session instead of one command: `untrack` reports success and removes nothing,
+# `track` writes keys under `branch.heads/feat-a.*` that no reader ever looks at,
+# `create` records a parent that is not a branch, and the `sync` after it sees
+# that dead parent and reparents the child onto trunk -- so the mis-record only
+# becomes destructive one command later. `drop` is the sole loud one. `tree` runs
+# throughout as the witness: it is the only place the current-branch marker `*`
+# and the recorded edges are visible at the same time (issue #93).
+section "commands read HEAD past a tag sharing the branch's name"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git tag feat-a")
+# the `*` marker is `cur == branch`, the first comparison the short name breaks
+run("tree")
+# reports success; the assertion below is whether the recorded parent is gone
+run("untrack")
+show("feat-a stackParent after untrack", "git config --get branch.feat-a.stackParent")
+run("track")
+# the only key any reader consults is `branch.feat-a.*` -- anything else is a leak
+show("stack config keys", "git config --get-regexp '^branch\\..*stack' | sort")
+# a parent recorded here as `heads/feat-a` is a name `sync` reads back as missing
+gsq("create feat-b"); commit("b.txt", "b1")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
+run("tree")
+# ...which is where the silent mis-record turns into a rewrite: feat-b rests on
+# feat-a, and healing it onto trunk would drop a1 out from under it
+run("sync")
+show("feat-b stackParent after sync", "git config --get branch.feat-b.stackParent")
+setup("git checkout -q feat-a")
+run("drop")
+
+# The guard the fix above rests on, which nothing else here covers: dropping
+# `--short` must not cost the detached-HEAD check (why it does not is on
+# `current_branch_or_empty`). "" is the whole distinction `current_branch` dies
+# on, so both sides belong here: `parent` needs a branch and must die naming the
+# state, `tree` does not and must render, minus the `*`.
+section "a detached HEAD is still detached without --short"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q --detach")
+run("parent")
+run("tree")
+
 # `tree` draws feat-b at trunk-child indent and names the untracked parent it
 # actually rests on; `up`, `parent` and `down` all have to agree with it. The
 # whole loop runs in ONE section on purpose -- the bug was a disagreement
