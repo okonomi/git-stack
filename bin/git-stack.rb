@@ -226,8 +226,21 @@ def require_repo
 end
 
 # The current branch, or "" when detached (never dies).
+#
+# Full `refs/heads/` stripped ourselves, not `--short`: `--short` stops
+# shortening as soon as the result would be ambiguous, so a tag named after the
+# checked-out branch makes it answer `heads/<name>`. That name seeds every
+# command starting from "the branch I am on", and because it still resolves as a
+# ref it fails quietly rather than loudly -- the snapshot section "commands read
+# HEAD past a tag sharing the branch's name" walks what that costs, one command
+# at a time. Same defence, same reason, as `existing_branches` (issue #93).
+#
+# Still "" when detached: without `--short`, `symbolic-ref --quiet` exits
+# non-zero on a detached HEAD exactly as before, and `git_out` maps that to "".
+# A HEAD pointed outside `refs/heads/` has no prefix to strip and comes back
+# whole, which is what `--short` did with it too.
 def current_branch_or_empty
-  git_out("symbolic-ref --quiet --short HEAD")
+  git_out("symbolic-ref --quiet HEAD").delete_prefix("refs/heads/")
 end
 
 def current_branch
