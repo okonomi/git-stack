@@ -549,20 +549,22 @@ end
 # No root can appear twice: `detached_roots` already drops any whose own parent
 # is a trunk, and that is exactly the set `children_of` answers.
 #
-# Appended with `each` and `<<` rather than `+` or `concat`: nothing in this file
-# concatenates arrays, and the array methods Spinel resolves only on a concrete
-# receiver are the ones that compile clean and die on the shipped binary (see
-# test/binary_test.sh). The list being appended to is freshly built by
-# `StackTopology#children_of`, so mutating it here shares nothing.
+# `select` and `concat` are safe HERE, and the reason is worth stating because
+# it does not generalise: Spinel resolves the poly-array methods only on a
+# concrete receiver, and off one they compile clean, pass `spin test`, and die
+# with NoMethodError on the shipped binary alone. Both receivers below are
+# pinned `Array[String]` in rbs/git-stack.rbs (`children_of`,
+# `live_detached_roots`), and test/binary_test.sh drives this exact path on the
+# compiled artifact -- which is the only thing that can actually prove it.
+# `concat` mutates a list `StackTopology#children_of` builds fresh per call, so
+# it shares nothing.
 def children_of(parent, trunks)
   topology = StackRepository.load_topology(trunks)
   children = topology.children_of(parent)
   return children unless is_trunk?(parent, trunks)
 
-  topology.live_detached_roots.each do |root|
-    children << root if containing_trunk(root, trunks) == parent
-  end
-  children
+  ours = topology.live_detached_roots.select { |root| containing_trunk(root, trunks) == parent }
+  children.concat(ours)
 end
 
 # Every detached root `up <name>` may name explicitly from a trunk `parent`:
@@ -582,8 +584,7 @@ def named_children_of(parent, trunks)
   children = topology.children_of(parent)
   return children unless is_trunk?(parent, trunks)
 
-  topology.live_detached_roots.each { |root| children << root }
-  children
+  children.concat(topology.live_detached_roots)
 end
 
 # The single home of the "a branch with no recorded parent rests on the trunk"
@@ -1084,11 +1085,7 @@ class StackTopology
   # written should get it by asking the right question rather than by
   # remembering to re-add a filter (issue #85).
   def live_detached_roots
-    roots = []
-    detached_roots.each do |root|
-      roots << root if branch?(root)
-    end
-    roots
+    detached_roots.select { |root| branch?(root) }
   end
 
   # Every branch `sync` has to heal, wherever in the forest it sits: one that
