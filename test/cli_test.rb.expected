@@ -44,6 +44,24 @@ $ git stack init nope
 error: branch 'nope' does not exist
 [exit 1]
 
+### init rejects a duplicate trunk name
+$ git stack init main develop main
+error: duplicate trunk 'main'
+[exit 1]
+stack.trunk (unchanged): main develop
+
+### init rejects a trunk whose spelling is not the stored refname
+$ git stack init main Main
+error: branch 'Main' does not exist
+[exit 1]
+
+### an already-duplicated trunk list is deduped on read
+stack.trunk (raw config): main main
+$ git stack tree
+  main (trunk)
+  * feat-a 
+[exit 0]
+
 ### sync re-detects a renamed trunk instead of reparenting onto its old name
 $ git stack sync
 configured trunk 'master' no longer exists; ignoring it
@@ -237,6 +255,30 @@ survive a parent that was squash-merged and deleted).
 $ git stack --bogus
 error: invalid option: --bogus
 [exit 1]
+
+### commands reject extra arguments and flags they do not take
+$ git stack create feat-b unexpected
+error: 'create' takes at most one argument
+[exit 1]
+$ git stack tree bogus
+error: 'tree' takes no arguments
+[exit 1]
+$ git stack restack --delete
+error: invalid option: --delete
+[exit 1]
+branches: feat-a main
+HEAD: feat-a
+
+### an empty argument is not counted as a positional
+$ git stack tree ''
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+$ git stack drop '' feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-b stackParent: main
 
 ### create records the parent and checks out the branch
 $ git stack create feat-a

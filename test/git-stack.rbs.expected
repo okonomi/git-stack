@@ -62,6 +62,7 @@ class Object
   def arg0: (Array[String]) -> String
   def has_flag?: (Array[String], String) -> bool
   def first_operand: (Array[String]) -> String
+  def operand?: (String) -> bool
   def cmd_init: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
   def cmd_tree: (Array[String]) -> Array[String]
@@ -79,6 +80,10 @@ class Object
   def cmd_drop: (Array[String]) -> nil
   def cmd_version: (Array[String]) -> nil
   def cmd_help: (Array[String]) -> nil
+  def flag_owner: (String) -> String
+  def command_flag?: (String) -> bool
+  def max_operands: (String) -> Integer
+  def validate_args!: (String, Array[String]) -> nil
   def parse_global_flags: (Array[String]) -> String
   def main: (Array[String]) -> nil
 end

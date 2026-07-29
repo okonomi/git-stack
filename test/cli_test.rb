@@ -161,6 +161,46 @@ section "init rejects a non-existent trunk"
 new_repo
 run("init nope")
 
+# A repeated trunk used to be stored twice, and `tree` then drew that trunk --
+# and its whole subtree -- twice over. Rejecting rather than quietly deduping:
+# `init main main` is a typo, and the trunk list is the one setting every other
+# command reads, so saying so beats silently storing something the user did not
+# type. The existing list must survive the rejection, which is the second show:
+# a failed `init` writes nothing (issue #83).
+section "init rejects a duplicate trunk name"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+run("init main develop main")
+show("stack.trunk (unchanged)", "git config --get-all stack.trunk | tr '\\n' ' '")
+
+# The repeat check compares the strings the user typed, so a second spelling of
+# ONE branch used to walk straight past it. `show-ref --verify refs/heads/Main`
+# succeeds on a case-insensitive filesystem with only `main` present, so
+# `init main Main` stored two trunks for one branch and `tree` drew it twice --
+# the #83 symptom, reached by a different door. `init` checks the exact stored
+# refnames now, which is the spelling every other reader compares against.
+#
+# The section runs the same on a case-SENSITIVE filesystem, where `Main` is
+# simply a branch that does not exist: same message, same exit, for the same
+# reason -- git has no `refs/heads/Main`.
+section "init rejects a trunk whose spelling is not the stored refname"
+new_repo
+run("init main Main")
+
+# A list that is already duplicated cannot be fixed by validating input: repos
+# that ran the old `init main main`, or a hand-written `config --add`, still carry
+# two rows. Written straight to config here to be exactly that repo. Every reader
+# goes through `configured_trunks`, so deduping there is what stops `tree` drawing
+# the trunk -- and its whole subtree -- twice.
+section "an already-duplicated trunk list is deduped on read"
+new_repo
+gsq("init main")
+gsq("create feat-a")
+setup("git config --add stack.trunk main")
+show("stack.trunk (raw config)", "git config --get-all stack.trunk | tr '\\n' ' '")
+run("tree")
+
 # `init` and auto-detect only ever record a branch that exists, but nothing
 # keeps it there. These three cover a recorded trunk that was renamed or
 # deleted afterwards -- the name reads back fine and is a ghost.
@@ -377,6 +417,41 @@ run("-h")
 
 section "an unknown flag is rejected"
 run("--bogus")
+
+# A typo in an argument used to be silent: every command read only the argument
+# it wanted and dropped the rest, so `create feat-b oops` created `feat-b` and
+# said nothing about `oops`. Worse for `--delete`, which the dispatcher lifts out
+# BEFORE the subcommand is known and re-attaches to whatever ran, so it was
+# accepted everywhere and honoured only by `drop`.
+#
+# One section for all of it because the shapes are one rule, not several: a
+# command's arity (`init` unlimited, the branch-taking ones at most one, the rest
+# none) and its flags are checked together, before the repo is touched. The last
+# two shows are that "before": the run above must not have created a branch or
+# moved HEAD. `--delete` on `drop` itself keeps working, proved where it always
+# was (see "drop --delete removes the branch ref after splicing") (issue #83).
+section "commands reject extra arguments and flags they do not take"
+new_repo
+gsq("create feat-a")
+# one per rule, not one per command: too many for a command that takes one, any
+# for a command that takes none, and a flag whose owner is someone else
+run("create feat-b unexpected")
+run("tree bogus")
+run("restack --delete")
+show("branches", "git branch --format='%(refname:short)' | tr '\\n' ' '")
+show("HEAD", "git branch --show-current")
+
+# An empty argument names no branch -- `arg0` and `first_operand` both say so in
+# as many words -- so counting it as a positional would reject command lines the
+# commands themselves handle. A wrapper writing `git stack down "$maybe_unset"`
+# is the ordinary way to hit this. `drop "" feat-a` still drops `feat-a`.
+section "an empty argument is not counted as a positional"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+run("tree ''")
+run("drop '' feat-a")
+show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 
 section "create records the parent and checks out the branch"
 new_repo
