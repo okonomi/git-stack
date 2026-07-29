@@ -975,3 +975,72 @@ setup("git checkout -q feat-b")
 run("tree")
 run("parent")
 run("down")
+
+# Fix-wave finding 1 (issue #85's own shape, relocated): `tree` draws every
+# detached root after ALL trunks, at the same indent as the LAST trunk's own
+# children -- so a main-grown root sits visually right under `develop`. The
+# MENU still refuses it from `develop` (`containing_trunk` says it's `main`'s),
+# but naming it is not the silent jump that gate exists to stop, so `up m-b`
+# has to reach it anyway -- `tree` drew this exact row for the user to read the
+# name off of. Both halves are asserted: the menu still says no, the name
+# still works.
+section "up <name> reaches another trunk's detached root; the menu still refuses it"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q main")
+gsq("create m-a"); commit("a.txt", "a1")
+gsq("create m-b"); commit("b.txt", "b1")
+setup("git checkout -q m-a")
+gsq("untrack")
+setup("git checkout -q develop")
+run("tree")
+run("up")
+run("up m-b")
+show("HEAD", "git branch --show-current")
+
+# Fix-wave finding 2, a regression this branch itself introduced (in the
+# `children_of` that already shipped on it, ahead of today's finding 1):
+# `feat-b`'s ref is deleted with `update-ref` (not `branch -d`), so its config
+# outlives it -- the same phantom shape `orphan_roots` already guards against,
+# which `detached_roots` deliberately does NOT filter (`tree` still wants to
+# draw the row). Before this branch `up` reached no detached root at all, so
+# this failure mode is new on it: offering the phantom would check it out and
+# die with git's own "did not match any file(s)". `up` must instead refuse it
+# with the same honest message an ordinary childless branch gets.
+section "up refuses a detached root whose ref no longer exists (a phantom node)"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+setup("git update-ref -d refs/heads/feat-b")
+run("tree")
+run("up")
+
+# Deferred from the earlier task loop: two independently-untracked stacks
+# under the same trunk. `detached_roots` sorts its candidate names before
+# climbing, so the menu's order should not depend on which stack was created
+# first -- created in reverse-alphabetical order (zzz-* before aaa-*) here so
+# an unsorted `up` would show it. `tree` and `up` sit adjacent so the
+# transcript itself proves the two rows agree: main's own tracked child first,
+# then the detached roots in sorted order, matching tree's rows top to bottom.
+section "up orders a trunk's tracked child before its detached roots, sorted"
+new_repo
+gsq("create main-child"); commit("mc.txt", "1")
+setup("git checkout -q main")
+gsq("create zzz-a"); commit("za.txt", "1")
+gsq("create zzz-b"); commit("zb.txt", "1")
+setup("git checkout -q zzz-a")
+gsq("untrack")
+setup("git checkout -q main")
+gsq("create aaa-a"); commit("aa.txt", "1")
+gsq("create aaa-b"); commit("ab.txt", "1")
+setup("git checkout -q aaa-a")
+gsq("untrack")
+setup("git checkout -q main")
+run("tree")
+run("up")

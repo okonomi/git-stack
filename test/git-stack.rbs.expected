@@ -40,6 +40,7 @@ class Object
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String, Array[String]) -> Array[String]
+  def named_children_of: (String, Array[String]) -> Array[String]
   def effective_parent: (String, Array[String]) -> String
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String

@@ -187,6 +187,34 @@ run sync
 run tree
 show "feat-x-child parent" "config --get branch.feat-x-child.stackParent"
 
+# The fix-wave that split `children_of` into a menu path and `named_children_of`
+# (`up <name>`, issue #85 finding 1) only ever drove the appended-detached-root
+# array through `empty?` / `length` / `each` on the compiled binary above --
+# never `include?` (the named path's membership check) or `[0]` (the
+# single-child menu's auto-checkout). Both are ordinary Array methods CRuby
+# never misses, so only the shipped Spinel binary can show one choking on this
+# specific array (built at run time by `each`/`<<`, not a literal). A fresh
+# repo keeps this independent of the shared fixture above.
+section "up <name> and a lone child both index the run-time-built list (issue #85)"
+new_repo
+gsq create base-a; commit a.txt a1
+gsq create base-b; commit b.txt b1
+git_q checkout -q base-a
+gsq untrack
+git_q checkout -q main
+# main has no tracked child left (base-a untracked) and exactly one detached
+# root (base-b, appended by children_of) -- length 1, so `up` auto-checks it
+# out via children[0] rather than printing a menu.
+run up
+show "HEAD after the lone child's [0] checkout" "branch --show-current"
+git_q checkout -q main
+gsq create trunk-child; commit tc.txt tc1
+git_q checkout -q main
+# Now main has two candidates (trunk-child, base-b) -- naming one exercises
+# include? on that same appended array before the checkout.
+run up base-b
+show "HEAD after the named include? checkout" "branch --show-current"
+
 # Squash-merge recovery on the SHIPPED binary. `restack`'s `git rebase --onto
 # <parent> <stackBase>` is what makes this work; a plain rebase would re-apply
 # feature-a's two now-squashed commits and conflict. This is the one path that

@@ -681,3 +681,41 @@ feat-a
 $ git stack down
 error: parent branch 'feat-a' no longer exists
 [exit 1]
+
+### up <name> reaches another trunk's detached root; the menu still refuses it
+$ git stack tree
+  main (trunk)
+* develop (trunk)
+    m-b (1 commit(s)) (parent 'm-a' is untracked)
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'develop'
+[exit 1]
+$ git stack up m-b
+Switched to branch 'm-b'
+[exit 0]
+HEAD: m-b
+
+### up refuses a detached root whose ref no longer exists (a phantom node)
+$ git stack tree
+* main (trunk)
+    feat-b (parent 'feat-a' is untracked)
+      feat-c (parent 'feat-b' missing; run `git stack sync`)
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'main'
+[exit 1]
+
+### up orders a trunk's tracked child before its detached roots, sorted
+$ git stack tree
+* main (trunk)
+    main-child (1 commit(s))
+    aaa-b (1 commit(s)) (parent 'aaa-a' is untracked)
+    zzz-b (1 commit(s)) (parent 'zzz-a' is untracked)
+[exit 0]
+$ git stack up
+'main' has multiple children; pick one:
+  git stack up main-child
+  git stack up aaa-b
+  git stack up zzz-b
+[exit 1]

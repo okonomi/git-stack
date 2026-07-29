@@ -84,6 +84,16 @@ $ git stack tree
 [exit 0]
 feat-x-child parent: main
 
+### up <name> and a lone child both index the run-time-built list (issue #85)
+$ git stack up
+Switched to branch 'base-b'
+[exit 0]
+HEAD after the lone child's [0] checkout: base-b
+$ git stack up base-b
+Switched to branch 'base-b'
+[exit 0]
+HEAD after the named include? checkout: base-b
+
 ### sync recovers a branch whose parent was squash-merged and deleted
 $ git stack sync
 syncing stack rooted at feature-b

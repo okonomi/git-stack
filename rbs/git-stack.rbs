@@ -56,6 +56,12 @@
 # branch name and the topology it is asked about, String and StackTopology at
 # every call site.
 #
+# `named_children_of` joins `children_of` as the fix-wave's own pair: `up
+# <name>` now reads a second one-shot topology alongside the menu's, built the
+# same way and returned the same shape, so it is unified right along with it.
+# Faithful for the same reason `children_of` is -- a parent name and the trunk
+# list, String and Array[String].
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
 # and the trunk list, all String / Array[String] at every call site -- so none of
@@ -76,6 +82,7 @@ class Object
   def untrack!: (String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def children_of: (String, Array[String]) -> Array[String]
+  def named_children_of: (String, Array[String]) -> Array[String]
   def parent_note: (String, StackTopology) -> String
 end
 

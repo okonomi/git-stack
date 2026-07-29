@@ -507,24 +507,45 @@ def existing_branches
   Set.new(unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") })
 end
 
-# Every branch `up` can move to from `parent`: the rows `tree` draws directly
-# under it. Builds a throwaway topology (one config scan, no ahead/behind walk)
-# -- the one-shot path for `up`, distinct from the snapshot `tree` threads
-# through rendering.
+# Every branch `up`'s MENU (no name given) offers from `parent`. Builds a
+# throwaway topology (one config scan, no ahead/behind walk) -- the one-shot
+# path for `up`, distinct from the snapshot `tree` threads through rendering.
 #
 # For an ordinary branch that is exactly its recorded children. For a TRUNK it is
-# those PLUS the detached roots: the stacks `tree` renders at trunk-child indent
-# because nothing tracked reaches them -- a parent that was untracked while it
-# still had children, or one that was merged and deleted. `tree` drew them there
-# and `up` could not reach them, which is the contradiction issue #85 names; the
-# rule now is one sentence, "up offers the rows tree draws under this branch".
+# those PLUS a SLICE of the detached roots: the stacks `tree` renders at
+# trunk-child indent because nothing tracked reaches them -- a parent that was
+# untracked while it still had children, or one that was merged and deleted.
+# `tree` drew them there and the menu could not reach them, which is the
+# contradiction issue #85 names.
 #
-# Trunks are peers, so a detached root belongs to the ONE trunk its history rests
-# on -- `containing_trunk`, the same question `track` / `sync`'s orphan heal /
-# `drop`'s reconnect each ask (issue #73). Without it `up` from `main` would
-# offer a develop-based stack and then check it out, which is #73's mistake in a
-# command that moves HEAD. It costs nothing in the single-trunk repo, where
-# `containing_trunk` short-circuits before spending a `git`.
+# It is only a slice, not "every row `tree` draws here", because `tree` and the
+# menu answer different questions about a detached root. `tree` draws each one
+# exactly once, after ALL trunks, without saying which one it belongs to --
+# visually at the same indent as the LAST trunk's own children, whichever trunk
+# actually grew it. The menu has to say, because it MOVES HEAD: a detached root
+# belongs to the ONE trunk its history rests on -- `containing_trunk`, the same
+# question `track` / `sync`'s orphan heal / `drop`'s reconnect each ask (issue
+# #73) -- and only that trunk's menu offers it. Without the gate, `up` from
+# `main` would offer a develop-grown stack and then check it out, which is
+# #73's mistake in a command that moves HEAD. So the two commands can
+# legitimately disagree in a multi-trunk repo (tree draws a row the menu on
+# that trunk refuses): 結果として up は tree より厳密になる（tree は帰属を
+# 言わない）-- not a bug, tree's own ambiguity showing through.
+#
+# `named_children_of` below is the other half of that disagreement: `up <name>`
+# accepts ANY trunk's detached root, because naming it is not the silent jump
+# this gate exists to stop, and refusing a name read straight off `tree`'s own
+# row would recreate the contradiction issue #85 was written to remove.
+#
+# Also skips a detached root whose ref no longer exists (`next unless
+# topology.branch?`) -- config outliving a deleted ref, the same phantom shape
+# `orphan_roots` filters and `detached_roots` deliberately does not (`tree`
+# still wants to draw that row). Offering it here would reach `checkout!` and
+# fail with git's own "did not match any file(s)"; worse, `containing_trunk` on
+# a phantom gets an empty `rev-list` for every trunk and falls through to
+# `trunks[0]`, so in a multi-trunk repo the menu would silently hand a
+# develop-side phantom to `main` -- exactly the issue #73 mistake this whole
+# gate exists to avoid.
 #
 # No root can appear twice: `detached_roots` already drops any whose own parent
 # is a trunk, and that is exactly the set `children_of` answers.
@@ -540,7 +561,30 @@ def children_of(parent, trunks)
   return children unless is_trunk?(parent, trunks)
 
   topology.detached_roots.each do |root|
+    next unless topology.branch?(root)
     children << root if containing_trunk(root, trunks) == parent
+  end
+  children
+end
+
+# Every detached root `up <name>` may name explicitly from a trunk `parent`:
+# the menu's own list (`children_of`, above) PLUS every OTHER trunk's detached
+# roots too -- so an explicit name reaches any row `tree` draws at trunk-child
+# indent, whichever trunk `containing_trunk` actually assigns it to. See
+# `children_of`'s comment for why the two deliberately differ: naming a branch
+# is not the silent jump `containing_trunk` guards the menu against, so this
+# path skips that gate. It is still the ONLY other topology `cmd_up` may build
+# -- one invocation loads `children_of`'s or this one's, never both.
+#
+# Same phantom-ref guard as `children_of`, for the same reason: a root whose
+# ref is gone must not reach `checkout!` no matter which path found it.
+def named_children_of(parent, trunks)
+  topology = StackRepository.load_topology(trunks)
+  children = topology.children_of(parent)
+  return children unless is_trunk?(parent, trunks)
+
+  topology.detached_roots.each do |root|
+    children << root if topology.branch?(root)
   end
   children
 end
@@ -1520,14 +1564,22 @@ def cmd_up(args)
   trunks = trunk_branches
   want = arg0(args)
 
-  children = children_of(branch, trunks)
-  die("no branch stacked on top of '#{branch}'") if children.empty?
-
+  # The explicit-name and menu paths each build exactly one topology, through
+  # whichever of `named_children_of` / `children_of` fits the path -- never
+  # both -- so a single `up` invocation is one config scan, not two.
   unless want.empty?
+    children = named_children_of(branch, trunks)
+    # Same wording, same priority, as the menu path below: a branch with no
+    # children AT ALL says so, rather than "'x' is not stacked..." implying
+    # some OTHER name would have worked.
+    die("no branch stacked on top of '#{branch}'") if children.empty?
     die("'#{want}' is not stacked directly on '#{branch}'") unless children.include?(want)
     checkout!(want)
     return
   end
+
+  children = children_of(branch, trunks)
+  die("no branch stacked on top of '#{branch}'") if children.empty?
 
   if children.length == 1
     checkout!(children[0])
