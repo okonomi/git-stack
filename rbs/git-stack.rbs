@@ -84,6 +84,7 @@ class Object
   def children_of: (String, Array[String]) -> Array[String]
   def named_children_of: (String, Array[String]) -> Array[String]
   def parent_note: (String, StackTopology) -> String
+  def print_parent_note: (String, Array[String]) -> nil
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
@@ -124,6 +125,7 @@ class StackTopology
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
   def detached_roots: () -> Array[String]
+  def live_detached_roots: () -> Array[String]
   def tracked_branches: () -> Array[String]
   def parent_missing?: (String) -> bool
   def untracked_parent?: (String) -> bool

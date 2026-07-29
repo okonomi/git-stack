@@ -537,15 +537,14 @@ end
 # this gate exists to stop, and refusing a name read straight off `tree`'s own
 # row would recreate the contradiction issue #85 was written to remove.
 #
-# Also skips a detached root whose ref no longer exists (`next unless
-# topology.branch?`) -- config outliving a deleted ref, the same phantom shape
-# `orphan_roots` filters and `detached_roots` deliberately does not (`tree`
-# still wants to draw that row). Offering it here would reach `checkout!` and
-# fail with git's own "did not match any file(s)"; worse, `containing_trunk` on
-# a phantom gets an empty `rev-list` for every trunk and falls through to
-# `trunks[0]`, so in a multi-trunk repo the menu would silently hand a
-# develop-side phantom to `main` -- exactly the issue #73 mistake this whole
-# gate exists to avoid.
+# Reads `live_detached_roots`, not `detached_roots`: a root whose ref is gone is
+# a row `tree` draws and `up` must not offer (see that method for why the two
+# differ). Asking the narrower question beats filtering here, which is what kept
+# the guard from having to be repeated in `named_children_of` below.
+#
+# `containing_trunk` is spent only on roots that survive that filter, which is
+# also why it runs last in the loop: it costs a `git rev-list` per trunk, and a
+# phantom would spend one per trunk to be discarded anyway.
 #
 # No root can appear twice: `detached_roots` already drops any whose own parent
 # is a trunk, and that is exactly the set `children_of` answers.
@@ -560,8 +559,7 @@ def children_of(parent, trunks)
   children = topology.children_of(parent)
   return children unless is_trunk?(parent, trunks)
 
-  topology.detached_roots.each do |root|
-    next unless topology.branch?(root)
+  topology.live_detached_roots.each do |root|
     children << root if containing_trunk(root, trunks) == parent
   end
   children
@@ -576,16 +574,15 @@ end
 # path skips that gate. It is still the ONLY other topology `cmd_up` may build
 # -- one invocation loads `children_of`'s or this one's, never both.
 #
-# Same phantom-ref guard as `children_of`, for the same reason: a root whose
-# ref is gone must not reach `checkout!` no matter which path found it.
+# `live_detached_roots` again, so a root whose ref is gone cannot reach
+# `checkout!` down this path either -- the guard is the query, not something
+# each of these two has to remember.
 def named_children_of(parent, trunks)
   topology = StackRepository.load_topology(trunks)
   children = topology.children_of(parent)
   return children unless is_trunk?(parent, trunks)
 
-  topology.detached_roots.each do |root|
-    children << root if topology.branch?(root)
-  end
+  topology.live_detached_roots.each { |root| children << root }
   children
 end
 
@@ -1070,6 +1067,30 @@ class StackTopology
     roots
   end
 
+  # `detached_roots` minus the ones whose ref is gone -- the answer for anyone
+  # who will MOVE to a root rather than draw it.
+  #
+  # `detached_roots` deliberately keeps them: config outlives a ref deleted
+  # without `git branch -d` (the phantom shape `orphan_roots` filters), and
+  # `tree` still wants to draw that row. `up` must not offer one -- it would
+  # reach `checkout!` and fail with git's own "did not match any file(s)"
+  # instead of this tool's words. Worse, `containing_trunk` on a phantom gets an
+  # empty `rev-list` for every trunk and falls through to `trunks[0]`, so in a
+  # multi-trunk repo the menu would hand a develop-side phantom to `main` --
+  # exactly the issue #73 mistake that gate exists to avoid.
+  #
+  # This lives here, as a second named query, rather than as a guard copied into
+  # each caller: `up`'s two list builders both need it, and the next one to be
+  # written should get it by asking the right question rather than by
+  # remembering to re-add a filter (issue #85).
+  def live_detached_roots
+    roots = []
+    detached_roots.each do |root|
+      roots << root if branch?(root)
+    end
+    roots
+  end
+
   # Every branch `sync` has to heal, wherever in the forest it sits: one that
   # exists but whose recorded parent no longer resolves to a ref -- the classic
   # "parent squash-merged and deleted", which `tree` flags with "run sync".
@@ -1372,6 +1393,30 @@ def parent_note(branch, topology)
   ""
 end
 
+# Print `parent_note` for `branch` on STDERR, or nothing when there is none --
+# what `parent` and `down` do with the note `tree` prints in its row.
+#
+# STDERR, not stdout: `parent`'s stdout is the branch name a script reads, and
+# it still yields exactly that. Both commands print through here rather than
+# each spelling out the same two lines, for the reason `parent_note` itself
+# exists -- a copy is a copy that drifts (issue #85).
+#
+# The empty recorded parent short-circuits BEFORE the topology is built, and
+# that is the whole point of the guard: `StackRepository.load_topology` costs a
+# repo-wide config scan plus a repo-wide `for-each-ref`, while both of
+# `parent_note`'s cases need `parent_of(branch)` non-empty to say anything. A
+# branch resting straight on a trunk records no parent, so without this guard
+# the ordinary `down` -- the most-run command in the tool -- paid two whole-repo
+# scans to be handed "". `parent_note` still decides what the note SAYS; this
+# only decides whether the question is worth asking.
+def print_parent_note(branch, trunks)
+  return nil if get_parent(branch).empty?
+
+  note = parent_note(branch, StackRepository.load_topology(trunks))
+  info note unless note.empty?
+  nil
+end
+
 # Print one tree row for `branch`, indented two spaces per `depth`. One node of
 # the traversal, no recursion: `cmd_tree` drives the order and calls this per
 # line, reading the pre-built snapshot so the whole tree costs no `git` per node.
@@ -1505,16 +1550,10 @@ def cmd_parent(args)
   trunks = trunk_branches
   if new_parent.empty?
     puts effective_parent(branch, trunks)
-    # The name goes to stdout, where a script reads it; the note goes to stderr,
-    # where a person does. Piping `git stack parent` still yields exactly the
-    # branch name it always did.
-    #
-    # It is `tree`'s own sentence from `tree`'s own function (see parent_note),
-    # so the two commands cannot answer this question differently. The topology
-    # is loaded only on this read path -- setting a parent below has no note to
-    # print and should not pay for one.
-    note = parent_note(branch, StackRepository.load_topology(trunks))
-    info note unless note.empty?
+    # The name went to stdout, where a script reads it; the note goes to stderr,
+    # where a person does (see print_parent_note). Only this read path prints
+    # one -- setting a parent below has no note and should not pay to find out.
+    print_parent_note(branch, trunks)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
@@ -1554,8 +1593,7 @@ def cmd_down(_args)
   # with no row. Say so before moving HEAD somewhere the user has never seen
   # (issue #85). Only the untracked case reaches this line -- a parent whose ref
   # is gone already died above, with a message that says the same thing.
-  note = parent_note(branch, StackRepository.load_topology(trunks))
-  info note unless note.empty?
+  print_parent_note(branch, trunks)
   checkout!(parent)
 end
 
