@@ -73,10 +73,38 @@
 # already, so its own entry is this file's cheap-pin rule, not a second
 # assertion. Both faithful: the trunk list, `Array[String]` at every call site.
 #
+# `cyan` through `replay_onto!` are the next wave of that same unification, and
+# they are the 0b8527df story a second time: eleven `class Object` signatures
+# that had been concrete widened at their branch-name (and packed-list)
+# parameters, taking the golden from 39 untyped to 54 in one bump. Every entry
+# restates the signature the previous ref inferred unaided, so the emitted
+# golden is what proves each faithful before it is asserted here. `cyan` is the
+# `rbs/paint.rbs` lesson arriving again, on the one colour helper the earlier
+# wave left unpinned.
+#
+# `Set#merge` at the bottom is the same assertion one class out: our only two
+# calls pass `order_branches`'s `Array[String]`, and the element type is lost
+# on the way in without it.
+#
+# `ahead_behind_columns` / `ahead_behind_readback` widened in that same wave and
+# are deliberately NOT pinned, which is this file's one worked example of an
+# unfaithful assertion. Their `Hash[String, Integer]` is what the old ref
+# inferred, but the new one builds a poly hash there on purpose (spinel 328a5ac:
+# an empty-hash local keyed by a block result cannot be assumed String-keyed,
+# because the String-keyed variant reads a boxed key as a `const char *`).
+# Asserting the old signature does not narrow that hash, it reinterprets it --
+# `cc` says so, `incompatible pointer types ... 'sp_PolyPolyHash *' from a
+# function with result type 'sp_StrIntHash *'` -- and `tree` segfaults on the
+# fixture past the 4 KB scan boundary. The golden proving a signature is
+# necessary but not sufficient: it proves the OLD compiler inferred it, not that
+# the new one still represents it that way. Untyped and correct beats concrete
+# and reinterpreted, so these two stay on the slow path.
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
-# passes. Every entry here is a faithful assertion -- branch names, colour text,
-# and the trunk list, all String / Array[String] at every call site -- so none of
-# them can lie to the compiler, whatever inference does next.
+# passes -- but only where the assertion is still true of how the value is
+# actually built. Every entry here is a faithful assertion -- branch names,
+# colour text, and the trunk list, all String / Array[String] at every call site
+# -- so none of them can lie to the compiler, whatever inference does next.
 class Object
   def sh: (String) -> String
   def checkout!: (String) -> nil
@@ -84,20 +112,31 @@ class Object
   def ahead_behind: (String, String) -> Array[Integer]
   def paint: (String, String) -> String
   def green: (String) -> String
+  def cyan: (String) -> String
   def set_trunks: (Array[String]) -> Array[String]
   def live_trunks: (Array[String]) -> Array[String]
   def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
   def containing_trunk: (String, Array[String]) -> String
   def effective_parent: (String, Array[String]) -> String
+  def set_parent: (String, String) -> bool
   def clear_parent: (String) -> bool
+  def get_base: (String) -> String
+  def set_base: (String, String) -> bool
   def clear_base: (String) -> bool
+  def record_tip_base: (String, String) -> nil
   def untrack!: (String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def children_of: (String, Array[String]) -> Array[String]
   def named_children_of: (String, Array[String]) -> Array[String]
+  def tree_marker: (String, String) -> String
+  def tree_name: (String, String, String) -> String
+  def pack_lines: (Array[String]) -> String
   def parent_note: (String, StackTopology) -> String
   def print_parent_note: (String, Array[String]) -> nil
+  def print_tree_row: (String, Integer, String, StackSnapshot) -> nil
+  def resolve_stack_base: (String, String) -> String
+  def replay_onto!: (String, String, String) -> nil
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
@@ -160,4 +199,8 @@ end
 class StackRepository
   def self.load_topology: (Array[String]) -> StackTopology
   def self.load_snapshot: (Array[String]) -> StackSnapshot
+end
+
+class Set
+  def merge: (Array[String]) -> Set
 end

@@ -49,17 +49,48 @@ jobs:
       # 41 that stood before -- and emits it byte-identically under the old ref,
       # so the golden is not tied to either.
       #
-      # 4803e38e (this ref) is master tip again, and is the quiet kind of bump
-      # the ivar pin was supposed to make possible: it emits the golden
-      # byte-identically to 77f5094 for this source, so the count holds at 39
-      # rather than moving at all. Nothing widened, nothing narrowed.
+      # 4803e38e was master tip again, and was the quiet kind of bump the ivar
+      # pin was supposed to make possible: it emitted the golden byte-identically
+      # to 77f5094 for this source, so the count held at 39 rather than moving at
+      # all. Nothing widened, nothing narrowed.
+      #
+      # bf4816ed (this ref) is the loud kind, and it is the first bump that
+      # raises RATCHET. Unpinned it emits 54: fifteen signatures widen, thirteen
+      # of them `class Object` methods losing a branch-name parameter to the same
+      # unification the seed's first four entries were written for. Eleven of
+      # those are pinned back in rbs/git-stack.rbs, and `Set#merge` with them --
+      # every one restating what 4803e38e inferred unaided, and all twelve inert
+      # under that ref, which still emits the old golden byte-identically. What
+      # is left is 42, and the three are load-bearing rather than lazy:
+      #
+      #   - `ahead_behind_columns` / `ahead_behind_readback` (2). Pinning these
+      #     back to `Hash[String, Integer]` COMPILES AND SEGFAULTS: upstream
+      #     328a5ac makes an empty-hash local keyed by a block result poly on
+      #     purpose (the String-keyed variant reads a boxed key as `const char *`),
+      #     so the old signature no longer describes how the hash is built. `cc`
+      #     warns `incompatible pointer types ... 'sp_PolyPolyHash *' from a
+      #     function with result type 'sp_StrIntHash *'`, and `tree` dies on the
+      #     4 KB-boundary fixture. The seed carries the worked example; the rule
+      #     it teaches is that the golden proving a signature is necessary but not
+      #     sufficient -- it proves the OLD compiler inferred it, not that the new
+      #     one still represents it that way.
+      #   - `map#pf` (1). Not a widening at all: this ref emits Set's poly forms
+      #     as their own rows (`each#pf` / `map#pf` / `delete_if#pf`), and `map`
+      #     was already untyped in the golden. One new LINE matching `untyped`,
+      #     the same type as before.
+      #
+      # So this bump buys the two Hash rows honestly and the third is an
+      # emission-granularity artefact. Raising RATCHET rather than forcing the
+      # hashes concrete is the whole point: untyped and correct beats concrete
+      # and reinterpreted.
       #
       # The procedure is unchanged, and it is what caught this: before bumping,
-      # re-run the golden check against the candidate. 39 today. The number is a
-      # ratchet, not a constant: it may fall, never rise. A candidate that raises
-      # it is not automatically disqualified -- find where the widening starts,
-      # as the ivar pin did -- but it does not land until the count is back down.
-      SPINEL_REF: 4803e38ea7f0911de74d92593641163a81484c7e
+      # re-run the golden check against the candidate -- AND the compiled-binary
+      # fixture, which is the only check that saw the segfault (the golden, `spin
+      # test` and doctor were all green on the build that crashed). The number is
+      # a ratchet, not a constant: it may fall freely, and it rises only with a
+      # note like this one saying which widening bought each row.
+      SPINEL_REF: bf4816ed47a97fb7cfcb95703f8ac57ab9de6dfe
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
     steps:
@@ -213,7 +244,7 @@ jobs:
       # next to the note explaining which widening bought it.
       - name: Check the untyped ratchet has not risen
         run: |
-          RATCHET=39
+          RATCHET=42
           count="$(grep -c untyped test/git-stack.rbs.expected)"
           echo "untyped signatures in the golden: $count (ceiling: $RATCHET)"
           if [ "$count" -gt "$RATCHET" ]; then
