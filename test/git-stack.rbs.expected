@@ -40,6 +40,7 @@ class Object
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
   def children_of: (String, Array[String]) -> Array[String]
+  def named_children_of: (String, Array[String]) -> Array[String]
   def effective_parent: (String, Array[String]) -> String
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
@@ -53,6 +54,8 @@ class Object
   def ahead_behind_readback: (String, Hash[String, Integer]) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
+  def parent_note: (String, StackTopology) -> String
+  def print_parent_note: (String, Array[String]) -> nil
   def print_tree_row: (String, Integer, String, StackSnapshot) -> nil
   def print_order: (String, Integer, bool, String, StackSnapshot) -> nil
   def arg0: (Array[String]) -> String
@@ -169,6 +172,7 @@ class StackTopology
   def walk_order: (String, Integer, Set, String) -> String
   def branch?: (String) -> bool
   def detached_roots: () -> Array[String]
+  def live_detached_roots: () -> Array[String]
   def orphan_roots: () -> Array[String]
   def rebase_roots: (String) -> Array[String]
   def detached_root: (String) -> String

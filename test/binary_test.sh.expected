@@ -9,6 +9,13 @@ $ git stack tree
     feat-x-child (parent 'feat-x' missing; run `git stack sync`)
 [exit 0]
 
+### up from the trunk offers the orphan's root alongside feat-a (issue #85)
+$ git stack up
+'main' has multiple children; pick one:
+  git stack up feat-a
+  git stack up feat-x-child
+[exit 1]
+
 ### parent reports the recorded parent
 $ git stack parent
 feat-a
@@ -76,6 +83,16 @@ $ git stack tree
   * feat-x-child (1 commit(s))
 [exit 0]
 feat-x-child parent: main
+
+### up <name> and a lone child both index the run-time-built list (issue #85)
+$ git stack up
+Switched to branch 'base-b'
+[exit 0]
+HEAD after the lone child's [0] checkout: base-b
+$ git stack up base-b
+Switched to branch 'base-b'
+[exit 0]
+HEAD after the named include? checkout: base-b
 
 ### sync recovers a branch whose parent was squash-merged and deleted
 $ git stack sync

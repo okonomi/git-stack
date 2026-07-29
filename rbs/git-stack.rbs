@@ -49,6 +49,19 @@
 # there, and 40 with only `@ab` dropped (see the ci.yml note that measures each
 # candidate ref).
 #
+# `parent_note` and `untracked_parent?` are the issue #85 pair: the note `tree`
+# prints is now also read by `parent`/`down`, so its branch-name parameter is
+# unified across three call sites instead of one. That is exactly the shape the
+# first four entries were written for, and both assertions are faithful -- a
+# branch name and the topology it is asked about, String and StackTopology at
+# every call site.
+#
+# `named_children_of` joins `children_of` as the fix-wave's own pair: `up
+# <name>` now reads a second one-shot topology alongside the menu's, built the
+# same way and returned the same shape, so it is unified right along with it.
+# Faithful for the same reason `children_of` is -- a parent name and the trunk
+# list, String and Array[String].
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes. Every entry here is a faithful assertion -- branch names, colour text,
 # and the trunk list, all String / Array[String] at every call site -- so none of
@@ -69,6 +82,9 @@ class Object
   def untrack!: (String) -> nil
   def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
   def children_of: (String, Array[String]) -> Array[String]
+  def named_children_of: (String, Array[String]) -> Array[String]
+  def parent_note: (String, StackTopology) -> String
+  def print_parent_note: (String, Array[String]) -> nil
 end
 
 # `parent_of` / `children_of` join `branch?` for the same reason, and the graph
@@ -97,14 +113,22 @@ end
 # unchanged) rather than the load-bearing re-narrowing they had become. The
 # guards stay anyway, on this file's standing rule -- a pin is cheap, and being
 # redundant against today's compiler is not the same as being unnecessary.
+#
+# `detached_roots` joins them for the third piece of the same change: `up` now
+# reads it, so its hand-built `[]` is unified with the concrete children list it
+# is appended to, and an `Array[untyped]` there would take `cmd_up`'s `include?`
+# / `length` / `[0]` down with it.
 class StackTopology
   @parents: Hash[String, String]
   @children: Hash[String, String]
   def branch?: (String) -> bool
   def parent_of: (String) -> String
   def children_of: (String) -> Array[String]
+  def detached_roots: () -> Array[String]
+  def live_detached_roots: () -> Array[String]
   def tracked_branches: () -> Array[String]
   def parent_missing?: (String) -> bool
+  def untracked_parent?: (String) -> bool
   def reconnect_target: (String, String) -> String
   def stack_root: (String) -> String
   def would_cycle?: (String, String) -> bool

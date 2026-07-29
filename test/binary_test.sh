@@ -133,6 +133,18 @@ git_q branch -d feat-x
 section "tree renders siblings, nesting, and the orphan"
 run tree
 
+# `children_of` for a TRUNK appends `detached_roots` via `each`/`<<` (issue #85)
+# -- an array built at run time and then handed to `cmd_up`'s `include?` /
+# `length` / `[0]`. That shape compiles clean and passes both the CRuby and
+# `spin test` snapshots; only the SHIPPED binary can show a Spinel array method
+# choking on it. `main` is still checked out from the fixture above, with
+# `feat-a` (a recorded child) and `feat-x-child` (the orphan `tree` just drew at
+# trunk-child indent) both reachable from it, so this is ambiguous on purpose:
+# the point is that `feat-x-child` appears in the pick list at all, proving
+# `up` reaches the row `tree` draws, not the exit code.
+section "up from the trunk offers the orphan's root alongside feat-a (issue #85)"
+run up
+
 section "parent reports the recorded parent"
 git_q checkout -q feat-b
 run parent
@@ -174,6 +186,34 @@ git_q checkout -q feat-x-child
 run sync
 run tree
 show "feat-x-child parent" "config --get branch.feat-x-child.stackParent"
+
+# The fix-wave that split `children_of` into a menu path and `named_children_of`
+# (`up <name>`, issue #85 finding 1) only ever drove the appended-detached-root
+# array through `empty?` / `length` / `each` on the compiled binary above --
+# never `include?` (the named path's membership check) or `[0]` (the
+# single-child menu's auto-checkout). Both are ordinary Array methods CRuby
+# never misses, so only the shipped Spinel binary can show one choking on this
+# specific array (built at run time by `each`/`<<`, not a literal). A fresh
+# repo keeps this independent of the shared fixture above.
+section "up <name> and a lone child both index the run-time-built list (issue #85)"
+new_repo
+gsq create base-a; commit a.txt a1
+gsq create base-b; commit b.txt b1
+git_q checkout -q base-a
+gsq untrack
+git_q checkout -q main
+# main has no tracked child left (base-a untracked) and exactly one detached
+# root (base-b, appended by children_of) -- length 1, so `up` auto-checks it
+# out via children[0] rather than printing a menu.
+run up
+show "HEAD after the lone child's [0] checkout" "branch --show-current"
+git_q checkout -q main
+gsq create trunk-child; commit tc.txt tc1
+git_q checkout -q main
+# Now main has two candidates (trunk-child, base-b) -- naming one exercises
+# include? on that same appended array before the checkout.
+run up base-b
+show "HEAD after the named include? checkout" "branch --show-current"
 
 # Squash-merge recovery on the SHIPPED binary. `restack`'s `git rebase --onto
 # <parent> <stackBase>` is what makes this work; a plain rebase would re-apply

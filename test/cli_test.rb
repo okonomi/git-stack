@@ -875,3 +875,172 @@ gsq("create feat-a"); commit("a.txt", "a1")
 gsq("create feat-b"); commit("b.txt", "b1")
 setup("git tag feat-a") # tag sharing feat-a's name triggers the %(refname:short) disambiguation
 run("tree")
+
+# `tree` draws feat-b at trunk-child indent and names the untracked parent it
+# actually rests on; `up`, `parent` and `down` all have to agree with it. The
+# whole loop runs in ONE section on purpose -- the bug was a disagreement
+# BETWEEN these commands, so only their outputs side by side in the transcript
+# can show it (issue #85). Nothing else here would notice.
+#
+# `down` deliberately lands on feat-a, a branch tree never drew as a row: it is
+# where `restack` replays feat-b onto, so refusing to go there would be its own
+# kind of lie. The note is what makes the jump legible.
+section "up and down round-trip through an untracked parent"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+run("tree")
+run("up")
+show("HEAD", "git branch --show-current")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+# feat-a records no parent of its own, so the walk down ends at the trunk
+run("down")
+show("HEAD", "git branch --show-current")
+
+# The round trip above cannot exercise the untracked note on `parent`/`down` by
+# itself: `up` still errors (Task 3 has not landed), so HEAD never leaves `main`
+# and those two calls only ever hit the trunk-is-its-own-parent case. Reach
+# feat-b with a plain `git checkout` instead of `up`, so this proof does not
+# wait on Task 3 -- and put `tree` right next to `parent` so the transcript
+# shows them printing the SAME words for the SAME branch, from the SAME
+# parent_note (issue #85).
+section "parent and down name the untracked parent they walk to"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q feat-b")
+run("tree")
+run("parent")
+run("down")
+show("HEAD", "git branch --show-current")
+
+# The "pick one" menu has to read in the same order as the tree above it:
+# recorded children first, then the detached roots -- which is the order `tree`
+# prints those same rows in. `other` is the trunk's tracked child, feat-b the
+# detached root, and both are rows under main.
+section "up lists a detached root alongside the trunk's tracked children"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+gsq("create other"); commit("o.txt", "o1")
+setup("git checkout -q main")
+run("tree")
+run("up")
+
+# Trunks are peers, and `up` MOVES HEAD -- so a detached root belongs to the one
+# trunk its history rests on, not to whichever trunk you happen to stand on.
+# This is the same question #73 made `track`/`sync`/`drop` ask. `tree` draws the
+# root without saying whose it is; `up` has to decide, and it decides by history.
+section "up offers a detached root only from the trunk its stack rests on"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+run("tree")
+setup("git checkout -q main")
+run("up")
+setup("git checkout -q develop")
+run("up")
+show("HEAD", "git branch --show-current")
+
+# The other half of the same sentence-sharing: a parent whose ref is gone. `tree`
+# has always printed the sync hint for it; `parent` printed the dead name with no
+# hint at all. Both rows come from parent_note now, so they are the same words.
+# `down` does not reach the note -- it dies on the missing ref first, saying the
+# same thing in its own way -- and that is shown here rather than assumed.
+section "parent notes a parent whose ref is gone"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+setup("git checkout -q main")
+setup("git merge -q --no-edit feat-a")
+setup("git branch -d feat-a")
+setup("git checkout -q feat-b")
+run("tree")
+run("parent")
+run("down")
+
+# Fix-wave finding 1 (issue #85's own shape, relocated): `tree` draws every
+# detached root after ALL trunks, at the same indent as the LAST trunk's own
+# children -- so a main-grown root sits visually right under `develop`. The
+# MENU still refuses it from `develop` (`containing_trunk` says it's `main`'s),
+# but naming it is not the silent jump that gate exists to stop, so `up m-b`
+# has to reach it anyway -- `tree` drew this exact row for the user to read the
+# name off of. Both halves are asserted: the menu still says no, the name
+# still works.
+section "up <name> reaches another trunk's detached root; the menu still refuses it"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git checkout -q develop"); commit("d.txt", "d1")
+setup("git checkout -q main")
+gsq("create m-a"); commit("a.txt", "a1")
+gsq("create m-b"); commit("b.txt", "b1")
+setup("git checkout -q m-a")
+gsq("untrack")
+setup("git checkout -q develop")
+run("tree")
+run("up")
+run("up m-b")
+show("HEAD", "git branch --show-current")
+
+# Fix-wave finding 2, a regression this branch itself introduced (in the
+# `children_of` that already shipped on it, ahead of today's finding 1):
+# `feat-b`'s ref is deleted with `update-ref` (not `branch -d`), so its config
+# outlives it -- the same phantom shape `orphan_roots` already guards against,
+# which `detached_roots` deliberately does NOT filter (`tree` still wants to
+# draw the row). Before this branch `up` reached no detached root at all, so
+# this failure mode is new on it: offering the phantom would check it out and
+# die with git's own "did not match any file(s)". `up` must instead refuse it
+# with the same honest message an ordinary childless branch gets.
+section "up refuses a detached root whose ref no longer exists (a phantom node)"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b"); commit("b.txt", "b1")
+gsq("create feat-c"); commit("c.txt", "c1")
+setup("git checkout -q feat-a")
+gsq("untrack")
+setup("git checkout -q main")
+setup("git update-ref -d refs/heads/feat-b")
+run("tree")
+run("up")
+
+# Deferred from the earlier task loop: two independently-untracked stacks
+# under the same trunk. `detached_roots` sorts its candidate names before
+# climbing, so the menu's order should not depend on which stack was created
+# first -- created in reverse-alphabetical order (zzz-* before aaa-*) here so
+# an unsorted `up` would show it. `tree` and `up` sit adjacent so the
+# transcript itself proves the two rows agree: main's own tracked child first,
+# then the detached roots in sorted order, matching tree's rows top to bottom.
+section "up orders a trunk's tracked child before its detached roots, sorted"
+new_repo
+gsq("create main-child"); commit("mc.txt", "1")
+setup("git checkout -q main")
+gsq("create zzz-a"); commit("za.txt", "1")
+gsq("create zzz-b"); commit("zb.txt", "1")
+setup("git checkout -q zzz-a")
+gsq("untrack")
+setup("git checkout -q main")
+gsq("create aaa-a"); commit("aa.txt", "1")
+gsq("create aaa-b"); commit("ab.txt", "1")
+setup("git checkout -q aaa-a")
+gsq("untrack")
+setup("git checkout -q main")
+run("tree")
+run("up")
