@@ -224,7 +224,7 @@ USAGE
 
 COMMANDS
     init [branch...]      Set (or auto-detect) the trunk branch(es).
-    create <name>         Create <name> stacked on the current branch. (alias: b)
+    create <name>         Create <name> stacked on the current branch. (aliases: b, branch)
     tree                  Show the stack as a tree. (aliases: ls, list)
     up [child]            Check out the branch stacked on the current one.
     down                  Check out the current branch's parent.
