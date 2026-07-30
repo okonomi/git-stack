@@ -128,7 +128,7 @@ only when there is nothing to detect.
 | Command                 | Description                                                        |
 | ----------------------- | ------------------------------------------------------------------ |
 | `git stack init [branch...]` | Set (or auto-detect) the trunk branch(es).                    |
-| `git stack create <name>` | Create `<name>` stacked on the current branch. (alias: `b`)     |
+| `git stack create <name>` | Create `<name>` stacked on the current branch. (aliases: `b`, `branch`) |
 | `git stack tree`          | Show the stack as a tree. (aliases: `ls`, `list`)               |
 | `git stack up [child]`    | Check out the branch stacked on the current one.                |
 | `git stack down`          | Check out the current branch's parent.                          |
@@ -139,6 +139,7 @@ only when there is nothing to detect.
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack sync`          | Restack the current stack, and reparent every branch whose parent was deleted (e.g. merged via a PR) onto trunk — wherever in the repository it sits. |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
+| `git stack help`          | Show the built-in help.                                         |
 
 ## Walkthrough
 
@@ -219,15 +220,19 @@ branch repairs it from wherever you run it, no checkout first.
 
 A stack whose parent is no longer part of the tree — untracked, or merged and
 deleted — is drawn as a root of its own rather than dropped from the picture,
-with the reason on the row. `restack` still follows the recorded parent, so the
-note is what tells you the branch does not actually rest on the trunk it now
-lines up with:
+with the reason on the row. It sits at the indent a trunk's own children get, so
+the note is what tells you `restack` still replays it onto the recorded parent
+(`feature-a` here) and not onto the trunk:
 
 ```
   main (trunk)
     feature-b (1 commit(s)) (parent 'feature-a' is untracked)
       feature-c (1 commit(s))
 ```
+
+With more than one trunk, the trunk it is drawn under is the one its history
+actually rests on, and that is the same trunk `git stack up` offers it from — so
+a stack grown on `develop` is never drawn as though it belonged to `main`.
 
 ## Adopting existing branches
 
