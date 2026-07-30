@@ -282,11 +282,41 @@ def current_branch
   b
 end
 
-# Spawns a `git` subprocess per call. Fine for one-off checks, but do NOT call
-# it in a per-node loop over a stack -- use the pre-captured `existing_branches`
-# set there instead (see `print_tree_row`/`restack_subtree`).
-def branch_exists?(name)
+# True when git would refuse to CREATE `name` -- and nothing else. Named for that
+# one question because it answers it LOOSELY: on a case-insensitive filesystem
+# `show-ref --verify refs/heads/Main` succeeds beside `main`, which is exactly
+# right here, since git itself refuses `git branch Main` there. Matching git's own
+# view lets `create` say "already exists" cleanly instead of failing later inside
+# `checkout -b`.
+#
+# It is deliberately NOT called `branch_exists?`: that name invites a caller with
+# a name read back out of config, which is the loose answer's failure mode and the
+# whole of issue #101. Those callers want `branch_ref_exists?` below.
+def branch_name_taken?(name)
   git_ok("show-ref --verify --quiet #{branch_ref(name)}")
+end
+
+# True when `name` is EXACTLY a branch git has -- the question for any name read
+# back out of config, about to be compared against one of those or written back as
+# one. Every such reader matches string-exactly, so a spelling git does not have is
+# a dead end: stored as a trunk it drew a phantom row and cut the real stack
+# adrift, and `detect_trunk` persisted a name that was never there (issue #101).
+#
+# `for-each-ref` rather than `show-ref --verify`, because its pattern matching is
+# exact where `--verify` inherits the filesystem's case folding.
+#
+# Spawns a `git` subprocess per call, so it is for ONE name. Asking about a whole
+# list means `existing_branches` instead -- one scan whatever the length, which is
+# what `cmd_init` uses and what the per-node loops in `print_tree_row` /
+# `restack_subtree` read from.
+#
+# The pattern matches one level down (`refs/heads/feat` finds `refs/heads/feat/sub`),
+# hence testing for the exact line rather than for any output at all. `git_out`'s
+# cap cannot swallow a true answer: git's D/F rule forbids `feat` and `feat/sub`
+# coexisting, so whenever the exact line is there it is the only line.
+def branch_ref_exists?(name)
+  rows = git_out("for-each-ref --format='%(refname)' #{branch_ref(name)}")
+  unpack_lines(rows).include?("refs/heads/#{name}")
 end
 
 # [behind, ahead] commit counts between `branch` and `parent`, in a single
@@ -366,12 +396,12 @@ end
 #
 # The strip is total rather than heuristic: we asked for that exact symref path,
 # so the answer is under `refs/remotes/origin/` by construction. A HEAD pointed
-# outside it keeps its full refname and `branch_exists?` rejects it below.
+# outside it keeps its full refname and `branch_ref_exists?` rejects it below.
 def detect_trunk
   name = git_out("symbolic-ref --quiet refs/remotes/origin/HEAD").delete_prefix("refs/remotes/origin/")
-  return name if !name.empty? && branch_exists?(name)
-  return "main" if branch_exists?("main")
-  return "master" if branch_exists?("master")
+  return name if !name.empty? && branch_ref_exists?(name)
+  return "main" if branch_ref_exists?("main")
+  return "master" if branch_ref_exists?("master")
 
   die("cannot determine trunk branch; run '#{PROG} init <branch>'")
   "" # unreachable: die exits, but every path must still yield a String
@@ -379,7 +409,8 @@ end
 
 # The configured trunks that still exist, announcing each name that doesn't.
 # One `git` call per configured trunk -- one in nearly every repo, never a
-# per-node loop -- so `branch_exists?` is the right check here.
+# per-node loop -- so the per-name `branch_ref_exists?` is the right check here,
+# rather than a whole-repo `existing_branches` scan this path would pay every time.
 #
 # `select` rather than an `each`/`<<` accumulator, for the reason spelled out
 # on `configured_trunks` -- and this is the concrete receiver that rule asks
@@ -389,7 +420,7 @@ end
 # result is pinned in rbs/git-stack.rbs.
 def live_trunks(configured)
   configured.select do |trunk|
-    live = branch_exists?(trunk)
+    live = branch_ref_exists?(trunk)
     info "configured trunk '#{trunk}' no longer exists; ignoring it" unless live
     live
   end
@@ -691,7 +722,7 @@ end
 # new traversal needs either question, call the owner rather than re-deriving it.
 #
 # Unifying branch names through this rule pulls the `git`-wrapper family (`sh`,
-# `checkout!`, `branch_exists?`) onto Spinel's untyped slow path; the
+# `checkout!`, `branch_ref_exists?`) onto Spinel's untyped slow path; the
 # hand-written seed in rbs/ pins them back to concrete types (fed via `--rbs`,
 # checked by the CI golden). See rbs/git-stack.rbs.
 def effective_parent(branch, trunks)
@@ -1613,19 +1644,15 @@ def cmd_init(args)
   # the user did not type is how the same trunk, and its whole subtree, came to be
   # drawn twice by `tree` (issue #83).
   #
-  # Existence is checked against the EXACT stored refnames, not `branch_exists?`.
-  # `show-ref --verify refs/heads/Main` succeeds on a case-insensitive filesystem
-  # holding only `main`, so `init main Main` passed the repeat check on two
-  # distinct strings and stored one branch as two trunks -- the same symptom, one
-  # spelling along. Every other reader compares this list string-exactly, so the
-  # one command that PERSISTS a name has to demand the spelling git actually has.
+  # Existence is checked against the EXACT stored refnames (see `branch_ref_exists?`
+  # for the mechanism), because a loose match let `init main Main` pass the repeat
+  # check on two distinct strings and store one branch as two trunks -- the same
+  # symptom, one spelling along. Every other reader compares this list
+  # string-exactly, so the one command that PERSISTS a name has to demand the
+  # spelling git actually has.
   #
-  # NOT a reason to make `branch_exists?` exact: it answers a different question.
-  # `create Main` asks "can I make this name", and git itself refuses it next to
-  # `main` on such a filesystem -- so the loose match is what lets `create` say so
-  # cleanly instead of failing later inside `checkout -b`. Deduping on the resolved
-  # commit would be wrong too: `containing_trunk` explicitly supports trunks that
-  # point at the same commit.
+  # Deduping on the resolved commit would be wrong: `containing_trunk` explicitly
+  # supports trunks that point at the same commit.
   #
   # One repo-wide scan, on a once-per-repo command, and it is the same set `tree`
   # and `sync` already trust.
@@ -1644,7 +1671,7 @@ end
 def cmd_create(args)
   name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
-  die("branch '#{name}' already exists") if branch_exists?(name)
+  die("branch '#{name}' already exists") if branch_name_taken?(name)
 
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
@@ -1748,7 +1775,7 @@ def cmd_down(_args)
   parent = effective_parent(branch, trunks)
   # True for every trunk, and for a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
-  die("parent branch '#{parent}' no longer exists") unless branch_exists?(parent)
+  die("parent branch '#{parent}' no longer exists") unless branch_ref_exists?(parent)
   # `down` walks to the branch `restack` actually replays onto, and that is not
   # always a branch `tree` drew a row for: an untracked parent is a real edge
   # with no row. Say so before moving HEAD somewhere the user has never seen
@@ -2048,7 +2075,7 @@ def cmd_drop(args)
 
   # Return to where we started when that branch still exists -- the restack may
   # have left HEAD on a moved child, and `--delete` may have removed `original`.
-  if !original.empty? && original != current_branch_or_empty && branch_exists?(original)
+  if !original.empty? && original != current_branch_or_empty && branch_ref_exists?(original)
     git_ok("checkout #{sh(original)}")
   end
   nil
