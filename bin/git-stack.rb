@@ -324,9 +324,15 @@ end
 # `split`, `keys`, or a pinned parameter) and stay on that path -- never on a
 # value the analyzer has already widened. `spinel-doctor` and the emitted-RBS
 # golden in CI are what hold that line (see rbs/git-stack.rbs).
+#
+# `uniq` is the read half of the duplicate-trunk guard `cmd_init` opens (see there
+# for what a repeat costs). Validating input cannot heal a list that is ALREADY
+# doubled -- a repo that ran the old `init main main`, or a hand-written `config
+# --add`, keeps its two rows -- so distinctness is guaranteed where every reader
+# passes instead: here, no migration needed.
 def configured_trunks
   out = git_out("config --get-all stack.trunk")
-  out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }
+  out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }.uniq
 end
 
 # Replace the trunk list with exactly `trunks`.
@@ -1556,8 +1562,17 @@ end
 # accumulator this replaced took the same view -- its "found one yet?" test was
 # the name being non-empty.
 def first_operand(args)
-  name = args.find { |a| !a.empty? && !a.start_with?("-") }
+  name = args.find { |a| operand?(a) }
   name.nil? ? "" : name
+end
+
+# True when `arg` is a positional -- something that could name a branch. The one
+# definition of that, because two readers depend on it agreeing: this decides
+# which argument `first_operand` hands the command, and `validate_args!` counts
+# the same things to decide whether there are too many. Spelled apart, a command
+# line could be rejected for an argument the command would never have read.
+def operand?(arg)
+  !arg.empty? && !arg.start_with?("-")
 end
 
 def cmd_init(args)
@@ -1566,8 +1581,34 @@ def cmd_init(args)
     info "trunk(s): #{trunks.join(", ")}"
     return
   end
+  # A repeat is rejected, not quietly deduped: `init main main` is a typo, and
+  # this list is the one setting every other command reads -- storing something
+  # the user did not type is how the same trunk, and its whole subtree, came to be
+  # drawn twice by `tree` (issue #83).
+  #
+  # Existence is checked against the EXACT stored refnames, not `branch_exists?`.
+  # `show-ref --verify refs/heads/Main` succeeds on a case-insensitive filesystem
+  # holding only `main`, so `init main Main` passed the repeat check on two
+  # distinct strings and stored one branch as two trunks -- the same symptom, one
+  # spelling along. Every other reader compares this list string-exactly, so the
+  # one command that PERSISTS a name has to demand the spelling git actually has.
+  #
+  # NOT a reason to make `branch_exists?` exact: it answers a different question.
+  # `create Main` asks "can I make this name", and git itself refuses it next to
+  # `main` on such a filesystem -- so the loose match is what lets `create` say so
+  # cleanly instead of failing later inside `checkout -b`. Deduping on the resolved
+  # commit would be wrong too: `containing_trunk` explicitly supports trunks that
+  # point at the same commit.
+  #
+  # One repo-wide scan, on a once-per-repo command, and it is the same set `tree`
+  # and `sync` already trust.
+  refs = existing_branches
+  seen = Set.new
   args.each do |trunk|
-    die("branch '#{trunk}' does not exist") unless branch_exists?(trunk)
+    die("branch '#{trunk}' does not exist") unless refs.include?(trunk)
+    die("duplicate trunk '#{trunk}'") if seen.include?(trunk)
+
+    seen.add(trunk)
   end
   set_trunks(args)
   info "trunk set to #{args.join(", ")}"
@@ -2037,10 +2078,103 @@ end
 
 # --- dispatch ---------------------------------------------------------------
 
-# Command-level flags a subcommand consumes itself (vs. the global -h/-v),
-# currently only `drop --delete`. Explicit so a typo like `--delet` is still
-# rejected and the tolerated set lives in one place.
-COMMAND_FLAGS = ["--delete"].freeze
+# Command-level flags a subcommand consumes itself (vs. the global -h/-v), as
+# `"<flag>\t<the one command that accepts it>"`. Explicit so a typo like
+# `--delet` is still rejected and the tolerated set lives in one place.
+#
+# The OWNER is in the table rather than in `validate_args!` because these flags
+# are lifted out of argv before the subcommand is known and re-attached to
+# whatever ran -- so "which command may have this" is knowledge the lifting side
+# cannot hold, and a flag whose owner lived in a separate `cmd != "drop"` test
+# would be accepted everywhere the moment a second flag was added. One row is the
+# whole contract: what to lift, and who may keep it.
+COMMAND_FLAGS = ["--delete\tdrop"].freeze
+
+# The command that accepts `flag`, or "" when nothing does. The one reader of a
+# row's layout, so a second column or a different separator lands here alone.
+def flag_owner(flag)
+  row = COMMAND_FLAGS.find { |r| tab_head(r) == flag }
+  row.nil? ? "" : tab_tail(row)
+end
+
+# True when `arg` is one of the command-level flags above, whoever owns it. Every
+# row has an owner (that is the table's contract), so having one is the test.
+def command_flag?(arg)
+  !flag_owner(arg).empty?
+end
+
+# `max_operands`' answer for a name it has never heard of. -2 rather than a nil:
+# the emitted-RBS golden pins this method `(String) -> Integer`, and a nilable
+# return would widen it and everything it feeds (see the typing note on
+# `configured_trunks`). -1 is already a sentinel here, so this reads as one.
+UNKNOWN_COMMAND = -2
+
+# How many positional arguments each command accepts: -1 for unlimited (`init`
+# takes a whole trunk list), 1 for the commands that name an optional branch, 0
+# for the rest. UNKNOWN_COMMAND means this table has never heard of the name, and
+# `validate_args!` turns that into "unknown command" -- the same message `main`'s
+# `case` gives, reported one step earlier.
+#
+# This IS the list of commands, aliases spelled out, kept in `main`'s `case` order
+# so the two can be diffed by eye. Nothing mechanically checks they agree, so the
+# failure mode is chosen instead: because an unlisted name DIES here, a command
+# added to the dispatch and forgotten here is unreachable and the first invocation
+# says so. Defaulting the tail to 0 -- or returning early on the unknown -- would
+# instead have let it run with no validation at all, the silence this removes.
+#
+# Which is also why the arity is NOT folded into `main`'s `case` arms to make one
+# list of it: a new arm would then simply omit its guard, and be silently
+# unvalidated. Two lists with a loud failure beat one list with a quiet one.
+def max_operands(cmd)
+  case cmd
+  when "init" then -1
+  when "create", "b", "branch" then 1
+  when "tree", "ls", "list" then 0
+  when "up", "next" then 1
+  when "down", "prev" then 0
+  when "parent", "track" then 1
+  when "untrack" then 0
+  when "drop" then 1
+  when "restack", "sync", "version", "help" then 0
+  else UNKNOWN_COMMAND
+  end
+end
+
+# Reject a command line the dispatcher would otherwise absorb in silence, before
+# anything reads or writes the repo.
+#
+# Two silences, one rule. An argument past what a command reads was simply
+# dropped -- `create feat-b oops` made `feat-b` and never mentioned `oops`, so a
+# typo looked like success. And `--delete` is lifted out of argv before the
+# subcommand is even known (see COMMAND_FLAGS), then re-attached to whatever ran,
+# so every command accepted it and only `drop` did anything with it.
+#
+# `--delete` reuses `parse_global_flags`'s wording rather than a message of its
+# own: to the user this IS the unknown-option case -- `create --delete` and
+# `create --delet` are the same mistake, and only an implementation detail (which
+# flag the dispatcher happens to lift) decided which path reported it.
+def validate_args!(cmd, args)
+  max = max_operands(cmd)
+  # Not a command at all. Reported here, with `main`'s own wording, rather than
+  # skipped -- see UNKNOWN_COMMAND for why this dies instead of returning.
+  die("unknown command '#{cmd}' (try '#{PROG} help')") if max == UNKNOWN_COMMAND
+
+  args.each do |arg|
+    owner = flag_owner(arg)
+    die("invalid option: #{arg}") if !owner.empty? && owner != cmd
+  end
+  return nil if max < 0
+
+  # `operand?` decides what counts, so this and `first_operand` cannot disagree --
+  # notably on `""`, which names no branch, so `drop "" feat-a` is one operand and
+  # the command handles it as it always did.
+  operands = args.reject { |a| !operand?(a) }
+  return nil if operands.length <= max
+
+  # `max` is 0 or 1 here, so this picks wording, not control flow.
+  die(max == 0 ? "'#{cmd}' takes no arguments" : "'#{cmd}' takes at most one argument")
+  nil
+end
 
 # Parse the global flags (-h/-v) out of `argv`, returning the command they map to
 # ("help"/"version") or "" when none was given. Flags are removed in place and
@@ -2070,8 +2204,8 @@ def main(argv)
   # on any long option the parser doesn't register, so an unregistered `--delete`
   # would be reported as an invalid *global* option. Pulled aside here and
   # re-attached to the subcommand's args below.
-  flags = argv.select { |a| COMMAND_FLAGS.include?(a) }
-  cleaned = argv.reject { |a| COMMAND_FLAGS.include?(a) }
+  flags = argv.select { |a| command_flag?(a) }
+  cleaned = argv.reject { |a| command_flag?(a) }
 
   cmd = parse_global_flags(cleaned)
   rest = []
@@ -2084,6 +2218,11 @@ def main(argv)
     end
   end
   rest += flags
+
+  # Before `require_repo`, not after: what is wrong here is the command line, and
+  # that reads the same in any directory. Reporting "not a git repository" for
+  # `tree bogus` would answer a question the user did not get wrong yet.
+  validate_args!(cmd, rest)
 
   repo_optional = cmd == "version" || cmd == "help"
   require_repo unless repo_optional
