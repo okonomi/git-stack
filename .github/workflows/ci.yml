@@ -84,12 +84,16 @@ jobs:
       # hashes concrete is the whole point: untyped and correct beats concrete
       # and reinterpreted.
       #
-      # d897e152 (this ref) raises RATCHET to 43, and the single row is the
-      # cheapest kind there is: `Set#initialize_copy`, emitted because upstream
-      # c60015b gives a duplicated Set its own storage. It is a new METHOD on the
-      # bundled Set, untyped like every other row in that class; not one
-      # git-stack signature moved, and the rest of the golden is byte-identical
-      # to what bf4816ed emits for this source.
+      # d897e152 (this ref) added one row, and it is the cheapest kind there is:
+      # `Set#initialize_copy`, emitted because upstream c60015b gives a
+      # duplicated Set its own storage. It is a new METHOD on the bundled Set,
+      # untyped like every other row in that class; not one git-stack signature
+      # moved, and the rest of the golden is byte-identical to what bf4816ed
+      # emits for this source. It landed as RATCHET 42 -> 43 and is the reason
+      # the count is now SCOPED instead: a row in upstream's own library was
+      # never ours to narrow, so it no longer moves the ceiling at all -- see
+      # the ratchet step, which counts our classes and leaves that row to the
+      # golden diff. Under the scoped count this bump moved nothing.
       #
       # What this bump actually buys is runtime, and it is the reason to take it
       # rather than sit on bf4816ed. Upstream's string-append work (bdf60528
@@ -125,6 +129,10 @@ jobs:
       # `spin test` and doctor were all green on the build that crashed). The
       # number is a ratchet, not a constant: it may fall freely, and it rises
       # only with a note like this one saying which widening bought each row.
+      # It now counts OUR classes only, so a candidate ref that grows Set or
+      # OptionParser no longer reads as a regression here -- what such a ref
+      # must still do is come through the golden diff and the fixture run
+      # unchanged, which is what the history above is a record of.
       SPINEL_REF: d897e15298d54342bd1e5dca9d9a8131ae35f1c5
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
@@ -277,13 +285,55 @@ jobs:
       # (do it in the same commit). Raising it is the move this step exists to
       # stop being silent -- it stays a deliberate, reviewable line in the diff,
       # next to the note explaining which widening bought it.
+      #
+      # WHAT IS COUNTED. Only the classes this repo writes. The emitted golden
+      # also carries the classes Spinel injects for a `require` -- `Set` from
+      # set, `OptionParser` and its flattened `ParseError` from optparse -- and
+      # those are upstream's code, arriving with whatever signatures the pinned
+      # compiler ships. Counting them made the ceiling mostly noise: of the 43
+      # this replaces, FORTY-ONE came from those three and two from ours
+      # (`ahead_behind_columns` and `ahead_behind_readback`, the pair the seed
+      # deliberately leaves on the slow path). A widening in bin/git-stack.rb
+      # could have doubled our own share without moving the number.
+      #
+      # The d897e152 bump is the worked example, and it is why the count is
+      # scoped rather than raised again: upstream added `Set#initialize_copy`,
+      # +1 untyped in a class this repo never calls `dup` or `clone` on. Every
+      # behavioural gate was green on it; the only red was this threshold
+      # counting upstream's library, and the sole remedy available was raising
+      # the ceiling -- the exact reflex the note above forbids. A row we cannot
+      # narrow does not belong in a number we are forbidden to raise.
+      #
+      # Those signatures are NOT unwatched: they are in the golden, so the diff
+      # step above still shows every one of them changing, which is where an
+      # upstream shift belongs -- reviewable, not a threshold.
+      #
+      # A class Spinel injects that is not in SPINEL_CLASSES counts as ours and
+      # fails here. That is deliberate: a new `require` (or a new upstream class)
+      # should land as a considered line in this list, the same way raising
+      # RATCHET is a considered line -- never as a silent hole in the guard.
       - name: Check the untyped ratchet has not risen
         run: |
-          RATCHET=43
-          count="$(grep -c untyped test/git-stack.rbs.expected)"
-          echo "untyped signatures in the golden: $count (ceiling: $RATCHET)"
+          RATCHET=2
+          SPINEL_CLASSES="OptionParser ParseError Set"
+          report="$(awk -v skip="$SPINEL_CLASSES" '
+            BEGIN { n = split(skip, a, " "); for (i = 1; i <= n; i++) injected[a[i]] = 1 }
+            /^class / { cls = $2 }
+            /untyped/ { c = (cls == "" ? "(toplevel)" : cls); count[c]++ }
+            END {
+              for (c in count) {
+                printf "%s\t%s\t%d\n", (c in injected ? "spinel" : "ours"), c, count[c]
+              }
+            }
+          ' test/git-stack.rbs.expected | sort)"
+          printf '%s\n' "$report" | while IFS="$(printf '\t')" read -r side cls n; do
+            printf '  %-7s %-16s %s untyped\n' "$side" "$cls" "$n"
+          done
+          count="$(printf '%s\n' "$report" | awk -F'\t' '$1 == "ours" { n += $3 } END { print n + 0 }')"
+          echo "untyped signatures in this repo's classes: $count (ceiling: $RATCHET)"
           if [ "$count" -gt "$RATCHET" ]; then
-            echo "type regression: the golden gained $((count - RATCHET)) untyped signature(s)." >&2
+            echo "type regression: our classes gained $((count - RATCHET)) untyped signature(s)." >&2
             echo "Find where the widening starts (an ivar or a poly-array receiver) rather than raising RATCHET." >&2
+            echo "If the growth is in a class Spinel injects for a require, add it to SPINEL_CLASSES instead." >&2
             exit 1
           fi
