@@ -168,6 +168,13 @@ end
 # recorded parent and `@children` a parent to its newline-PACKED child rows.
 # StackSnapshot owns `@ab`, mapping a branch to packed "<behind>\t<ahead>".
 #
+# The packing is what makes those String -> String pins expressible at all, and
+# it is worth knowing WHY the obvious alternative is not a pin you can write:
+# `@children: Hash[String, Array[String]]` over an array-valued hash is dropped
+# on the floor -- not applied, not refused -- and the field still emits as
+# `Hash[String, untyped]`. A seed line that has no effect is worse than none,
+# because it reads like a guarantee. See pack_lines in bin/git-stack.rb.
+#
 # Pinning them also puts `children_of` / `walk_order` back where their comments
 # assume they are: with `@children` concrete, their `.to_s` guards before
 # `.split` are no-ops again (measured: removing both leaves the golden

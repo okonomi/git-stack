@@ -54,8 +54,8 @@ jobs:
       # to 77f5094 for this source, so the count held at 39 rather than moving at
       # all. Nothing widened, nothing narrowed.
       #
-      # bf4816ed (this ref) is the loud kind, and it is the first bump that
-      # raises RATCHET. Unpinned it emits 54: fifteen signatures widen, thirteen
+      # bf4816ed was the loud kind, and it was the first bump to raise RATCHET.
+      # Unpinned it emits 54: fifteen signatures widen, thirteen
       # of them `class Object` methods losing a branch-name parameter to the same
       # unification the seed's first four entries were written for. Eleven of
       # those are pinned back in rbs/git-stack.rbs, and `Set#merge` with them --
@@ -79,18 +79,53 @@ jobs:
       #     was already untyped in the golden. One new LINE matching `untyped`,
       #     the same type as before.
       #
-      # So this bump buys the two Hash rows honestly and the third is an
+      # So that bump bought the two Hash rows honestly and the third was an
       # emission-granularity artefact. Raising RATCHET rather than forcing the
       # hashes concrete is the whole point: untyped and correct beats concrete
       # and reinterpreted.
       #
-      # The procedure is unchanged, and it is what caught this: before bumping,
-      # re-run the golden check against the candidate -- AND the compiled-binary
-      # fixture, which is the only check that saw the segfault (the golden, `spin
-      # test` and doctor were all green on the build that crashed). The number is
-      # a ratchet, not a constant: it may fall freely, and it rises only with a
-      # note like this one saying which widening bought each row.
-      SPINEL_REF: bf4816ed47a97fb7cfcb95703f8ac57ab9de6dfe
+      # d897e152 (this ref) raises RATCHET to 43, and the single row is the
+      # cheapest kind there is: `Set#initialize_copy`, emitted because upstream
+      # c60015b gives a duplicated Set its own storage. It is a new METHOD on the
+      # bundled Set, untyped like every other row in that class; not one
+      # git-stack signature moved, and the rest of the golden is byte-identical
+      # to what bf4816ed emits for this source.
+      #
+      # What this bump actually buys is runtime, and it is the reason to take it
+      # rather than sit on bf4816ed. Upstream's string-append work (bdf60528
+      # builds a string in a loop without copying it every time, c93e5363 keeps
+      # the append handle across the recompute frame, d897e152 itself extends
+      # that to a straight-line accumulator) lands directly on the packed-String
+      # idiom this file's types are built around -- `pack_lines`, `walk_order`'s
+      # threaded `acc`, `ahead_behind_readback`'s `result`. Measured on a
+      # 300-branch chain, `tree` goes 1307ms -> ~400ms; under callgrind on the
+      # 72-branch fixture the whole run drops from 289M to 38.4M instructions,
+      # with `_int_malloc` falling out of the profile entirely.
+      #
+      # That number retires a live argument for UNPACKING those fields. Under
+      # bf4816ed, holding `@children` as `Hash[String, Array[String]]` measured
+      # 26% FASTER (968ms vs 1307ms) -- packing's split/concat traffic was
+      # costing real time, and only the type ratchet argued against it. Under
+      # this ref the gap is gone: packed 38,354,319 instructions vs unpacked
+      # 38,099,554, a 0.7% difference, and packing now wins on size too (471,304
+      # vs 512,656 bytes). Packing is the cheaper representation again, not just
+      # the concrete one. (Unpacking still costs types regardless: an
+      # array-valued Hash widens to `Hash[String, untyped]` on every ref tried,
+      # and an `@children: Hash[String, Array[String]]` line in the seed is
+      # silently DROPPED rather than applied or refused -- see pack_lines.)
+      #
+      # The remaining hot spot is nothing to do with either: `sp_poly_eq` +
+      # `sp_Set_include_p` + `sp_poly_eql` are 71% of `tree`, the poly
+      # `Set#include?` linear scan behind `@branches` / `visited`. That is where
+      # the next real win is, and `Set` is bundled, so it is upstream's to make.
+      #
+      # The procedure is unchanged, and it is what caught the bf4816ed segfault:
+      # before bumping, re-run the golden check against the candidate -- AND the
+      # compiled-binary fixture, which is the only check that saw it (the golden,
+      # `spin test` and doctor were all green on the build that crashed). The
+      # number is a ratchet, not a constant: it may fall freely, and it rises
+      # only with a note like this one saying which widening bought each row.
+      SPINEL_REF: d897e15298d54342bd1e5dca9d9a8131ae35f1c5
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
     steps:
@@ -244,7 +279,7 @@ jobs:
       # next to the note explaining which widening bought it.
       - name: Check the untyped ratchet has not risen
         run: |
-          RATCHET=42
+          RATCHET=43
           count="$(grep -c untyped test/git-stack.rbs.expected)"
           echo "untyped signatures in the golden: $count (ceiling: $RATCHET)"
           if [ "$count" -gt "$RATCHET" ]; then
