@@ -733,15 +733,36 @@ def tab_tail(line)
 end
 
 # The same two readers for the file's OTHER separator. Wherever a list has to
-# survive as a single value -- a Hash value, an ivar, anything Spinel would widen
-# to `untyped` as an `Array[String]` -- it is packed one entry per line, and these
-# are the pair that packs and unpacks it. Callers never spell the separator, the
-# trailing newline, or the empty-line skip themselves.
+# survive as a HASH VALUE -- which Spinel widens to `untyped` as an
+# `Array[String]` -- it is packed one entry per line, and these are the pair that
+# packs and unpacks it. Callers never spell the separator, the trailing newline,
+# or the empty-line skip themselves.
+#
+# The scope of that "wherever" is narrower than it once was, and the difference
+# is worth stating rather than leaving to be rediscovered. A PLAIN
+# `Array[String]` ivar is inferred concretely today (`@items = []` then
+# `@items << name` emits `@items: Array[String]`), so an ivar is no longer a
+# reason to pack on its own; `@children` is packed because it is a hash VALUE.
+# There, nothing helps: the push form, the `h[k] ||= []` form, and a
+# `Hash[String, Array[String]]` line in rbs/git-stack.rbs all still leave
+# `Hash[String, untyped]`. The seed line is the one to watch -- it is neither
+# applied nor refused but silently DROPPED, so pinning an array-valued hash
+# looks like it worked until you diff the emitted golden. (A contradicted
+# scalar seed, by contrast, is applied and breaks the build loudly; `--rbs` is
+# advisory, and this is the shape it declines without saying so.)
 #
 # `unpack_lines` also re-introduces the concrete element type: its `split` is an
 # `Array[String]`, which is the receiver the poly-array methods downstream
 # (`map`, `reject`, `sort`, `each_slice`) need. `pack_lines` is its inverse, and
 # answers "" for an empty list -- not "\n" -- so a round trip is a no-op.
+#
+# Packing is not a speed tax paid for those types, though it was briefly: under
+# the ref before this one, unpacking `@children` measured 26% FASTER on a
+# 300-branch `tree` (968ms vs 1307ms), because the per-node `split` and the
+# per-row concat dominated. Upstream's string-append work (see the SPINEL_REF
+# note in ci.yml) closed that: packed and unpacked now run within 0.7% of each
+# other on the fixture, and packed is 41 KB smaller. Packing costs nothing here
+# beyond the indirection these two functions exist to hide.
 def pack_lines(lines)
   lines.map { |line| "#{line}\n" }.join("")
 end
@@ -886,6 +907,12 @@ end
 # widens to `Hash[String, untyped]` (Spinel has no tag for it). Packed, they are
 # `Hash[String, String]`; callers `.split("\n")` a row back into a fresh
 # `Array[String]`, which is where the concrete element type is (re)introduced.
+#
+# Measured against the pinned ref, not assumed: unpacking this one field takes
+# the emitted golden from 43 untyped to 45, `walk_order` with it, and pinning
+# `walk_order` back only recovers one of the two -- the last row is `@children`
+# itself, which no seed line can reach (see pack_lines). It costs nothing at run
+# time either way now, so the type is the whole argument.
 #
 # Build this class from already-read Git state with `from_scan`; the reader and
 # history-derived display data live in StackSnapshot below.
