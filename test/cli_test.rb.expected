@@ -734,6 +734,32 @@ $ git stack tree
     feat-a (1 commit(s))
 [exit 0]
 
+### HEAD spelled differently from the ref still names the branch
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+$ git stack track
+tracking 'feat-a' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-a.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed branch.feat-a.stackparent main
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+
+### HEAD spelled differently outside ASCII still names the branch
+$ git stack tree
+  main (trunk)
+  * feat-ä (1 commit(s))
+[exit 0]
+$ git stack track
+tracking 'feat-ä' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-ä.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed branch.feat-ä.stackparent main
+$ git stack drop
+dropped feat-ä; reparented children onto main
+[exit 0]
+
 ### restack replays onto the parent branch, not a tag that shadows it
 $ git stack restack
 restacking stack rooted at feat-a

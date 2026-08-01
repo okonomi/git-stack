@@ -268,18 +268,69 @@ end
 # HEAD past a tag sharing the branch's name" walks what that costs, one command
 # at a time. Same defence, same reason, as `existing_branches` (issue #93).
 #
-# Still "" when detached: without `--short`, `symbolic-ref --quiet` exits
-# non-zero on a detached HEAD exactly as before, and `git_out` maps that to "".
-# A HEAD pointed outside `refs/heads/` has no prefix to strip and comes back
-# whole, which is what `--short` did with it too.
+# Still "" when detached: `symbolic-ref --quiet` exits non-zero on a detached
+# HEAD, `git_out` maps that to "", and the early return below spends nothing
+# further. A HEAD pointed outside `refs/heads/` has no prefix to strip and comes
+# back whole, which is what `--short` did with it too.
+#
+# Resolved back to the spelling git STORES, because `.git/HEAD` holds whatever
+# `checkout` was handed: on a case-insensitive filesystem `git checkout Feat-A`
+# succeeds against `feat-a` and records `refs/heads/Feat-A`. The ref is the same
+# file, so git is content, but every reader here compares refnames string-exactly
+# -- so `track` wrote a second `branch.Feat-A.*` nobody reads, `drop` died on a
+# branch it was standing in, and `tree` marked no row (issue #106). Same family as
+# the tag shadow above: HEAD naming something the rest of the file cannot match.
+#
+# Costs one more `git` call on the ordinary path -- the exact check that says
+# "HEAD is already spelled the way git stores it", which is the answer nearly
+# always. Only a HEAD that disagrees pays the branch scan below.
+#
+# The fold is Ruby's, not git's. `for-each-ref --ignore-case` looks like the
+# targeted way to ask and is the wrong tool twice over: it folds ASCII ONLY, so
+# `refs/heads/feat-Ä` finds nothing next to `feat-ä` and every symptom above
+# survives for a non-ASCII branch; and it defeats the ref-prefix optimisation, so
+# on a big repo the "targeted" call costs more than listing the branches.
+# `String#downcase` folds the whole of Unicode, which is what the filesystem did
+# when it accepted the checkout in the first place. (`%(HEAD)` is no help either:
+# git compares HEAD's stored string to each refname and hits the same mismatch.)
 def current_branch_or_empty
-  git_out("symbolic-ref --quiet HEAD").delete_prefix("refs/heads/")
+  ref = git_out("symbolic-ref --quiet HEAD")
+  return "" if ref.empty?
+
+  name = ref.delete_prefix("refs/heads/")
+  # HEAD pointed outside `refs/heads/` -- nothing was stripped, so there is no
+  # branch to resolve it to. Comes back whole, as `--short` returned it too.
+  return name if name == ref
+  return name if branch_ref_exists?(name)
+
+  # `find`, not a lookup: the whole point is that `name` is not a key in that set.
+  # Nil when HEAD names a branch that does not exist at all -- an UNBORN branch in
+  # a repo with no commits -- and then HEAD's own spelling is the honest answer.
+  #
+  # Spelled out rather than reusing `existing_branches`, whose Set is the wrong
+  # shape to search: `Set#find` is on Spinel's poly path, and scanning one there
+  # widens this method, `current_branch`, and everything they feed -- `reparent!`,
+  # `record_reparent_base`, `print_order` -- taking the emitted golden from 43
+  # untyped to 51. `unpack_lines` hands back a concrete `Array[String]`, which is
+  # the same receiver `first_operand` searches. Through `git_out_full` for the
+  # reason `existing_branches` uses it: an unpatterned scan grows with the repo
+  # and `git_out`'s cap would truncate it.
+  rows = unpack_lines(git_out_full("for-each-ref --format='%(refname)' refs/heads/", false))
+  stored = rows.find { |row| row.downcase == ref.downcase }
+  stored.nil? ? name : stored.delete_prefix("refs/heads/")
 end
 
 def current_branch
-  b = current_branch_or_empty
-  die("you are in 'detached HEAD' state; check out a branch first") if b.empty?
-  b
+  require_branch(current_branch_or_empty)
+end
+
+# `current_branch`'s guard, for a caller that already has HEAD in hand. Reading
+# HEAD is no longer a single `git` call, so a command that needs both "the branch
+# I am on" and "where to return to" reads once and guards here, rather than
+# spending the read twice for one answer (see `cmd_drop`).
+def require_branch(head)
+  die("you are in 'detached HEAD' state; check out a branch first") if head.empty?
+  head
 end
 
 # True when git would refuse to CREATE `name` -- and nothing else. Named for that
@@ -2010,7 +2061,12 @@ end
 def cmd_drop(args)
   delete = has_flag?(args, "--delete")
   operand = first_operand(args)
-  branch = operand.empty? ? current_branch : operand
+  # Read HEAD once and use it for both questions it answers here: which branch to
+  # drop when none was named, and where to return afterwards. Nothing between them
+  # moves HEAD, and reading it is no longer a single `git` call (see
+  # `current_branch_or_empty`), so asking twice paid for the same answer twice.
+  original = current_branch_or_empty
+  branch = operand.empty? ? require_branch(original) : operand
   trunks = trunk_branches
   die("cannot drop trunk '#{branch}'") if is_trunk?(branch, trunks)
 
@@ -2019,8 +2075,6 @@ def cmd_drop(args)
   # invalidate it.
   topology = StackRepository.load_topology(trunks)
   die("branch '#{branch}' does not exist") unless topology.branch?(branch)
-
-  original = current_branch_or_empty
 
   # StackTopology owns the reconnect rule. It preserves a live untracked parent,
   # but a missing or absent parent needs the trunk this branch's history rests
