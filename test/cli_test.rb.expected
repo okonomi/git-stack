@@ -91,6 +91,27 @@ error: cannot determine trunk branch; run 'git stack init <branch>'
 [exit 1]
 stack.trunk: main
 
+### a trunk whose stored spelling is not the refname is not live
+$ git stack tree
+configured trunk 'Main' no longer exists; ignoring it
+trunk set to main
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+stack.trunk (re-detected): main
+
+### trunk auto-detect will not store a name the refs do not have
+$ git stack tree
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk (nothing stored): 
+
+### a branch one level down does not stand in for its parent name
+$ git stack tree
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk (nothing stored): 
+
 ### tree renders each trunk as its own root
 $ git stack tree
   main (trunk)

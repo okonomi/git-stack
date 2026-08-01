@@ -15,7 +15,7 @@
 # trunk LIST (it answers "is this branch itself a trunk?" before resolving the
 # parent), and an `Array[String]` parameter inferred from scratch widens to
 # `Array[untyped]`, which then flows out through what its result feeds --
-# `branch_exists?` and `checkout!` in `cmd_down`.
+# `branch_ref_exists?` and `checkout!` in `cmd_down`.
 #
 # `containing_trunk` and `restack_subtree` are the trunk-list pair: the first
 # picks the trunk a branch rests on, so its untyped result would spread through
@@ -117,7 +117,8 @@ class Object
   def sh: (String) -> String
   def branch_ref: (String) -> String
   def checkout!: (String) -> nil
-  def branch_exists?: (String) -> bool
+  def branch_name_taken?: (String) -> bool
+  def branch_ref_exists?: (String) -> bool
   def ahead_behind: (String, String) -> Array[Integer]
   def paint: (String, String) -> String
   def green: (String) -> String

@@ -238,6 +238,53 @@ setup("git branch -m main feature")
 run("tree")
 show("stack.trunk", "git config --get-all stack.trunk")
 
+# The liveness re-check above asks about a CONFIGURED name, and asking loosely
+# (see `branch_ref_exists?`) meant a trunk stored as `Main` passed as live in a
+# repo holding only `main`. `tree` then drew a phantom `Main (trunk)` row while
+# the real stack, resting on `main`, was cut adrift at trunk-child indent -- the
+# issue #83 symptom, produced by the very re-check whose job is to keep ghost
+# trunks out. Asked exactly, `Main` is what it is: a name with no ref. It drops
+# out through the note above and the auto-detect puts the real trunk back.
+#
+# On a case-SENSITIVE filesystem `Main` never passed in the first place, so this
+# reads as a no-op on CI and as the regression guard on a developer's Mac. That
+# parity holds only of the FIXED output -- before the fix the two platforms
+# disagreed, so no version of this section could have failed on CI.
+section "a trunk whose stored spelling is not the refname is not live"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git config --add stack.trunk Main")
+run("tree")
+show("stack.trunk (re-detected)", "git config --get-all stack.trunk")
+
+# `detect_trunk` asks the same question about names it is about to STORE, and got
+# the same wrong answer: in a repo holding only `Main` it accepted `main`, and
+# `trunk_branches` wrote that name to config -- so `tree` drew `main (trunk)`, a
+# trunk git does not have, and `Main` appeared nowhere. Its own comment says a
+# name with no local ref is a dead end it refuses to store.
+#
+# Renamed in two steps on purpose: `git branch -m main Main` FAILS on a
+# case-insensitive filesystem ("a branch named 'Main' already exists" -- git
+# resolving the destination the same loose way this fix is about), so going via a
+# third name is what actually leaves the repo holding only `Main`.
+section "trunk auto-detect will not store a name the refs do not have"
+new_repo
+setup("git branch -m main tmp-rename && git branch -m tmp-rename Main")
+run("tree")
+show("stack.trunk (nothing stored)", "git config --get-all stack.trunk")
+
+# The other half of asking exactly, and the half that is NOT about case folding --
+# so unlike the two above, this one fails on every filesystem if the check
+# regresses. `for-each-ref refs/heads/main` matches one level down and answers
+# `refs/heads/main/wip`, so testing "did it print anything" would resurrect the
+# phantom trunk: `detect_trunk` would store `main` in a repo that has no such
+# branch. Only the exact-line test refuses it.
+section "a branch one level down does not stand in for its parent name"
+new_repo
+setup("git branch -m main main/wip")
+run("tree")
+show("stack.trunk (nothing stored)", "git config --get-all stack.trunk")
+
 section "tree renders each trunk as its own root"
 new_repo
 setup("git branch develop main")
