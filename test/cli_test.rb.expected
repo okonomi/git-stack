@@ -23,6 +23,12 @@ trunk(s): develop
 [exit 0]
 stack.trunk: develop
 
+### init resolves the remote's default branch to the spelling git stores
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
 ### init dies when the remote's default branch is the only candidate
 $ git stack init
 error: cannot determine trunk branch; run 'git stack init <branch>'

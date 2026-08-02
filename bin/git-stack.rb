@@ -281,17 +281,10 @@ end
 # branch it was standing in, and `tree` marked no row (issue #106). Same family as
 # the tag shadow above: HEAD naming something the rest of the file cannot match.
 #
-# Costs one more `git` call on the ordinary path -- the exact check that says
-# "HEAD is already spelled the way git stores it", which is the answer nearly
-# always. Only a HEAD that disagrees pays the branch scan below.
-#
-# The fold is Ruby's, not git's. `for-each-ref --ignore-case` looks like the
-# targeted way to ask and is the wrong tool twice over: it folds ASCII ONLY, so
-# `refs/heads/feat-Ä` finds nothing next to `feat-ä` and every symptom above
-# survives for a non-ASCII branch; and it defeats the ref-prefix optimisation, so
-# on a big repo the "targeted" call costs more than listing the branches.
-# `String#downcase` folds the whole of Unicode, which is what the filesystem did
-# when it accepted the checkout in the first place. (`%(HEAD)` is no help either:
+# Costs one more `git` call on the ordinary path -- the exact check inside
+# `stored_refname`, which says "HEAD is already spelled the way git stores it" and
+# is the answer nearly always. How the rare disagreement is resolved, and why not
+# with `--ignore-case`, is on that method. (`%(HEAD)` is no help for this either:
 # git compares HEAD's stored string to each refname and hits the same mismatch.)
 def current_branch_or_empty
   ref = git_out("symbolic-ref --quiet HEAD")
@@ -301,23 +294,39 @@ def current_branch_or_empty
   # HEAD pointed outside `refs/heads/` -- nothing was stripped, so there is no
   # branch to resolve it to. Comes back whole, as `--short` returned it too.
   return name if name == ref
+
+  # "" when HEAD names a branch that does not exist at all -- an UNBORN branch in
+  # a repo with no commits -- and then HEAD's own spelling is the honest answer.
+  stored = stored_refname(name)
+  stored.empty? ? name : stored
+end
+
+# The spelling git STORES for `name`, matched without regard to case, or "" when
+# no branch folds to it. The answer for a name this tool was handed rather than
+# told: HEAD's, and `origin/HEAD`'s. Both come from git or from a clone, neither
+# is something the user typed or can correct, and both are compared string-exactly
+# by every reader here -- so a name that only differs in case has to be resolved
+# rather than refused, or the tool declines to work in a repo git is happy with.
+#
+# NOT for a name the user DID type: `create Main` / `parent Main` / `init Main`
+# must be rejected exactly, because canonicalising a typo would silently accept it
+# against the one setting every other command reads (issue #101).
+#
+# The exact check comes first and answers nearly always, so the scan is the rare
+# path -- and callers guard an empty `name` before asking, because the exact check
+# on "" degenerates into listing every branch twice for an answer already known.
+#
+# `--ignore-case` would look like the targeted way to do this and is wrong twice:
+# it folds ASCII ONLY, so `refs/heads/feat-Ä` finds nothing beside `feat-ä`, and it
+# defeats the ref-prefix optimisation, so on a large repo it costs more than
+# listing the branches. `String#downcase` folds the whole of Unicode, which is what
+# the filesystem did when it accepted the checkout.
+def stored_refname(name)
   return name if branch_ref_exists?(name)
 
-  # `find`, not a lookup: the whole point is that `name` is not a key in that set.
-  # Nil when HEAD names a branch that does not exist at all -- an UNBORN branch in
-  # a repo with no commits -- and then HEAD's own spelling is the honest answer.
-  #
-  # Spelled out rather than reusing `existing_branches`, whose Set is the wrong
-  # shape to search: `Set#find` is on Spinel's poly path, and scanning one there
-  # widens this method, `current_branch`, and everything they feed -- `reparent!`,
-  # `record_reparent_base`, `print_order` -- taking the emitted golden from 43
-  # untyped to 51. `unpack_lines` hands back a concrete `Array[String]`, which is
-  # the same receiver `first_operand` searches. Through `git_out_full` for the
-  # reason `existing_branches` uses it: an unpatterned scan grows with the repo
-  # and `git_out`'s cap would truncate it.
-  rows = unpack_lines(git_out_full("for-each-ref --format='%(refname)' refs/heads/", false))
-  stored = rows.find { |row| row.downcase == ref.downcase }
-  stored.nil? ? name : stored.delete_prefix("refs/heads/")
+  folded = name.downcase
+  stored = branch_names.find { |branch| branch.downcase == folded }
+  stored.nil? ? "" : stored
 end
 
 def current_branch
@@ -447,10 +456,32 @@ end
 #
 # The strip is total rather than heuristic: we asked for that exact symref path,
 # so the answer is under `refs/remotes/origin/` by construction. A HEAD pointed
-# outside it keeps its full refname and `branch_ref_exists?` rejects it below.
+# outside it keeps its full refname and folds to no local branch below.
+#
+# Stripping is only half of it, though -- `current_branch_or_empty` resolves the
+# name it strips, and so does this one now, through the same `stored_refname`.
 def detect_trunk
   name = git_out("symbolic-ref --quiet refs/remotes/origin/HEAD").delete_prefix("refs/remotes/origin/")
-  return name if !name.empty? && branch_ref_exists?(name)
+  # Resolved, not merely checked: `origin/HEAD` may name `Develop` where git
+  # stores `develop`, and recording the remote's answer under a spelling no
+  # reader matches is what this whole family is about. Nothing folds to it in the
+  # ordinary "merged and cleaned up" case, and then "" falls through below --
+  # which is the behaviour the fall-through was written for (issue #108).
+  #
+  # The `name.empty?` guard is about cost, not correctness: `stored_refname("")`
+  # answers "" too, but only after listing every branch twice, and no `origin/HEAD`
+  # at all is the common case.
+  stored = name.empty? ? "" : stored_refname(name)
+  return stored unless stored.empty?
+
+  # `main`/`master` stay EXACT while the name above gets resolved, and that
+  # asymmetry is deliberate. `origin/HEAD` is a fact about this clone, so
+  # resolving it preserves what the remote said; these two are this tool's own
+  # guess, and resolving a guess widens it -- "does this repo have `main`?" would
+  # become "does anything fold to `main`?", which is the loose question issue #101
+  # took out of stored names. The snapshot section "trunk auto-detect will not
+  # store a name the refs do not have" is what pins that, and it flips if these
+  # are "made consistent" with the line above.
   return "main" if branch_ref_exists?("main")
   return "master" if branch_ref_exists?("master")
 
@@ -659,8 +690,18 @@ end
 # when a tag shares a branch's name, `:short` emits `heads/<name>`, so `branch?`
 # reads the branch as missing and sync reparents its children onto trunk.
 def existing_branches
+  Set.new(branch_names)
+end
+
+# The same list before it becomes a Set, for the one reader that has to SEARCH it
+# rather than look a name up: `stored_refname` folds case, and `Set#find` is on
+# Spinel's poly path -- scanning one there widens `current_branch`, `detect_trunk`,
+# `reparent!`, `record_reparent_base` and `print_order` along with it. An
+# `Array[String]` keeps every one of them concrete, and this repo's ratchet has no
+# headroom (see rbs/git-stack.rbs).
+def branch_names
   out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
-  Set.new(unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") })
+  unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") }
 end
 
 # Every branch `up`'s MENU (no name given) offers from `parent`. Builds a
