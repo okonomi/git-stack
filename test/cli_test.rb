@@ -1106,6 +1106,41 @@ setup("git checkout -q --detach")
 run("parent")
 run("tree")
 
+# The third way HEAD can name something the rest of the file will not match, after
+# the tag shadow above and the `--short` shortening below it -- why `.git/HEAD`
+# ends up holding a spelling the refs do not have is on `current_branch_or_empty`.
+# What it costs is this section: `track` wrote a second `branch.Feat-A.*` nobody
+# reads, `drop` died "branch 'Feat-A' does not exist" for the branch it was
+# standing in, and `tree` marked no row at all (issue #106).
+#
+# On a case-SENSITIVE filesystem the checkout simply fails and HEAD stays on
+# `feat-a`, which is the same transcript -- so this reads as a no-op on CI and as
+# the regression guard on a developer's Mac, the same shape as the trunk-spelling
+# sections near the top of this file.
+section "HEAD spelled differently from the ref still names the branch"
+new_repo
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q Feat-A")
+run("tree")
+run("track")
+show("stack config keys", "git config --get-regexp '^branch\\..*stack' | sort | tr '\\n' ' '")
+run("drop")
+
+# The same shape one character out of ASCII, and it is not a variation for its own
+# sake: `for-each-ref --ignore-case` -- the obvious way to ask git for the stored
+# spelling -- folds ASCII ONLY, so it answers nothing here and every symptom above
+# comes back. The ASCII section is green either way, which is exactly why this one
+# exists. The fold has to be Ruby's, whose `downcase` covers what the filesystem
+# folded when it accepted the checkout.
+section "HEAD spelled differently outside ASCII still names the branch"
+new_repo
+gsq("create feat-ä"); commit("a.txt", "a1")
+setup("git checkout -q feat-Ä")
+run("tree")
+run("track")
+show("stack config keys", "git config --get-regexp '^branch\\..*stack' | sort | tr '\\n' ' '")
+run("drop")
+
 # The same hazard on the WRITING side, which is where it stops being a wrong
 # reading and starts destroying commits. The sections above hardened everything
 # that MEASURES history; `restack` then hands the answer to `merge-base` and
