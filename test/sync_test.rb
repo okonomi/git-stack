@@ -184,17 +184,15 @@ show("feat-a stackBase == main tip",
      'test "$(git config --get branch.feat-a.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
 show("HEAD", "git branch --show-current")
 
-# A branch whose recorded stackBase has gone stale: as restack_test.rb's
-# "restack falls back to merge-base when stackBase is unrecorded" section
-# covers, git-stack only re-records the base when it moves the branch itself, so
-# a manual `git rebase` (or a `git pull`) leaves the recorded base pointing far
-# below the branch's real fork point. Here feat-b is manually rebased onto
-# feat-a -- absorbing feat-a's `s2` commit -- while its stackBase stays pinned at
-# feat-a's *original* tip. feat-a then advances with a conflicting `s3`. `sync`
-# must replay only feat-b's own `b1`, not re-apply the `s2` that is already in
-# feat-a: rebasing from the stale base would re-apply `s2` and conflict against
-# `s3`. resolve_stack_base clamps the stale base forward to the live merge-base
-# so only `b1` is replayed.
+# A branch whose recorded stackBase has gone stale: git-stack only re-records the
+# base when it moves the branch itself, so a manual `git rebase` (or a `git pull`)
+# leaves the recorded base pointing far below the branch's real fork point. Here
+# feat-b is manually rebased onto feat-a -- absorbing feat-a's `s2` commit -- while
+# its stackBase stays pinned at feat-a's *original* tip. feat-a then advances with a
+# conflicting `s3`. `sync` must replay only feat-b's own `b1`, not re-apply the `s2`
+# that is already in feat-a: rebasing from the stale base would re-apply `s2` and
+# conflict against `s3`. resolve_stack_base clamps the stale base forward to the
+# live merge-base so only `b1` is replayed.
 section "sync clamps a stale stackBase to the merge-base instead of re-applying parent commits"
 new_repo
 gsq("create feat-a"); commit("shared.txt", "s1")

@@ -5,6 +5,10 @@
 
 require_relative "support/helper"
 
+# tree's agreement with up on which trunk a detached root belongs to is
+# covered in nav_test.rb's "tree and up agree on which trunk a detached root
+# belongs to" section, not here.
+
 section "tree renders the whole stack"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")

@@ -9,6 +9,10 @@ section "version shows the program version"
 new_repo
 run("version")
 
+# No `new_repo` here or below: this and "an unknown flag is rejected" are the
+# only two sections in the whole suite that skip it, both running in the repo
+# "version shows the program version" built above -- reordering these sections,
+# or inserting one between them, would silently change which repo they run in.
 section "global flags are parsed with optparse"
 run("-v")
 run("--version")

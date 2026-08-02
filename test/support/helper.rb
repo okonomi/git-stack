@@ -1,32 +1,36 @@
 # frozen_string_literal: true
 #
-# Snapshot test for git-stack, run by `spin test`.
+# Harness shared by the snapshot tests in test/*_test.rb, run by `spin test`.
+# It lives under test/support/, not test/, so the `test/*.rb` glob that both
+# `spin test` and CI walk skips it -- it is not itself a test file.
 #
-# This is a real snapshot test: it drives git-stack through a series of
-# scenarios in throwaway git repositories and prints a transcript of exactly
-# what each command emits (stdout+stderr) plus its exit status. `spin test`
-# compiles this file with Spinel, runs it, and diffs its stdout against the
-# committed snapshot beside it (`test/<name>_test.rb.expected`). Any
-# changed message, a new line, a different exit code -- fails the test.
+# Each test file is a real snapshot test: it drives git-stack through a series
+# of scenarios in throwaway git repositories and prints a transcript of
+# exactly what each command emits (stdout+stderr) plus its exit status.
+# `spin test` compiles each `test/*_test.rb` file with Spinel, runs it, and
+# diffs its stdout against the committed snapshot beside it
+# (`test/<name>_test.rb.expected`). Any difference -- a changed message, a new
+# line, a different exit code -- fails the test.
 #
 # There are no hand-written expected values here; the snapshot IS the oracle.
 # After an intentional behaviour change, refresh it from CRuby with:
 #
 #     spin test --regen
 #
-# It also runs unchanged under CRuby, so you can regenerate/inspect without
-# Spinel:
+# Each test file also runs unchanged under CRuby, so you can regenerate/inspect
+# without Spinel:
 #
 #     ruby test/sync_test.rb                              # print one transcript
 #     ruby test/sync_test.rb > test/sync_test.rb.expected # regenerate that one
 #
-# By default it drives the Ruby script under CRuby; point GIT_STACK at another
-# build to snapshot that one instead:
+# By default each test file drives the Ruby script under CRuby; point GIT_STACK
+# at another build to snapshot that one instead:
 #
 #     GIT_STACK="$PWD/build/bin/git-stack" ruby test/sync_test.rb   # spinel binary
 #
-# Written in the same Spinel-accepted subset of Ruby as bin/git-stack.rb
-# (shelling out via backticks and `system`, no File/Dir/tmpdir).
+# This harness and every test file are written in the same Spinel-accepted
+# subset of Ruby as bin/git-stack.rb (shelling out via backticks and `system`,
+# no File/Dir/tmpdir).
 
 # The repo root is the directory we are launched from (`spin test` and
 # `ruby test/<name>_test.rb` both run from the project root). We capture it up

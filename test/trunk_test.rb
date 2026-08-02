@@ -147,11 +147,13 @@ run("parent")
 run("down")
 show("HEAD", "git branch --show-current")
 
-# The heaviest of the three: sync's orphan heal doesn't just record a parent, it
-# rebases onto it. Healing this stack onto main would replay feat-b off develop
-# and drop develop's own commits from it -- so the checks below assert the ref,
-# not only the config. main is advanced first so a wrong trunk really would move
-# feat-b.
+# The heaviest of the three that track_test.rb's "track with no argument picks
+# the trunk the branch rests on" leads (drop_test.rb's "drop reconnects
+# children to the trunk the dropped branch rested on" is the other): sync's
+# orphan heal doesn't just record a parent, it rebases onto it. Healing this
+# stack onto main would replay feat-b off develop and drop develop's own
+# commits from it -- so the checks below assert the ref, not only the config.
+# main is advanced first so a wrong trunk really would move feat-b.
 section "sync heals an orphan onto the trunk its stack rests on"
 new_repo
 setup("git branch develop main")

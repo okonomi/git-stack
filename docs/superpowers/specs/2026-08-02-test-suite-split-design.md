@@ -59,7 +59,7 @@ test/
 
 シナリオが**何を検証しているか**の主コマンドのファイルに置く。複数コマンドの一致を確認するもの（"tree and up agree on…", "restack and sync name the same root…"）は、そのバグが表面化するコマンド側に置く。
 
-唯一の例外が `refnames_test.rb` で、これはコマンドではなく「名前解決の罠」という横断テーマで括る。タグがブランチ名を隠すケース、HEAD の綴りが ref と違うケース、refname の綴りが stored と違うケースは、コマンド別に散らすと再発時に一覧できなくなる。
+例外は2つあり、どちらもコマンド別より優先する。1つは `refnames_test.rb` で、これはコマンドではなく「名前解決の罠」という横断テーマで括る。タグがブランチ名を隠すケース、HEAD の綴りが ref と違うケース、refname の綴りが stored と違うケースは、コマンド別に散らすと再発時に一覧できなくなる。もう1つは `trunk_test.rb` で、こちらは「複数 trunk の振る舞い」という横断テーマで括る。12セクションの主コマンドは sync / restack / tree / down+parent の4つにまたがる（付録の #12, #18, #20, #21, #24, #25）が、trunk が絡む振る舞いは離すと再発時に一覧できなくなる点は refnames と同じで、コマンド別なら4ファイルに散っていたはずのシナリオを1つにまとめている。テーマ別の受け皿を立てるほどの分量とバグの再発パターンがあるテーマは、コマンド別ルールより勝つ — そうでなければ、trunk 関連の新しいシナリオはコマンドの数だけファイルに散ってしまう。
 
 ## コメントの整理
 
@@ -223,8 +223,9 @@ test/
 | 84 | up refuses a detached root whose ref no longer exists (a phantom node) | nav |
 | 85 | up orders a trunk's tracked child before its detached roots, sorted | nav |
 
-判断が分かれうる3件について、根拠を残しておく。
+判断が分かれうる6件について、根拠を残しておく。
 
 - **#5 / #10 / #15 / #16**（trunk の綴り解決）は init / trunk ではなく refnames に置く。これらは「ユーザが打った名前ではなく git が保存している綴りに解決する」という一つのルールの現れであり、#73 / #74（HEAD の綴り）と同じ話をしている。離すと再発時に片方しか見つからない。
 - **#42**（restack and sync name the same root）は tree の描画を見ているが、検証しているのは restack / sync の root 選択なので sync に置く。
 - **#83**（tree and up agree）はバグが出るのが up 側のメニューなので nav に置く。
+- **#23 / #24 / #26**（track with no argument / sync heals an orphan / drop reconnects children、いずれも「このブランチはどの trunk の上にあるか」を答える）は分割前は1つづきの並びだったが、主コマンドがそれぞれ track・sync・drop なので、コマンド別ルールに従って track / trunk / drop の3ファイルに分かれる。refnames や trunk ほどテーマ側の受け皿を立てる分量ではないため、コマンド別ルールが勝つ — 代わりに track_test.rb と trunk_test.rb それぞれの見出しコメントが、残る二つのセクション名を名指しで参照することで、まとまりを保つ。

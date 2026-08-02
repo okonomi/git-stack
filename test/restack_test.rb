@@ -5,6 +5,10 @@
 
 require_relative "support/helper"
 
+# restack's choice of root against an untracked parent is covered in
+# sync_test.rb's "restack and sync name the same root tree draws, with an
+# untracked parent" section, alongside sync's -- not here.
+
 section "restack replays descendants onto the updated parent"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
