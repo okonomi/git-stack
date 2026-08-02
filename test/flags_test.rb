@@ -28,7 +28,8 @@ run("--bogus")
 # none) and its flags are checked together, before the repo is touched. The last
 # two shows are that "before": the run above must not have created a branch or
 # moved HEAD. `--delete` on `drop` itself keeps working, proved where it always
-# was (see "drop --delete removes the branch ref after splicing") (issue #83).
+# was (see drop_test.rb's "drop --delete removes the branch ref after
+# splicing" section) (issue #83).
 section "commands reject extra arguments and flags they do not take"
 new_repo
 gsq("create feat-a")

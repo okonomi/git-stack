@@ -10,10 +10,12 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
-# `origin/HEAD` is a symbolic ref like any other, so the sections below point it at a
-# remote-tracking ref directly rather than cloning: detect_trunk only ever reads
-# `git symbolic-ref refs/remotes/origin/HEAD`, and a real remote would make the
-# snapshot depend on a second throwaway repo's path.
+# `origin/HEAD` is a symbolic ref like any other, so this file's remaining
+# sections and refnames_test.rb's "init resolves the remote's default branch to
+# the spelling git stores" section point it at a remote-tracking ref directly
+# rather than cloning: detect_trunk only ever reads `git symbolic-ref
+# refs/remotes/origin/HEAD`, and a real remote would make the snapshot depend on
+# a second throwaway repo's path.
 
 section "init prefers the remote's default branch over main"
 new_repo

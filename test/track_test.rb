@@ -5,10 +5,13 @@
 
 require_relative "support/helper"
 
-# The three commands below have to answer "which trunk is this branch on?" with
-# no recorded parent to follow -- untracked, or a parent that was merged and
-# deleted. Naming the primary trunk pulled a develop-based stack over to main;
-# each now reads the trunk out of the branch's own history.
+# The command below and two more have to answer "which trunk is this branch on?"
+# with no recorded parent to follow -- untracked, or a parent that was merged
+# and deleted: trunk_test.rb's "sync heals an orphan onto the trunk its stack
+# rests on" and drop_test.rb's "drop reconnects children to the trunk the
+# dropped branch rested on" are the other two. Naming the primary trunk pulled a
+# develop-based stack over to main; each now reads the trunk out of the
+# branch's own history.
 
 section "track with no argument picks the trunk the branch rests on"
 new_repo

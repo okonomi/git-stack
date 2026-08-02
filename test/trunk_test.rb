@@ -56,8 +56,10 @@ run("tree")
 show("stack.trunk", "git config --get-all stack.trunk")
 
 # The other half of asking exactly, and the half that is NOT about case folding --
-# so unlike the two above, this one fails on every filesystem if the check
-# regresses. `for-each-ref refs/heads/main` matches one level down and answers
+# so unlike refnames_test.rb's "a trunk whose stored spelling is not the refname
+# is not live" and "trunk auto-detect will not store a name the refs do not
+# have" sections, this one fails on every filesystem if the check regresses.
+# `for-each-ref refs/heads/main` matches one level down and answers
 # `refs/heads/main/wip`, so testing "did it print anything" would resurrect the
 # phantom trunk: `detect_trunk` would store `main` in a repo that has no such
 # branch. Only the exact-line test refuses it.

@@ -2,23 +2,33 @@
 #
 # name resolution: a tag shadowing a branch name, and HEAD / trunk names whose spelling is not the one git stores.
 # See test/support/helper.rb for how the harness works and how to regenerate the snapshot.
+#
+# Six sections below share one cause: `origin/HEAD`, `HEAD` itself, or a trunk name
+# can end up holding a spelling that differs from the refname git actually has --
+# left behind by a `git checkout -b main origin/Main`, a rename, or an
+# outside-ASCII fold, on a filesystem loose enough to accept it. The name is not
+# one the user typed and cannot correct, so every reader resolves or checks it
+# against the spelling git stores rather than trusting it verbatim or matching it
+# loosely -- the same treatment `current_branch_or_empty` already gives HEAD
+# (issues #106, #108). Refusing it would mean declining to work in a repo git is
+# perfectly happy with. Each section below still carries its own call site, its
+# own symptom, and its own platform behavior -- only this shared cause is told
+# once, here.
 
 require_relative "support/helper"
 
-# `origin/HEAD` names a branch whose stored spelling differs only in case, which a
-# `git checkout -b main origin/Main` or a rename on a case-insensitive filesystem
-# leaves behind. The name is not one the user typed and cannot correct, so it gets
-# resolved to the spelling git has -- the same treatment `current_branch_or_empty`
-# gives HEAD (issues #106, #108). Refusing it would mean declining to work in a
-# repo git is perfectly happy with.
+# `origin/HEAD` names a branch whose stored spelling differs only in case here --
+# what a `git checkout -b main origin/Main` or a rename on a case-insensitive
+# filesystem leaves behind.
 #
-# The damage without that is silent, and worse than the miss above: `develop` and
-# `main` both exist, so detection does not fail -- it falls past the remote's
-# answer to the hardcoded candidate and records `main`, with no note. The remote
-# says `develop`.
+# The damage without resolving it is silent, and worse than the miss in
+# init_test.rb's "init reads the remote's default branch past a local branch
+# named origin/<name>" section: `develop` and `main` both exist, so detection
+# does not fail -- it falls past the remote's answer to the hardcoded candidate
+# and records `main`, with no note. The remote says `develop`.
 #
-# Unlike the HEAD and trunk-spelling sections elsewhere, this one is NOT a no-op on
-# a case-sensitive filesystem: `refs/remotes/origin/Develop` and
+# Unlike this file's HEAD-spelling section, this one is NOT a no-op on a
+# case-sensitive filesystem: `refs/remotes/origin/Develop` and
 # `refs/heads/develop` are simply two different refs there, so the fixture builds
 # and the old behaviour fails the same way on Linux.
 section "init resolves the remote's default branch to the spelling git stores"
@@ -34,7 +44,7 @@ show("stack.trunk", "git config --get stack.trunk")
 # succeeds on a case-insensitive filesystem with only `main` present, so
 # `init main Main` stored two trunks for one branch and `tree` drew it twice --
 # the #83 symptom, reached by a different door. `init` checks the exact stored
-# refnames now, which is the spelling every other reader compares against.
+# refnames now.
 #
 # The section runs the same on a case-SENSITIVE filesystem, where `Main` is
 # simply a branch that does not exist: same message, same exit, for the same
@@ -43,13 +53,15 @@ section "init rejects a trunk whose spelling is not the stored refname"
 new_repo
 run("init main Main")
 
-# The liveness re-check above asks about a CONFIGURED name, and asking loosely
-# (see `branch_ref_exists?`) meant a trunk stored as `Main` passed as live in a
-# repo holding only `main`. `tree` then drew a phantom `Main (trunk)` row while
-# the real stack, resting on `main`, was cut adrift at trunk-child indent -- the
-# issue #83 symptom, produced by the very re-check whose job is to keep ghost
-# trunks out. Asked exactly, `Main` is what it is: a name with no ref. It drops
-# out through the note above and the auto-detect puts the real trunk back.
+# The liveness re-check in trunk_test.rb's "a trunk that is gone with no
+# replacement is an error, and config is kept" section asks about a CONFIGURED
+# name, and asking loosely (see `branch_ref_exists?`) meant a trunk stored as
+# `Main` passed as live in a repo holding only `main`. `tree` then drew a phantom
+# `Main (trunk)` row while the real stack, resting on `main`, was cut adrift at
+# trunk-child indent -- the issue #83 symptom, produced by the very re-check
+# whose job is to keep ghost trunks out. Asked exactly, `Main` is what it is: a
+# name with no ref. It drops out through the note in that section and the
+# auto-detect puts the real trunk back.
 #
 # On a case-SENSITIVE filesystem `Main` never passed in the first place, so this
 # reads as a no-op on CI and as the regression guard on a developer's Mac. That
