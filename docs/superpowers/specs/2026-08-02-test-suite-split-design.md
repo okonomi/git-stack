@@ -67,7 +67,7 @@ test/
 
 ### 1. ファイルをまたぐ参照を名指しに直す
 
-他セクションを指している7箇所。`above` / `below` のような位置語をやめ、セクション名（必要ならファイル名も）で名指しする。うち6箇所は参照先が別ファイルへ移り、1箇所（`:157`）は逆に参照先が同一ファイルへ集まる。
+直す対象は8箇所 — 位置語24箇所のうち他セクションを指している7箇所と、セクション名を直接名指ししている1箇所（`:503`、位置語ではないので24には含まれない）。`above` / `below` のような位置語をやめ、セクション名（必要ならファイル名も）で名指しする。
 
 | 現在の位置 | 参照の内容 | 分割後の関係 |
 |---|---|---|
@@ -75,11 +75,12 @@ test/
 | `test/cli_test.rb:152` | "worse than the miss above" | refnames → init |
 | `test/cli_test.rb:157` | "the HEAD and trunk-spelling sections elsewhere" | 参照先が同一ファイルに集まるので、位置語のまま残さず明示する |
 | `test/cli_test.rb:265` | "The liveness re-check above" | refnames → trunk |
+| `test/cli_test.rb:271` | "the note above"（265 と同じコメントブロック） | refnames → trunk |
 | `test/cli_test.rb:301` | "unlike the two above" | trunk → refnames |
 | `test/cli_test.rb:503` | セクション名を直接名指し | flags → drop（ファイル名を添える） |
 | `test/cli_test.rb:999` | 直前セクションへの参照 | sync → restack |
 
-残る17箇所はセクション内の近くのコードを指しているので、そのまま移動する。
+残る17箇所の位置語はセクション内の近くのコードを指しているので、そのまま移動する。
 
 ### 2. 共有テーマの説明をファイル冒頭に集約
 
@@ -114,7 +115,7 @@ test/
 ## 追随が必要な箇所
 
 - `.github/workflows/ci.yml:25` — `ruby test/cli_test.rb | diff -u test/cli_test.rb.expected -` を `test/*_test.rb` のループに置き換える。1ファイルでも失敗したらジョブを落とすこと。
-- `.github/workflows/ci.yml:230` — `spinel-doctor test/cli_test.rb` を全テストファイルと `test/support/helper.rb` に広げる。
+- `.github/workflows/ci.yml:230` — `spinel-doctor test/cli_test.rb` を `test/*_test.rb` のループに広げる。`test/support/helper.rb` は個別にはかけない — 各テストファイルの `requires` チェックを通じて見られており、単体でかけると呼び出し元が分からないぶん広がった署名を `[info]` で出すだけになる（実地に確認済み）。
 - `.github/workflows/ci.yml:200` — `spin test` は複数ファイル対応済み。変更不要。
 - `README.md:259-282` — スナップショットの説明と再生成コマンド。
 - `test/binary_test.sh` の解説コメント内の `cli_test.rb` 参照（5, 32, 153, 256 行目）。
