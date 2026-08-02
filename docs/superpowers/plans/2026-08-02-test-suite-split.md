@@ -609,8 +609,11 @@ unchanged by it."
 | `trunk_test.rb` | 旧 301 行目、「unlike the two above」。参照先は `refnames_test.rb` の `a trunk whose stored spelling is not the refname is not live` と `trunk auto-detect will not store a name the refs do not have` |
 | `flags_test.rb` | 旧 503 行目、`(see "drop --delete removes the branch ref after splicing")` に `drop_test.rb` のファイル名を添える |
 | `sync_test.rb` | 旧 999 行目、直前セクションへの参照。参照先は `restack_test.rb` の `restack falls back to merge-base when stackBase is unrecorded` |
+| `track_test.rb` | 冒頭の「The three commands below have to answer "which trunk is this branch on?"」。分割前は 3 セクションを束ねる見出しだったが、その 3 つは `track_test.rb` / `sync_test.rb` / `drop_test.rb` に分かれた。今は 1 セクションしか率いていないので、残り 2 つを名指しする（`sync_test.rb` の `sync heals an orphan onto the trunk its stack rests on` と `drop_test.rb` の `drop reconnects children to the trunk the dropped branch rested on`） |
 
-セクション内の近くのコードを指している 17 箇所は触らない。
+これは Task 3 の実施中に見つかった 9 件目で、当初の 8 件の表には無かったもの。位置語ではなく「below」で複数セクションを束ねる見出しだったため、最初の洗い出しで「セクション内を指すもの」に誤分類していた。
+
+セクション内の近くのコードを指している 16 箇所は触らない。
 
 - [ ] **Step 2: refnames_test.rb に共有テーマの前置きを書く**
 
