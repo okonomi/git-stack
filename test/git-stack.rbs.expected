@@ -18,6 +18,7 @@ class Object
   def checkout!: (String) -> nil
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
+  def stored_refname: (String) -> String
   def current_branch: () -> String
   def require_branch: (String) -> String
   def branch_name_taken?: (String) -> bool
@@ -42,6 +43,7 @@ class Object
   def untrack!: (String) -> nil
   def scan_stack_config: () -> String
   def existing_branches: () -> Set
+  def branch_names: () -> Array[String]
   def children_of: (String, Array[String]) -> Array[String]
   def named_children_of: (String, Array[String]) -> Array[String]
   def effective_parent: (String, Array[String]) -> String

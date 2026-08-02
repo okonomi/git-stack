@@ -108,7 +108,7 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
-# `origin/HEAD` is a symbolic ref like any other, so these four point it at a
+# `origin/HEAD` is a symbolic ref like any other, so the sections below point it at a
 # remote-tracking ref directly rather than cloning: detect_trunk only ever reads
 # `git symbolic-ref refs/remotes/origin/HEAD`, and a real remote would make the
 # snapshot depend on a second throwaway repo's path.
@@ -139,6 +139,30 @@ setup("git branch develop main")
 setup("git branch origin/develop main") # the local ref that makes `origin/develop` ambiguous
 setup("git update-ref refs/remotes/origin/develop develop")
 setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop")
+run("init")
+show("stack.trunk", "git config --get stack.trunk")
+
+# `origin/HEAD` names a branch whose stored spelling differs only in case, which a
+# `git checkout -b main origin/Main` or a rename on a case-insensitive filesystem
+# leaves behind. The name is not one the user typed and cannot correct, so it gets
+# resolved to the spelling git has -- the same treatment `current_branch_or_empty`
+# gives HEAD (issues #106, #108). Refusing it would mean declining to work in a
+# repo git is perfectly happy with.
+#
+# The damage without that is silent, and worse than the miss above: `develop` and
+# `main` both exist, so detection does not fail -- it falls past the remote's
+# answer to the hardcoded candidate and records `main`, with no note. The remote
+# says `develop`.
+#
+# Unlike the HEAD and trunk-spelling sections elsewhere, this one is NOT a no-op on
+# a case-sensitive filesystem: `refs/remotes/origin/Develop` and
+# `refs/heads/develop` are simply two different refs there, so the fixture builds
+# and the old behaviour fails the same way on Linux.
+section "init resolves the remote's default branch to the spelling git stores"
+new_repo
+setup("git branch develop main")
+setup("git update-ref refs/remotes/origin/Develop develop")
+setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/Develop")
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
