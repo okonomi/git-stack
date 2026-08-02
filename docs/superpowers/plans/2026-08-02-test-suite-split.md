@@ -537,7 +537,7 @@ grep -rn "cli_test" --exclude-dir=.git --exclude-dir=vendor --exclude-dir=build 
 
 直す先は 3 つ:
 
-1. `test/support/helper.rb` の解説コメント（Task 2 で逐語のまま持ち込んだ 4 箇所）。`test/cli_test.rb` 1 本を前提にした再生成手順を、ファイルごとの手順に直す:
+1. `test/support/helper.rb` の解説コメント。`test/cli_test.rb` の名指しは 5 行 6 箇所ある（9, 20, 21 の 2 箇所, 26, 32 行目）。1 本を前提にした再生成手順を、ファイルごとの手順に直す:
 
 ```ruby
 # committed snapshot beside it (`test/<name>_test.rb.expected`). Any
