@@ -27,8 +27,8 @@ require_relative "support/helper"
 # does not fail -- it falls past the remote's answer to the hardcoded candidate
 # and records `main`, with no note. The remote says `develop`.
 #
-# Unlike this file's HEAD-spelling section, this one is NOT a no-op on a
-# case-sensitive filesystem: `refs/remotes/origin/Develop` and
+# Unlike this file's HEAD-spelling and trunk-spelling sections, this one is
+# NOT a no-op on a case-sensitive filesystem: `refs/remotes/origin/Develop` and
 # `refs/heads/develop` are simply two different refs there, so the fixture builds
 # and the old behaviour fails the same way on Linux.
 section "init resolves the remote's default branch to the spelling git stores"
