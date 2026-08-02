@@ -1,0 +1,51 @@
+
+### init auto-detects the trunk
+$ git stack init
+trunk(s): main
+[exit 0]
+stack.trunk: main
+
+### init prefers the remote's default branch over main
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
+### init ignores the remote's default branch when it has no local ref
+$ git stack init
+trunk(s): main
+[exit 0]
+stack.trunk: main
+
+### init reads the remote's default branch past a local branch named origin/<name>
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
+### init dies when the remote's default branch is the only candidate
+$ git stack init
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk: 
+
+### init records multiple trunks and lists them
+$ git stack init main develop
+trunk set to main, develop
+[exit 0]
+stack.trunk: main
+develop
+$ git stack init
+trunk(s): main, develop
+[exit 0]
+
+### init rejects a non-existent trunk
+$ git stack init nope
+error: branch 'nope' does not exist
+[exit 1]
+
+### init rejects a duplicate trunk name
+$ git stack init main develop main
+error: duplicate trunk 'main'
+[exit 1]
+stack.trunk (unchanged): main develop

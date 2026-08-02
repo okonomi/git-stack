@@ -6,7 +6,7 @@
 # scenarios in throwaway git repositories and prints a transcript of exactly
 # what each command emits (stdout+stderr) plus its exit status. `spin test`
 # compiles this file with Spinel, runs it, and diffs its stdout against the
-# committed snapshot in `test/cli_test.rb.expected`. Any difference -- a
+# committed snapshot beside it (`test/<name>_test.rb.expected`). Any
 # changed message, a new line, a different exit code -- fails the test.
 #
 # There are no hand-written expected values here; the snapshot IS the oracle.
@@ -17,19 +17,19 @@
 # It also runs unchanged under CRuby, so you can regenerate/inspect without
 # Spinel:
 #
-#     ruby test/cli_test.rb                 # print the transcript
-#     ruby test/cli_test.rb > test/cli_test.rb.expected   # regenerate snapshot
+#     ruby test/sync_test.rb                              # print one transcript
+#     ruby test/sync_test.rb > test/sync_test.rb.expected # regenerate that one
 #
 # By default it drives the Ruby script under CRuby; point GIT_STACK at another
 # build to snapshot that one instead:
 #
-#     GIT_STACK="$PWD/build/bin/git-stack" ruby test/cli_test.rb   # spinel binary
+#     GIT_STACK="$PWD/build/bin/git-stack" ruby test/sync_test.rb   # spinel binary
 #
 # Written in the same Spinel-accepted subset of Ruby as bin/git-stack.rb
 # (shelling out via backticks and `system`, no File/Dir/tmpdir).
 
 # The repo root is the directory we are launched from (`spin test` and
-# `ruby test/cli_test.rb` both run from the project root). We capture it up
+# `ruby test/<name>_test.rb` both run from the project root). We capture it up
 # front because each scenario cd's into a throwaway repo before invoking
 # git-stack.
 $root = `pwd`.strip

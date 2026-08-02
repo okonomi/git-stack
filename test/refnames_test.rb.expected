@@ -1,0 +1,136 @@
+
+### init resolves the remote's default branch to the spelling git stores
+$ git stack init
+trunk(s): develop
+[exit 0]
+stack.trunk: develop
+
+### init rejects a trunk whose spelling is not the stored refname
+$ git stack init main Main
+error: branch 'Main' does not exist
+[exit 1]
+
+### a trunk whose stored spelling is not the refname is not live
+$ git stack tree
+configured trunk 'Main' no longer exists; ignoring it
+trunk set to main
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+stack.trunk (re-detected): main
+
+### trunk auto-detect will not store a name the refs do not have
+$ git stack tree
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk (nothing stored): 
+
+### tree keeps a branch whose name collides with a tag
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+
+### trunk detection ignores a tag sharing a branch's name
+$ git stack tree
+* main (trunk)
+  develop (trunk)
+    feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+[exit 0]
+$ git stack up
+error: no branch stacked on top of 'main'
+[exit 1]
+HEAD: main
+$ git stack up
+warning: refname 'feat-b' is ambiguous.
+Switched to branch 'feat-b'
+[exit 0]
+HEAD: feat-b
+$ git stack sync
+syncing stack rooted at develop
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'develop'
+done.
+[exit 0]
+feat-b stackParent: develop
+feat-b behind/ahead of develop: 0	2
+
+### commands read HEAD past a tag sharing the branch's name
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+$ git stack untrack
+'feat-a' is no longer tracked in a stack
+[exit 0]
+feat-a stackParent after untrack: 
+$ git stack track
+tracking 'feat-a' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-a.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed
+branch.feat-a.stackparent main
+feat-b stackParent: feat-a
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-a
+done.
+[exit 0]
+feat-b stackParent after sync: feat-a
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+
+### a detached HEAD is still detached without --short
+$ git stack parent
+error: you are in 'detached HEAD' state; check out a branch first
+[exit 1]
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+[exit 0]
+
+### HEAD spelled differently from the ref still names the branch
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+$ git stack track
+tracking 'feat-a' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-a.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed branch.feat-a.stackparent main
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+
+### HEAD spelled differently outside ASCII still names the branch
+$ git stack tree
+  main (trunk)
+  * feat-ä (1 commit(s))
+[exit 0]
+$ git stack track
+tracking 'feat-ä' on top of 'main'
+[exit 0]
+stack config keys: branch.feat-ä.stackbase a097b8cb21d0a3114fe7a3669070f020c25f7aed branch.feat-ä.stackparent main
+$ git stack drop
+dropped feat-ä; reparented children onto main
+[exit 0]
+
+### restack replays onto the parent branch, not a tag that shadows it
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b commits: b1 a2 a1 base
+feat-b stackBase == feat-a tip: yes
+
+### reparenting anchors the base to the parent branch, not a tag that shadows it
+$ git stack parent feat-a
+parent of 'feat-c' set to 'feat-a'
+[exit 0]
+feat-c stackBase == merge-base(feat-c, feat-a): yes

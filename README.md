@@ -256,11 +256,13 @@ git stack restack               # continue restacking the rest
 
 ## Tests
 
-The suite lives in `test/cli_test.rb`, a Spinel **snapshot test**: it drives
-each command in throwaway repositories and prints a transcript of exactly what
-they emit (output + exit status). `spin test` compiles it with Spinel and
-diffs that transcript against the committed snapshot in
-`test/cli_test.rb.expected` — any change in behaviour shows up as a diff.
+The suite lives in `test/`, split by topic (`init_test.rb`, `sync_test.rb`,
+`drop_test.rb`, …), with the shared harness in `test/support/helper.rb`. Each
+file is a Spinel **snapshot test**: it drives its commands in throwaway
+repositories and prints a transcript of exactly what they emit (output + exit
+status). `spin test` compiles each one with Spinel and diffs its transcript
+against the committed snapshot beside it — any change in behaviour shows up as
+a diff.
 
 ```sh
 spin test                 # run the test and diff its output against the snapshot
@@ -271,15 +273,15 @@ It is also a plain Ruby program, so you can print/regenerate the transcript
 under CRuby without Spinel:
 
 ```sh
-ruby test/cli_test.rb                                # print the transcript
-ruby test/cli_test.rb > test/cli_test.rb.expected    # regenerate the snapshot
+ruby test/sync_test.rb                                 # print one file's transcript
+ruby test/sync_test.rb > test/sync_test.rb.expected    # regenerate that snapshot
 ```
 
 By default it drives the Ruby script under CRuby; point `GIT_STACK` at another
 build to test that one instead:
 
 ```sh
-GIT_STACK="$PWD/build/bin/git-stack" ruby test/cli_test.rb   # compiled Spinel binary
+GIT_STACK="$PWD/build/bin/git-stack" ruby test/sync_test.rb   # compiled Spinel binary
 ```
 
 ## License

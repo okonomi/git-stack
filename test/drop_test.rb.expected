@@ -1,0 +1,75 @@
+
+### drop reconnects children to the trunk the dropped branch rested on
+$ git stack drop feat-a
+dropped feat-a; reparented children onto develop
+[exit 0]
+feat-b stackParent: develop
+feat-b behind develop: 0
+
+### drop splices the bottom branch out, reparenting children onto trunk
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a stackParent (untracked): 
+feat-a still exists: yes
+feat-b stackParent: main
+feat-b behind main: 0
+feat-c stackParent: feat-b
+HEAD: main
+
+### drop a middle branch reconnects children to the grandparent
+$ git stack drop feat-b
+dropped feat-b; reparented children onto feat-a
+[exit 0]
+feat-c stackParent: feat-a
+feat-b stackParent (untracked): 
+HEAD: feat-a
+
+### drop reparents every child of a branch with multiple children
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-b stackParent: main
+feat-c stackParent: main
+
+### drop --delete removes the branch ref after splicing
+$ git stack drop feat-a --delete
+dropped feat-a; reparented children onto main
+deleted branch feat-a
+[exit 0]
+feat-a exists: no
+feat-b stackParent: main
+HEAD: main
+
+### drop falls back to trunk when the dropped branch's own parent is gone
+$ git stack drop feat-b
+'feat-b': parent 'feat-a' no longer exists; reconnecting children onto trunk 'main'
+dropped feat-b; reparented children onto main
+[exit 0]
+feat-c stackParent: main
+feat-c stackBase == main tip: yes
+
+### drop --delete on the current branch survives a dead recorded parent
+$ git stack drop feat-b --delete
+'feat-b': parent 'feat-a' no longer exists; reconnecting children onto trunk 'main'
+dropped feat-b; reparented children onto main
+deleted branch feat-b
+[exit 0]
+feat-b exists: no
+HEAD: main
+
+### drop refuses a trunk and a non-existent branch
+$ git stack drop main
+error: cannot drop trunk 'main'
+[exit 1]
+$ git stack drop nope
+error: branch 'nope' does not exist
+[exit 1]
+
+### drop with no argument splices the current branch
+$ git stack drop
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a stackParent (untracked): 
+feat-b stackParent: main
+HEAD: feat-a
