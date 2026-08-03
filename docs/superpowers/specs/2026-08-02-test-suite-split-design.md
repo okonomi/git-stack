@@ -223,9 +223,9 @@ test/
 | 84 | up refuses a detached root whose ref no longer exists (a phantom node) | nav |
 | 85 | up orders a trunk's tracked child before its detached roots, sorted | nav |
 
-判断が分かれうる6件について、根拠を残しておく。
+判断が分かれうる4件（シナリオ計9件）について、根拠を残しておく。
 
 - **#5 / #10 / #15 / #16**（trunk の綴り解決）は init / trunk ではなく refnames に置く。これらは「ユーザが打った名前ではなく git が保存している綴りに解決する」という一つのルールの現れであり、#73 / #74（HEAD の綴り）と同じ話をしている。離すと再発時に片方しか見つからない。
 - **#42**（restack and sync name the same root）は tree の描画を見ているが、検証しているのは restack / sync の root 選択なので sync に置く。
 - **#83**（tree and up agree）はバグが出るのが up 側のメニューなので nav に置く。
-- **#23 / #24 / #26**（track with no argument / sync heals an orphan / drop reconnects children、いずれも「このブランチはどの trunk の上にあるか」を答える）は分割前は1つづきの並びだったが、主コマンドがそれぞれ track・sync・drop なので、コマンド別ルールに従って track / trunk / drop の3ファイルに分かれる。refnames や trunk ほどテーマ側の受け皿を立てる分量ではないため、コマンド別ルールが勝つ — 代わりに track_test.rb と trunk_test.rb それぞれの見出しコメントが、残る二つのセクション名を名指しで参照することで、まとまりを保つ。
+- **#23 / #24 / #26**（track with no argument / sync heals an orphan / drop reconnects children、いずれも「このブランチはどの trunk の上にあるか」を答える）は、#23 と #24 は隣接するが #24 と #26 の間には #25 が挟まっており、1つづきの並びではなかった。主コマンドはそれぞれ track・sync・drop。#23 は track_test.rb、#26 は drop_test.rb とコマンド別ルールどおりに分かれるが、#24 は主コマンドが sync であるにもかかわらず、上述の「複数 trunk の振る舞い」というテーマの受け皿（付録の#12, #18, #20, #21, #24, #25の一つ）としてコマンド別ルールに勝ち、trunk_test.rb に入る。track_test.rb と trunk_test.rb それぞれの見出しコメントが、残る二つのセクション名を名指しで参照することで、まとまりを保つ。

@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 #
 # Harness shared by the snapshot tests in test/*_test.rb, run by `spin test`.
-# It lives under test/support/, not test/, so the `test/*.rb` glob that both
-# `spin test` and CI walk skips it -- it is not itself a test file.
+# It lives under test/support/, not test/, so both globs skip it: `spin
+# test`'s `test/*.rb` glob and CI's `test/*_test.rb` glob (ci.yml) are
+# different patterns, but both non-recursive. It is not itself a test file.
 #
 # Each test file is a real snapshot test: it drives git-stack through a series
 # of scenarios in throwaway git repositories and prints a transcript of
