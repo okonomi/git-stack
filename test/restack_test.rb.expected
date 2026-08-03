@@ -1,0 +1,40 @@
+
+### restack replays descendants onto the updated parent
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b contains a2: 1
+HEAD: feat-b
+
+### restack aborts cleanly on a conflict
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+error: conflict while rebasing 'feat-b' onto 'feat-a'.
+Resolve it manually with:
+    git checkout feat-b && git rebase --onto feat-a 74bb18bafa0c345a53729c0ffced01a2dd511047
+then re-run 'git stack restack'.
+[exit 1]
+rebase in progress: 0
+
+### restack leaves an untracked branch alone
+$ git stack restack
+restacking stack rooted at feat-a
+done.
+[exit 0]
+HEAD: feat-a
+
+### restack falls back to merge-base when stackBase is unrecorded
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains a2: 1
+feat-b contains b1: 1
+feat-b stackBase == feat-a tip (re-recorded): yes

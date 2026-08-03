@@ -1,0 +1,136 @@
+
+### an already-duplicated trunk list is deduped on read
+stack.trunk (raw config): main main
+$ git stack tree
+  main (trunk)
+  * feat-a 
+[exit 0]
+
+### sync re-detects a renamed trunk instead of reparenting onto its old name
+$ git stack sync
+configured trunk 'master' no longer exists; ignoring it
+trunk set to main
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+stack.trunk: main
+feat-b stackParent: main
+feat-b behind main: 0
+
+### a vanished secondary trunk is dropped from the trunk list
+$ git stack tree
+configured trunk 'develop' no longer exists; ignoring it
+* main (trunk)
+[exit 0]
+stack.trunk: main
+$ git stack tree
+* main (trunk)
+[exit 0]
+
+### a trunk that is gone with no replacement is an error, and config is kept
+$ git stack tree
+configured trunk 'main' no longer exists; ignoring it
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk: main
+
+### a branch one level down does not stand in for its parent name
+$ git stack tree
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+stack.trunk (nothing stored): 
+
+### tree renders each trunk as its own root
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+  develop (trunk)
+  * feat-d (1 commit(s))
+[exit 0]
+
+### an emptied stackParent is read as untracked, not as the primary trunk
+feat-d stackParent is empty: 1
+feat-w stackParent is blank: 1
+$ git stack tree
+  main (trunk)
+  * feat-m (1 commit(s))
+  develop (trunk)
+[exit 0]
+$ git stack parent
+develop
+[exit 0]
+$ git stack track
+tracking 'feat-d' on top of 'develop'
+[exit 0]
+$ git stack tree
+  main (trunk)
+    feat-m (1 commit(s))
+  develop (trunk)
+  * feat-d (1 commit(s))
+[exit 0]
+
+### restack stops at the secondary trunk it rests on
+$ git stack restack
+restacking stack rooted at feat-d
+restacking feat-d onto develop
+restacking feat-d2 onto feat-d
+done.
+[exit 0]
+feat-d parent: develop
+feat-d behind develop: 0
+feat-d2 behind feat-d: 0
+
+### down and parent treat every trunk as a bottom
+$ git stack down
+error: already at the bottom of the stack
+[exit 1]
+HEAD: develop
+$ git stack parent
+develop
+[exit 0]
+$ git stack down
+error: already at the bottom of the stack
+[exit 1]
+$ git stack parent
+main
+[exit 0]
+$ git stack parent
+develop
+[exit 0]
+$ git stack down
+Switched to branch 'develop'
+[exit 0]
+HEAD: develop
+
+### sync heals an orphan onto the trunk its stack rests on
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'develop'
+done.
+[exit 0]
+feat-b stackParent: develop
+feat-b behind develop: 0
+feat-b contains d1: 1
+
+### sync still heals a main-based orphan onto main when a second trunk exists
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+feat-b stackParent: main
+
+### a trunk's recorded parent is ignored by tree and restack
+develop before: 9c14d11533ceeff640ccce21d69b461cac6386cc
+$ git stack tree
+  main (trunk)
+* develop (trunk)
+    feat-d (1 commit(s))
+[exit 0]
+$ git stack restack
+restacking stack rooted at develop
+done.
+[exit 0]
+develop after: 9c14d11533ceeff640ccce21d69b461cac6386cc
+feat-d stackParent: develop

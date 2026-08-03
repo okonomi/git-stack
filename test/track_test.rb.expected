@@ -1,0 +1,60 @@
+
+### track with no argument picks the trunk the branch rests on
+$ git stack track
+tracking 'feat-d' on top of 'develop'
+[exit 0]
+feat-d stackParent: develop
+$ git stack track
+tracking 'feat-m' on top of 'main'
+[exit 0]
+feat-m stackParent: main
+
+### create records the parent and checks out the branch
+$ git stack create feat-a
+created feat-a on top of main
+[exit 0]
+HEAD: feat-a
+branch.feat-a.stackParent: main
+
+### create rejects an existing branch
+$ git stack create dup
+error: branch 'dup' already exists
+[exit 1]
+
+### parent shows and sets the parent
+$ git stack parent
+feat-a
+[exit 0]
+$ git stack parent other
+parent of 'feat-b' set to 'other'
+[exit 0]
+branch.feat-b.stackParent: other
+
+### untrack removes the metadata
+$ git stack untrack
+'feat-a' is no longer tracked in a stack
+[exit 0]
+branch.feat-a.stackParent: 
+
+### parent rejects an indirect cycle
+$ git stack parent feat-b
+error: 'feat-b' is downstream of 'feat-a'; setting it as parent would create a cycle
+[exit 1]
+branch.feat-a.stackParent: main
+
+### track rejects an indirect cycle
+$ git stack track feat-b
+error: 'feat-b' is downstream of 'feat-a'; tracking it would create a cycle
+[exit 1]
+
+### track refuses to track a trunk
+$ git stack track
+error: cannot track trunk 'develop'
+[exit 1]
+branch.develop.stackParent (untracked): 
+
+### parent refuses to reparent a trunk
+$ git stack parent main
+error: cannot set parent of trunk 'develop'
+[exit 1]
+branch.develop.stackParent (untracked): 

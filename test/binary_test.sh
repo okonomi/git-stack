@@ -2,7 +2,7 @@
 #
 # Runtime snapshot test for the *compiled* git-stack binary.
 #
-# `spin test` compiles test/cli_test.rb, but that harness still shells out to
+# `spin test` compiles test/*_test.rb, but that harness still shells out to
 # `ruby bin/git-stack.rb` -- so the command under test runs under CRuby, and
 # the native binary that actually ships is never executed. Any method the
 # Spinel runtime does not support (e.g. `Array#sort`) compiles and passes the
@@ -29,7 +29,7 @@
 # `Array[String]`, never on a poly array -- so this fixture doubles as the
 # runtime proof that the element type stayed narrow.
 #
-# This is the binary counterpart to test/cli_test.rb's CRuby snapshot; it adds
+# This is the binary counterpart to test/*_test.rb's CRuby snapshot; it adds
 # a check, it does not replace one. It does NOT cover `version`, whose output
 # deliberately differs on the binary (it stamps the build's Spinel ref, which
 # is not deterministic across builds).
@@ -150,7 +150,7 @@ git_q checkout -q feat-b
 run parent
 
 # The failing commands, on the SHIPPED binary, for the exit STATUS as much as the
-# message: scripts and `&&` chains read the status, not the text. cli_test.rb
+# message: scripts and `&&` chains read the status, not the text. test/*_test.rb
 # asserts these same codes but cannot catch a Spinel codegen bug, since CRuby is
 # unaffected -- see `would_cycle?` in bin/git-stack.rb for the one that shipped
 # (an error printed, then exit 0). Before this section binary_test.sh ran no
@@ -253,7 +253,7 @@ fi
 # that very output tells the user to run -- then reparented those healthy
 # branches onto trunk, silently destroying the recorded stack.
 #
-# This is invisible to test/cli_test.rb: CRuby's backticks do not truncate, so
+# This is invisible to test/*_test.rb: CRuby's backticks do not truncate, so
 # only the compiled binary can show it. The padding branches are long-named and
 # tracked so BOTH captures blow past 4 KB, and the stack under test is named
 # `zzz-` so it sorts entirely beyond the cut -- `for-each-ref` emits refnames in

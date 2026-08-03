@@ -1,0 +1,131 @@
+
+### restack and sync name the same root tree draws, with an untracked parent
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s)) (parent 'feat-a' is untracked)
+      feat-c (1 commit(s))
+[exit 0]
+$ git stack restack
+restacking stack rooted at feat-b
+done.
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-b
+done.
+[exit 0]
+feat-b stackParent after both: feat-a
+feat-c stackParent after both: feat-b
+
+### sync reparents an orphaned branch onto trunk and restacks it
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+branch.feat-b.stackParent: main
+feat-b behind main: 0
+HEAD: feat-b
+
+### sync heals a multi-level orphan chain in one pass
+$ git stack sync
+syncing stack rooted at feat-c
+'feat-c': parent 'feat-b' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+branch.feat-c.stackParent: main
+feat-c behind main: 0
+
+### sync reports a conflict the same way restack does
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main
+error: conflict while rebasing 'feat-b' onto 'main'.
+Resolve it manually with:
+    git checkout feat-b && git rebase --onto main 74bb18bafa0c345a53729c0ffced01a2dd511047
+then re-run 'git stack sync'.
+[exit 1]
+
+### tree shows a branch whose parent was deleted, then sync fixes it
+$ git stack tree
+  main (trunk)
+  * feat-b (parent 'feat-a' missing; run `git stack sync`)
+[exit 0]
+$ git stack tree
+  main (trunk)
+  * feat-b (1 commit(s))
+[exit 0]
+
+### sync heals an orphan in another stack when run from the trunk
+$ git stack tree
+* main (trunk)
+    feat-b (parent 'feat-a' missing; run `git stack sync`)
+    other-b (1 commit(s)) (parent 'other-a' is untracked)
+[exit 0]
+$ git stack sync
+syncing stack rooted at main
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+done.
+[exit 0]
+feat-b stackParent: main
+feat-b behind main: 0
+other-b stackParent (untouched): other-a
+HEAD: main
+$ git stack tree
+* main (trunk)
+    feat-b (1 commit(s))
+    other-b (1 commit(s)) (parent 'other-a' is untracked)
+[exit 0]
+
+### sync heals every orphaned stack in one pass, without repeating its own
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main
+syncing stack rooted at other-b
+'other-b': parent 'other-a' no longer exists; reparenting onto trunk 'main'
+restacking other-b onto main
+done.
+[exit 0]
+feat-b stackParent: main
+other-b stackParent: main
+HEAD: feat-b
+
+### sync recovers a branch whose parent was squash-merged and deleted
+$ git stack sync
+syncing stack rooted at feature-b
+'feature-b': parent 'feature-a' no longer exists; reparenting onto trunk 'main'
+restacking feature-b onto main
+done.
+[exit 0]
+feature-b stackParent: main
+feature-b behind main: 0
+feature-b commits above main: 1
+feature-b contains a1: 0
+feature-b contains a2: 0
+feature-b contains b1: 1
+feature-b stackBase == main tip: yes
+
+### sync fast-forwards a branch fully merged into its parent
+$ git stack sync
+syncing stack rooted at feat-a
+fast-forwarding feat-a to main
+done.
+[exit 0]
+feat-a behind main: 0
+feat-a commits above main: 0
+feat-a stackBase == main tip: yes
+HEAD: feat-a
+
+### sync clamps a stale stackBase to the merge-base instead of re-applying parent commits
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains b1: 1
+feat-b contains s3: 1
+feat-b stackBase == feat-a tip (re-anchored): yes

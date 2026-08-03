@@ -21,8 +21,14 @@ jobs:
       - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
         with:
           ruby-version: .ruby-version
-      - name: Diff transcript against snapshot
-        run: ruby test/cli_test.rb | diff -u test/cli_test.rb.expected -
+      - name: Diff transcripts against snapshots
+        run: |
+          set -uo pipefail
+          status=0
+          for f in test/*_test.rb; do
+            ruby "$f" | diff -u "$f.expected" - || status=1
+          done
+          exit $status
 
   # Full check: compile the CLI and the test with Spinel, run `spin test`, then
   # build the native binary and exercise it directly over a fixture repo so the
@@ -227,7 +233,9 @@ jobs:
             exit 1
           }
           spinel-doctor bin/git-stack.rb
-          spinel-doctor test/cli_test.rb
+          for f in test/*_test.rb; do
+            spinel-doctor "$f"
+          done
 
       # Runtime check on the *shipped* artifact. `spin test`'s harness shells
       # out to `ruby bin/git-stack.rb`, and the cruby job runs the script under

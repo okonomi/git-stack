@@ -1482,7 +1482,7 @@ class StackTopology
   # compiled binary printed die's message and then exited 0, so a `parent`/
   # `track` that correctly REJECTED a cycle still reported success to a script.
   #
-  # The miss was the engine, not the harness: cli_test.rb asserts these very
+  # The miss was the engine, not the harness: track_test.rb asserts these very
   # exit codes and still passed, because CRuby is unaffected and its `return`
   # returns. Only the compiled artifact can show it, so test/binary_test.sh is
   # where the guard had to go.
