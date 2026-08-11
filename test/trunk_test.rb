@@ -216,6 +216,19 @@ show("feat-d stackParent", "git config --get branch.feat-d.stackParent")
 # failing. These sections cover the two commands that edit the same list one name
 # at a time, and what the edit does to the stacks resting on it.
 
+# `plant` rewrites the key, so what it carries across that write is the LIVE half
+# of the old list: a name whose branch is gone would otherwise appear in the
+# summary line as though planting had confirmed it, and `trunk_branches` drops it
+# on the next command regardless.
+section "plant drops a dead trunk from the list it writes"
+new_repo
+setup("git branch develop main")
+setup("git branch release main")
+gsq("init main develop")
+setup("git branch -D develop")
+run("plant release")
+show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
+
 section "plant adds a trunk without re-typing the list, and fell removes one"
 new_repo
 setup("git branch develop main")
@@ -232,12 +245,28 @@ show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 # config only -- the branch itself survives being felled
 show("branches", "git branch --format='%(refname:short)' | tr '\\n' ' '")
 
-section "plant and fell with no arguments report the list, like init"
+# The listing form must not WRITE one. `init`'s listing registers what it
+# detects -- that is what `init` is for -- but the same behaviour here made
+# merely looking change what the next command does: the detected `main` was
+# persisted, so the `plant my-base` that followed produced "main, my-base"
+# instead of the "my-base" the same command produces on an untouched repo. The
+# second half of this section is that pair, run in the order that used to
+# differ.
+section "plant and fell report the list with no arguments, and register nothing"
 new_repo
 setup("git branch develop main")
 gsq("init main develop")
 run("plant")
 run("fell")
+# an unregistered detection is named as exactly that -- it is what the next
+# command will use, but `fell` cannot remove it, so it must not read as a
+# registered trunk
+new_repo
+setup("git branch my-base main")
+run("plant")
+show("stack.trunk (still unwritten)", "git config --get-all stack.trunk")
+run("plant my-base")
+show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
 # The list is a set, so neither "plant it twice" nor "fell what is not there" can
 # be what was meant. The shows are that nothing was written on the way to the
@@ -265,9 +294,10 @@ run("plant my-base")
 show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
 # Allowed on purpose: the empty key is the state a repo is in before `init`, so
-# the next command auto-detects again. That makes `fell` the way to undo a wrong
-# auto-detection -- refusing at zero would demand an `init` naming the very
-# branch you are trying to be rid of.
+# the next command auto-detects again. Which branch that will be is named here
+# rather than left as "one": detection answers `main` again, so this is the case
+# where felling the last trunk is undone by the very next command, and the only
+# thing separating that from a silent no-op is the message saying so.
 section "felling the last trunk leaves the next command to auto-detect"
 new_repo
 gsq("init main")
@@ -276,10 +306,39 @@ show("stack.trunk (unset)", "git config --get-all stack.trunk")
 run("tree")
 show("stack.trunk (re-detected)", "git config --get-all stack.trunk")
 
-# `fell` reads the raw config, not the live list, so a name whose branch is gone
-# can still be named. `trunk_branches` prunes such a name itself here -- there is
-# a live trunk left for it to return -- so this pair is about not having to run
-# something else to get it done.
+# The same re-detection, arrived at without an empty list -- and the reason
+# `fell` writes back the LIVE remainder rather than the raw one. `develop` is
+# configured but deleted, so a fell of `main` that kept it reported "trunk(s):
+# develop" and exited 0, while the next command read that all-dead list as
+# empty, re-detected, and put `main` straight back: the removal reverted, with
+# nothing having said so.
+section "fell is not undone by a remainder of dead trunks"
+new_repo
+setup("git branch develop main")
+gsq("init main develop")
+setup("git branch -D develop")
+run("fell main")
+show("stack.trunk (unset, not 'develop')", "git config --get-all stack.trunk")
+run("tree")
+
+# An auto-detected trunk is in force but not registered, and the empty key is
+# exactly what asks for the detection -- so there is no row to remove and
+# "felling" it would leave the next command detecting the same branch again.
+# Refused with its own message rather than the typo's, because naming it is not
+# a typo: `tree` does call this branch a trunk.
+section "fell refuses a trunk that is auto-detected rather than registered"
+new_repo
+setup("git branch my-base main")
+run("fell main")
+run("plant my-base")
+show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
+
+# `fell` validates against the raw config, not the live list, so a name whose
+# branch is gone can still be named. `trunk_branches` prunes such a name itself
+# here -- there is a live trunk left for it to return -- so this is about not
+# having to run something else to get it done. The "no longer exists" note comes
+# from the liveness question being asked of the whole list before anything is
+# removed (see `cmd_fell`), which is what keeps it to one line per dead name.
 section "fell removes a trunk whose branch is already gone"
 new_repo
 setup("git branch develop main")

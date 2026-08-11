@@ -154,6 +154,6 @@ $ git stack plant develop
 planted develop; trunk(s): main, release, develop
 [exit 0]
 $ git stack fell main release develop
-felled main, release, develop; no trunks left -- the next command will auto-detect one
+felled main, release, develop; no trunk left -- the next command will auto-detect main
 [exit 0]
 stack.trunk (unset): 

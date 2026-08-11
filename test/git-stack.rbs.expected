@@ -26,6 +26,7 @@ class Object
   def ahead_behind: (String, String) -> Array[Integer]
   def configured_trunks: () -> Array[String]
   def set_trunks: (Array[String]) -> Array[String]
+  def detect_trunk_or_empty: () -> String
   def detect_trunk: () -> String
   def live_trunks: (Array[String]) -> Array[String]
   def trunk_branches: () -> Array[String]
@@ -67,7 +68,7 @@ class Object
   def has_flag?: (Array[String], String) -> bool
   def first_operand: (Array[String]) -> String
   def operand?: (String) -> bool
-  def show_trunks: () -> nil
+  def report_trunks: () -> nil
   def check_trunk_repeats!: (Array[String]) -> nil
   def cmd_init: (Array[String]) -> nil
   def cmd_plant: (Array[String]) -> nil

@@ -122,19 +122,38 @@ trunk keeps its recorded parent, so nothing is orphaned and `restack` still
 replays onto it — but the felled branch is untracked now, so `tree` draws that
 stack as a root of its own until you `git stack track` it back into one.
 
-Felling the *last* trunk is allowed. It leaves the repo where it was before
-`init`, so the next command auto-detects a trunk again — which is how you undo an
-auto-detection that picked the wrong branch:
+With no arguments both just report the list, and — unlike `init` — register
+nothing while doing it, so looking never changes what the next command does.
 
-```sh
-git stack fell main             # -> no trunks left ...
-git stack plant my-base         # my-base is now the only trunk
-```
-
-`plant` never auto-detects for you: it starts from whatever is configured, empty
-list included, so `plant my-base` on a fresh repo means exactly what
+`plant` never auto-detects for you either: it starts from whatever is configured,
+empty list included, so `plant my-base` on a fresh repo means exactly what
 `init my-base` means. Planting appends, and the **first** trunk stays primary, so
 a new trunk never displaces the tie-breaker a repo already relies on.
+
+Felling the *last* trunk is allowed. It unsets the key, leaving the repo as it
+was before `init` — so the next command falls back to auto-detection, and `fell`
+tells you which branch that will be:
+
+```sh
+git stack fell main    # -> no trunk left -- the next command will auto-detect main
+```
+
+Which is the catch worth knowing: an auto-detected trunk is **not** a registered
+one, so felling a trunk that detection would pick again just hands it back. To
+change which branch a repo treats as its base, register the one you want:
+
+```sh
+git stack init my-base          # my-base is now the trunk
+```
+
+For the same reason `fell` refuses a trunk that is only auto-detected — there is
+no registration to remove, and the command would report a success that changed
+nothing. `git stack plant` (no arguments) is what tells the two apart:
+
+```
+trunk(s): main, develop                     # registered
+trunk(s): main (auto-detected, not registered)
+```
 
 Trunks are peers, so the commands that need a trunk without one to follow —
 `git stack track` with no argument, `git stack sync` reparenting a branch whose

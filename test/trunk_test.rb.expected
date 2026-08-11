@@ -135,6 +135,13 @@ done.
 develop after: 9c14d11533ceeff640ccce21d69b461cac6386cc
 feat-d stackParent: develop
 
+### plant drops a dead trunk from the list it writes
+$ git stack plant release
+configured trunk 'develop' no longer exists; ignoring it
+planted release; trunk(s): main, release
+[exit 0]
+stack.trunk: main release
+
 ### plant adds a trunk without re-typing the list, and fell removes one
 $ git stack plant develop
 planted develop; trunk(s): main, develop
@@ -154,13 +161,21 @@ felled develop; trunk(s): main, release
 stack.trunk: main release
 branches: develop main release
 
-### plant and fell with no arguments report the list, like init
+### plant and fell report the list with no arguments, and register nothing
 $ git stack plant
 trunk(s): main, develop
 [exit 0]
 $ git stack fell
 trunk(s): main, develop
 [exit 0]
+$ git stack plant
+trunk(s): main (auto-detected, not registered)
+[exit 0]
+stack.trunk (still unwritten): 
+$ git stack plant my-base
+planted my-base; trunk(s): my-base
+[exit 0]
+stack.trunk: my-base
 
 ### plant and fell reject a name the list already answers for
 $ git stack plant main
@@ -188,7 +203,7 @@ stack.trunk: my-base
 
 ### felling the last trunk leaves the next command to auto-detect
 $ git stack fell main
-felled main; no trunks left -- the next command will auto-detect one
+felled main; no trunk left -- the next command will auto-detect main
 [exit 0]
 stack.trunk (unset): 
 $ git stack tree
@@ -196,8 +211,28 @@ $ git stack tree
 [exit 0]
 stack.trunk (re-detected): main
 
+### fell is not undone by a remainder of dead trunks
+$ git stack fell main
+configured trunk 'develop' no longer exists; ignoring it
+felled main; no trunk left -- the next command will auto-detect main
+[exit 0]
+stack.trunk (unset, not 'develop'): 
+$ git stack tree
+* main (trunk)
+[exit 0]
+
+### fell refuses a trunk that is auto-detected rather than registered
+$ git stack fell main
+error: 'main' is auto-detected, not registered; run 'git stack init <branch>' or 'git stack plant <branch>' to register the trunk you want
+[exit 1]
+$ git stack plant my-base
+planted my-base; trunk(s): my-base
+[exit 0]
+stack.trunk: my-base
+
 ### fell removes a trunk whose branch is already gone
 $ git stack fell develop
+configured trunk 'develop' no longer exists; ignoring it
 felled develop; trunk(s): main
 [exit 0]
 stack.trunk: main
@@ -208,7 +243,8 @@ configured trunk 'main' no longer exists; ignoring it
 error: cannot determine trunk branch; run 'git stack init <branch>'
 [exit 1]
 $ git stack fell main
-felled main; no trunks left -- the next command will auto-detect one
+configured trunk 'main' no longer exists; ignoring it
+felled main; no trunk left, and none to detect -- the next command will ask for 'git stack init <branch>'
 [exit 0]
 stack.trunk (unset): 
 $ git stack plant feature
