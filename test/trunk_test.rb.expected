@@ -134,3 +134,120 @@ done.
 [exit 0]
 develop after: 9c14d11533ceeff640ccce21d69b461cac6386cc
 feat-d stackParent: develop
+
+### plant adds a trunk without re-typing the list, and fell removes one
+$ git stack plant develop
+planted develop; trunk(s): main, develop
+[exit 0]
+$ git stack plant release
+planted release; trunk(s): main, develop, release
+[exit 0]
+stack.trunk: main develop release
+$ git stack tree
+* main (trunk)
+  develop (trunk)
+  release (trunk)
+[exit 0]
+$ git stack fell develop
+felled develop; trunk(s): main, release
+[exit 0]
+stack.trunk: main release
+branches: develop main release
+
+### plant and fell with no arguments report the list, like init
+$ git stack plant
+trunk(s): main, develop
+[exit 0]
+$ git stack fell
+trunk(s): main, develop
+[exit 0]
+
+### plant and fell reject a name the list already answers for
+$ git stack plant main
+error: 'main' is already a trunk
+[exit 1]
+$ git stack plant nope
+error: branch 'nope' does not exist
+[exit 1]
+$ git stack plant develop develop
+error: duplicate trunk 'develop'
+[exit 1]
+$ git stack fell develop
+error: 'develop' is not a trunk
+[exit 1]
+$ git stack fell main main
+error: duplicate trunk 'main'
+[exit 1]
+stack.trunk (unchanged): main
+
+### plant on a repo that never ran init does not pull in a detected trunk
+$ git stack plant my-base
+planted my-base; trunk(s): my-base
+[exit 0]
+stack.trunk: my-base
+
+### felling the last trunk leaves the next command to auto-detect
+$ git stack fell main
+felled main; no trunks left -- the next command will auto-detect one
+[exit 0]
+stack.trunk (unset): 
+$ git stack tree
+* main (trunk)
+[exit 0]
+stack.trunk (re-detected): main
+
+### fell removes a trunk whose branch is already gone
+$ git stack fell develop
+felled develop; trunk(s): main
+[exit 0]
+stack.trunk: main
+
+### fell works on the repo where a dead trunk cannot be pruned
+$ git stack tree
+configured trunk 'main' no longer exists; ignoring it
+error: cannot determine trunk branch; run 'git stack init <branch>'
+[exit 1]
+$ git stack fell main
+felled main; no trunks left -- the next command will auto-detect one
+[exit 0]
+stack.trunk (unset): 
+$ git stack plant feature
+planted feature; trunk(s): feature
+[exit 0]
+$ git stack tree
+* feature (trunk)
+[exit 0]
+
+### a stack on a felled trunk keeps its parent and is drawn as a detached root
+$ git stack tree
+* main (trunk)
+  develop (trunk)
+    feat-d (1 commit(s))
+[exit 0]
+$ git stack fell develop
+felled develop; trunk(s): main
+[exit 0]
+feat-d stackParent: develop
+$ git stack tree
+* main (trunk)
+    feat-d (1 commit(s)) (parent 'develop' is untracked)
+[exit 0]
+
+### planting a tracked branch promotes it, and felling it puts it back
+$ git stack plant feat-a
+planted feat-a; trunk(s): main, feat-a
+[exit 0]
+feat-a stackParent (kept): main
+$ git stack tree
+* main (trunk)
+  feat-a (trunk)
+    feat-b (1 commit(s))
+[exit 0]
+$ git stack fell feat-a
+felled feat-a; trunk(s): main
+[exit 0]
+$ git stack tree
+* main (trunk)
+    feat-a (1 commit(s))
+      feat-b (1 commit(s))
+[exit 0]

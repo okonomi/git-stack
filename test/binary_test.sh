@@ -331,3 +331,28 @@ printf 'zzz rows in tree (expect 2): %s\n' \
 git_q checkout -q zzz-stack-top
 run sync
 show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
+
+# The trunk-list editors, on the SHIPPED binary, because both are the array
+# shape this file exists for: `plant` hands `set_trunks` a run-time
+# CONCATENATION (`configured_trunks + args`, neither one a literal), and `fell`
+# builds its remaining list with `reject` -- one of the poly-array methods
+# Spinel dispatches only on a concrete receiver, with an `include?` on a second
+# run-time array inside the block. Both compile clean and pass the CRuby
+# snapshot whatever the element type turns out to be; only the real binary can
+# show one choking. The last `fell` empties the list, so `set_trunks` is also
+# proven on the zero-element path that unsets the key.
+section "plant and fell edit the trunk list on the compiled binary"
+new_repo
+git_q branch develop
+git_q branch release
+run init main
+run plant develop
+run plant release
+# `show` strips newlines, so a multi-valued key reads as one run-on
+# string here -- the names, in config order, with nothing between them.
+show "stack.trunk (run together)" "config --get-all stack.trunk"
+run fell develop
+show "stack.trunk after fell (run together)" "config --get-all stack.trunk"
+run plant develop
+run fell main release develop
+show "stack.trunk (unset)" "config --get-all stack.trunk"

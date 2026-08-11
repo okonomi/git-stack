@@ -67,7 +67,11 @@ class Object
   def has_flag?: (Array[String], String) -> bool
   def first_operand: (Array[String]) -> String
   def operand?: (String) -> bool
+  def show_trunks: () -> nil
+  def check_trunk_repeats!: (Array[String]) -> nil
   def cmd_init: (Array[String]) -> nil
+  def cmd_plant: (Array[String]) -> nil
+  def cmd_fell: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
   def cmd_tree: (Array[String]) -> Array[String]
   def cmd_parent: (Array[String]) -> nil

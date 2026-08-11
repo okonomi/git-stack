@@ -134,3 +134,26 @@ syncing stack rooted at zzz-stack-bottom
 done.
 [exit 0]
 zzz-stack-top parent after sync: zzz-stack-bottom
+
+### plant and fell edit the trunk list on the compiled binary
+$ git stack init main
+trunk set to main
+[exit 0]
+$ git stack plant develop
+planted develop; trunk(s): main, develop
+[exit 0]
+$ git stack plant release
+planted release; trunk(s): main, develop, release
+[exit 0]
+stack.trunk (run together): maindeveloprelease
+$ git stack fell develop
+felled develop; trunk(s): main, release
+[exit 0]
+stack.trunk after fell (run together): mainrelease
+$ git stack plant develop
+planted develop; trunk(s): main, release, develop
+[exit 0]
+$ git stack fell main release develop
+felled main, release, develop; no trunks left -- the next command will auto-detect one
+[exit 0]
+stack.trunk (unset): 
