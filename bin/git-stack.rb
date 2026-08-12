@@ -460,7 +460,15 @@ end
 #
 # Stripping is only half of it, though -- `current_branch_or_empty` resolves the
 # name it strips, and so does this one now, through the same `stored_refname`.
-def detect_trunk
+# The detection itself, answering "" rather than dying when nothing fits.
+#
+# Split out because two callers need the answer WITHOUT the exit: `plant`/`fell`
+# report which branch the next command will detect (or that there is none), and
+# `fell` has to recognise a trunk that is in force by detection rather than by
+# registration. Dying there would be wrong -- nothing has gone wrong, the repo
+# simply has no configured trunk -- and both would otherwise have to re-implement
+# the ladder below to ask.
+def detect_trunk_or_empty
   name = git_out("symbolic-ref --quiet refs/remotes/origin/HEAD").delete_prefix("refs/remotes/origin/")
   # Resolved, not merely checked: `origin/HEAD` may name `Develop` where git
   # stores `develop`, and recording the remote's answer under a spelling no
@@ -485,8 +493,15 @@ def detect_trunk
   return "main" if branch_ref_exists?("main")
   return "master" if branch_ref_exists?("master")
 
-  die("cannot determine trunk branch; run '#{PROG} init <branch>'")
-  "" # unreachable: die exits, but every path must still yield a String
+  ""
+end
+
+# The same detection for the callers that cannot carry on without an answer.
+def detect_trunk
+  name = detect_trunk_or_empty
+  die("cannot determine trunk branch; run '#{PROG} init <branch>'") if name.empty?
+
+  name
 end
 
 # The configured trunks that still exist, announcing each name that doesn't.
@@ -1725,22 +1740,87 @@ def operand?(arg)
   !arg.empty? && !arg.start_with?("-")
 end
 
+# `plant`/`fell` with no arguments: report the trunk list, WITHOUT writing one.
+#
+# Deliberately not `init`'s listing, which goes through `trunk_branches` and so
+# registers whatever it detects -- that is `init`'s job, and it is the wrong job
+# here twice over. It contradicts `plant`'s own contract (see `cmd_plant`): a
+# listing that registers `main` turns the very next `plant my-base` from
+# "my-base is the trunk" into "main and my-base are", so merely LOOKING would
+# change what the command that follows does. And it dies on the repo whose trunk
+# is dead with nothing to detect, which is a repo `fell` is meant to be usable
+# in -- `fell <name>` worked there while `fell` alone did not.
+#
+# An unregistered detection is reported as exactly that, rather than as a
+# registered trunk: it is what the next command will use, but `fell` cannot
+# remove it (see `cmd_fell`), so the two must not look alike here.
+#
+# The RUNGS are shared helpers, but the order they are tried in -- the live half
+# of the configured list, and detection only when that is empty -- is `trunk_branches`'
+# rule, restated here and once more in `cmd_fell`. Nothing couples them
+# mechanically, and they have to agree: this command exists to say what the next
+# one will resolve, so a fallback rule changed in `trunk_branches` alone would
+# make it report a trunk that command will not use. Changing the rule means
+# changing all three.
+def report_trunks
+  live = live_trunks(configured_trunks)
+  unless live.empty?
+    info "trunk(s): #{live.join(", ")}"
+    return nil
+  end
+
+  detected = detect_trunk_or_empty
+  if detected.empty?
+    info "no trunk registered, and none to detect; run '#{PROG} init <branch>' or '#{PROG} plant <branch>'"
+  else
+    info "trunk(s): #{detected} (auto-detected, not registered)"
+  end
+  nil
+end
+
+# Reject a name typed twice in one trunk list. Shared by the three commands that
+# take one, because a repeat means the same thing to each of them.
+#
+# A repeat is rejected, not quietly deduped: `init main main` is a typo, and this
+# list is the one setting every other command reads -- storing something the user
+# did not type is how the same trunk, and its whole subtree, came to be drawn
+# twice by `tree` (issue #83). `fell develop develop` is the same typo, and
+# saying so beats a second removal that silently no-ops against a list the first
+# one already changed.
+#
+# Names are compared string-exactly, as every reader of the trunk list does --
+# see `cmd_init` on why the spelling has to be git's own.
+#
+# Called AFTER each command's per-name check, so the message a command line earns
+# is the one about the name itself: `init nope nope` is still "branch 'nope' does
+# not exist", the more useful of the two things wrong with it.
+def check_trunk_repeats!(names)
+  seen = Set.new
+  names.each do |name|
+    die("duplicate trunk '#{name}'") if seen.include?(name)
+
+    seen.add(name)
+  end
+  nil
+end
+
+# Set the whole trunk list at once. The wholesale form -- `plant`/`fell` edit
+# this same list one name at a time.
 def cmd_init(args)
   if args.empty?
+    # Through `trunk_branches`, unlike `report_trunks`: resolving a trunk and
+    # recording it IS what `init` is for, so the listing form registers a
+    # detection rather than merely naming it.
     trunks = trunk_branches
     info "trunk(s): #{trunks.join(", ")}"
     return
   end
-  # A repeat is rejected, not quietly deduped: `init main main` is a typo, and
-  # this list is the one setting every other command reads -- storing something
-  # the user did not type is how the same trunk, and its whole subtree, came to be
-  # drawn twice by `tree` (issue #83).
-  #
+
   # Existence is checked against the EXACT stored refnames (see `branch_ref_exists?`
   # for the mechanism), because a loose match let `init main Main` pass the repeat
   # check on two distinct strings and store one branch as two trunks -- the same
   # symptom, one spelling along. Every other reader compares this list
-  # string-exactly, so the one command that PERSISTS a name has to demand the
+  # string-exactly, so the commands that PERSIST a name have to demand the
   # spelling git actually has.
   #
   # Deduping on the resolved commit would be wrong: `containing_trunk` explicitly
@@ -1749,15 +1829,165 @@ def cmd_init(args)
   # One repo-wide scan, on a once-per-repo command, and it is the same set `tree`
   # and `sync` already trust.
   refs = existing_branches
-  seen = Set.new
   args.each do |trunk|
     die("branch '#{trunk}' does not exist") unless refs.include?(trunk)
-    die("duplicate trunk '#{trunk}'") if seen.include?(trunk)
-
-    seen.add(trunk)
   end
+  check_trunk_repeats!(args)
+
   set_trunks(args)
   info "trunk set to #{args.join(", ")}"
+end
+
+# Grow a new root: register `args` as trunks ALONGSIDE the ones already there.
+#
+# The incremental half of `init`, and the reason it exists: `init` writes the
+# whole list, so adding `develop` to a repo that already had `main` and `release`
+# meant re-typing all three -- and a fat-fingered omission there does not fail,
+# it silently unregisters a trunk, leaving every stack resting on it redrawn as a
+# detached root.
+#
+# Reads `configured_trunks` rather than `trunk_branches`: this command must not
+# auto-detect. `trunk_branches` DIES on a repo with no `main`/`master` and
+# nothing configured, which is exactly the repo where `plant my-base` is the
+# thing to type -- and on a repo that does have `main` it would silently plant
+# `main` too, beside the name the user actually asked for. So an empty list is an
+# ordinary starting point here: `plant main` on a fresh repo means what
+# `init main` means. A configured name whose branch has since been deleted is
+# left alone rather than pruned as a side effect; `trunk_branches` still drops
+# it, with its note, on the next command that resolves a trunk.
+#
+# A branch already tracked in a stack may be planted, and its recorded
+# `stackParent` is left in place rather than cleared. Every reader already
+# ignores a trunk's parent (see trunk_test.rb's "a trunk's recorded parent is
+# ignored by tree and restack"), so the link is inert while the branch is a
+# trunk -- and keeping it makes `fell` an exact undo, putting the branch back
+# into the stack it was promoted out of.
+def cmd_plant(args)
+  return report_trunks if args.empty?
+
+  refs = existing_branches
+  trunks = configured_trunks
+  args.each do |name|
+    # Same scan, and the same exactness rule, as `cmd_init` -- whose comment is
+    # the one that says why the spelling has to be git's own. Left as its own
+    # loop rather than shared with it: the two run different per-name checks, and
+    # hoisting only the existence half would split this into two passes and
+    # change which complaint `plant <a-trunk> <no-such-branch>` earns.
+    die("branch '#{name}' does not exist") unless refs.include?(name)
+    # Not a silent no-op: the trunk list is a set, so "plant it again" cannot be
+    # what was meant, and the reasoning `check_trunk_repeats!` carries applies
+    # just the same to a repeat spread across two invocations.
+    die("'#{name}' is already a trunk") if is_trunk?(name, trunks)
+  end
+  check_trunk_repeats!(args)
+
+  # Appended, not sorted or prepended: config order IS precedence -- the first
+  # trunk is the primary one, `containing_trunk`'s tie-breaker -- so planting a
+  # new trunk must not displace the primary a repo already relies on.
+  #
+  # What is kept is the LIVE half of the old list. Rewriting the key is this
+  # command's own act, so carrying a name whose branch is gone across that write
+  # would put it in the summary line below as though planting had confirmed it --
+  # and `trunk_branches` drops it on the very next command anyway. `live_trunks`
+  # says which name it dropped, so nothing goes quietly.
+  #
+  # This knowingly asks about existence a second way: `refs` above is one
+  # whole-repo scan, and `live_trunks` spends a `git` call per configured trunk to
+  # answer the same question about the OTHER half of the list. Both compare exact
+  # stored refnames, and that half is one or two names, so the re-ask is cheaper
+  # than widening `live_trunks` -- whose signature is pinned in rbs/git-stack.rbs
+  # -- to take a ref set for this single caller's sake.
+  planted = live_trunks(trunks) + args
+  set_trunks(planted)
+  info "planted #{green(args.join(", "))}; trunk(s): #{planted.join(", ")}"
+  nil
+end
+
+# Cut a root down: unregister `args`, keeping the rest of the list.
+#
+# Config only -- the branch ref is untouched, as `drop` leaves a dropped branch
+# alone. Felling `develop` demotes it to an ordinary, UNTRACKED branch: whatever
+# was stacked on it keeps recording it as a parent, so nothing is orphaned and
+# `restack` still replays onto it, but `tree` now draws that stack as a detached
+# root under the trunk its history rests on, noting the untracked parent.
+# `git stack track` on the felled branch is what folds it back into a stack.
+#
+# Felling the LAST trunk is allowed, and leaves the key unset -- the state a repo
+# is in before it ever runs `init`. The next command auto-detects again, which is
+# the point: `fell main` in a repo whose real base is elsewhere is how you undo a
+# wrong auto-detection, and refusing at zero would make that require an `init`
+# naming the very branch you were trying to be rid of.
+#
+# Reads `configured_trunks`, not the live list, so a name whose branch is already
+# gone can still be named. `trunk_branches` does prune such a name on the next
+# command that resolves a trunk, but only as a side effect of having a live trunk
+# left to return: in the repo where it is the LAST name, and nothing is
+# detectable, it dies with the stale key intact (see `detect_trunk`). Felling it
+# is the way to be rid of the name itself -- `init <live-branch>` gets that repo
+# moving again too, but only by naming a replacement, which is a different thing
+# to want.
+def cmd_fell(args)
+  return report_trunks if args.empty?
+
+  trunks = configured_trunks
+  # Which of them still exist, asked ONCE and before anything is removed, so
+  # `live_trunks` names each dead branch a single time. This is also the list the
+  # removal works on: a dead name left in the config by a fell is worse than
+  # inert, because a remainder of ONLY dead names reads as an empty list to
+  # `trunk_branches`, which then re-detects and re-registers the very branch that
+  # was just felled -- the removal undone by the next command, reported as a
+  # success by this one.
+  live = live_trunks(trunks)
+  # With nothing configured left alive, the trunk in force is a DETECTION, and it
+  # is not in `trunks` to be felled. Resolved only on that path: the ladder costs
+  # two to five `git` calls (see `detect_trunk_or_empty`), and a repo with a live
+  # configured trunk has no use for the answer. Reused below rather than asked
+  # again -- `live.empty?` is the path that reaches the second question too.
+  detected = live.empty? ? detect_trunk_or_empty : ""
+  args.each do |name|
+    next if is_trunk?(name, trunks)
+
+    # Naming the detected trunk is not a typo, so it does not get the typo's
+    # message. It cannot be felled either: an unset key is precisely what asks
+    # for detection, so "removing" this name would leave the next command
+    # detecting it again -- a command that reported success and changed nothing.
+    # Registering the trunk you do want is the move, so say so.
+    if !detected.empty? && name == detected
+      die("'#{name}' is auto-detected, not registered; run '#{PROG} init <branch>' or '#{PROG} plant <branch>' to register the trunk you want")
+    end
+    die("'#{name}' is not a trunk")
+  end
+  check_trunk_repeats!(args)
+
+  # `reject` on `live_trunks`' own result -- a concrete receiver, per the typing
+  # note there. Order is preserved, so felling a secondary trunk leaves the
+  # primary primary, and felling the primary promotes the next name in line.
+  left = live.reject { |name| args.include?(name) }
+  set_trunks(left)
+  felled = green(args.join(", "))
+  unless left.empty?
+    info "felled #{felled}; trunk(s): #{left.join(", ")}"
+    return nil
+  end
+
+  # Nothing left, so the next command detects. Which branch that is, or that
+  # there is none, is the whole content of "what happens now", and it is knowable
+  # here. Left as "will auto-detect one" it was wrong in both directions: silent
+  # about re-registering a branch just felled, and a promise of detection in the
+  # repo where the next command instead dies asking for `init`.
+  #
+  # `detected` already holds the answer whenever `live` was empty, and detection
+  # reads only refs -- never `stack.trunk` -- so the `set_trunks` above cannot
+  # have changed it. Asking again there re-ran the whole ladder for a string in
+  # scope; the fresh call is for the other way in, where every LIVE trunk was
+  # felled and the question was never put.
+  now = live.empty? ? detected : detect_trunk_or_empty
+  if now.empty?
+    info "felled #{felled}; no trunk left, and none to detect -- the next command will ask for '#{PROG} init <branch>'"
+  else
+    info "felled #{felled}; no trunk left -- the next command will auto-detect #{cyan(now)}"
+  end
+  nil
 end
 
 def cmd_create(args)
@@ -2197,6 +2427,8 @@ def cmd_help(_args)
 
     #{bold("COMMANDS")}
         init [branch...]      Set (or auto-detect) the trunk branch(es).
+        plant [branch...]     Add branch(es) to the trunks, keeping the rest. (no args: list them)
+        fell [branch...]      Remove branch(es) from the trunks; the branch itself is kept. (no args: list them)
         create <name>         Create <name> stacked on the current branch. (aliases: b, branch)
         tree                  Show the stack as a tree. (aliases: ls, list)
         up [child]            Check out the branch stacked on the current one.
@@ -2258,9 +2490,9 @@ end
 # `configured_trunks`). -1 is already a sentinel here, so this reads as one.
 UNKNOWN_COMMAND = -2
 
-# How many positional arguments each command accepts: -1 for unlimited (`init`
-# takes a whole trunk list), 1 for the commands that name an optional branch, 0
-# for the rest. UNKNOWN_COMMAND means this table has never heard of the name, and
+# How many positional arguments each command accepts: -1 for unlimited (the
+# three trunk-list commands take a whole list of names), 1 for the commands that
+# name an optional branch, 0 for the rest. UNKNOWN_COMMAND means this table has never heard of the name, and
 # `validate_args!` turns that into "unknown command" -- the same message `main`'s
 # `case` gives, reported one step earlier.
 #
@@ -2276,7 +2508,7 @@ UNKNOWN_COMMAND = -2
 # unvalidated. Two lists with a loud failure beat one list with a quiet one.
 def max_operands(cmd)
   case cmd
-  when "init" then -1
+  when "init", "plant", "fell" then -1
   when "create", "b", "branch" then 1
   when "tree", "ls", "list" then 0
   when "up", "next" then 1
@@ -2378,6 +2610,8 @@ def main(argv)
 
   case cmd
   when "init"                 then cmd_init(rest)
+  when "plant"                then cmd_plant(rest)
+  when "fell"                 then cmd_fell(rest)
   when "create", "b", "branch" then cmd_create(rest)
   when "tree", "ls", "list"   then cmd_tree(rest)
   when "up", "next"           then cmd_up(rest)

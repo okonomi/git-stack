@@ -106,6 +106,55 @@ git stack init                  # -> trunk(s): main, develop
 Each trunk is a root in `git stack tree`, and `restack`/`sync` stop walking a
 stack down when they reach any trunk.
 
+`init` writes the **whole** list, so `plant` and `fell` edit it one name at a
+time — no re-typing the names you're keeping, and no silently dropping one you
+forgot to repeat:
+
+```sh
+git stack plant develop         # -> planted develop; trunk(s): main, develop
+git stack fell develop          # -> felled develop; trunk(s): main
+git stack plant                 # (no args) -> trunk(s): main
+```
+
+Neither touches a branch ref: `fell` unregisters the trunk and leaves the branch
+alone, the way `drop` leaves a dropped branch alone. A branch stacked on a felled
+trunk keeps its recorded parent, so nothing is orphaned and `restack` still
+replays onto it — but the felled branch is untracked now, so `tree` draws that
+stack as a root of its own until you `git stack track` it back into one.
+
+With no arguments both just report the list, and — unlike `init` — register
+nothing while doing it, so looking never changes what the next command does.
+
+`plant` never auto-detects for you either: it starts from whatever is configured,
+empty list included, so `plant my-base` on a fresh repo means exactly what
+`init my-base` means. Planting appends, and the **first** trunk stays primary, so
+a new trunk never displaces the tie-breaker a repo already relies on.
+
+Felling the *last* trunk is allowed. It unsets the key, leaving the repo as it
+was before `init` — so the next command falls back to auto-detection, and `fell`
+tells you which branch that will be:
+
+```sh
+git stack fell main    # -> no trunk left -- the next command will auto-detect main
+```
+
+Which is the catch worth knowing: an auto-detected trunk is **not** a registered
+one, so felling a trunk that detection would pick again just hands it back. To
+change which branch a repo treats as its base, register the one you want:
+
+```sh
+git stack init my-base          # my-base is now the trunk
+```
+
+For the same reason `fell` refuses a trunk that is only auto-detected — there is
+no registration to remove, and the command would report a success that changed
+nothing. `git stack plant` (no arguments) is what tells the two apart:
+
+```
+trunk(s): main, develop                     # registered
+trunk(s): main (auto-detected, not registered)
+```
+
 Trunks are peers, so the commands that need a trunk without one to follow —
 `git stack track` with no argument, `git stack sync` reparenting a branch whose
 parent was merged and deleted, `git stack drop` reconnecting the children of a
@@ -118,16 +167,20 @@ the trunk it picked, since it rewrites the branch as well as its config.
 
 A registered trunk that is later renamed or deleted is dropped from the list on
 the next command, with a note saying so — a name with no branch cannot be
-rebased onto, and `sync` would otherwise record it as a branch's parent. If none
-of the registered trunks is left, git-stack auto-detects one again (so renaming
-`master` to `main` just works) and asks you to run `git stack init <branch>`
-only when there is nothing to detect.
+rebased onto, and `sync` would otherwise record it as a branch's parent. (You can
+also remove it outright with `git stack fell <name>` — the way to drop a dead
+name without having to name a replacement.) If none of the registered trunks is
+left, git-stack auto-detects one again (so renaming `master` to `main` just
+works) and asks you to run `git stack init <branch>` only when there is nothing
+to detect.
 
 ## Commands
 
 | Command                 | Description                                                        |
 | ----------------------- | ------------------------------------------------------------------ |
 | `git stack init [branch...]` | Set (or auto-detect) the trunk branch(es).                    |
+| `git stack plant [branch...]` | Add branch(es) to the trunks, keeping the rest. With no argument, list the trunks. |
+| `git stack fell [branch...]`  | Remove branch(es) from the trunks; the branch itself is kept. With no argument, list the trunks. |
 | `git stack create <name>` | Create `<name>` stacked on the current branch. (aliases: `b`, `branch`) |
 | `git stack tree`          | Show the stack as a tree. (aliases: `ls`, `list`)               |
 | `git stack up [child]`    | Check out the branch stacked on the current one.                |
