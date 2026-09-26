@@ -546,10 +546,10 @@ def unpack_lines(packed)
   packed.split("\n").reject { |line| line.empty? }
 end
 
-# Branches per batched `for-each-ref`. The output grows as CHUNK^2 (each row
-# carries a column for every parent in the batch). 12 was sized for a backtick
-# cap that no longer exists; changing it is a speed trade-off to measure.
-AHEAD_BEHIND_CHUNK = 12
+# Branches per batched `for-each-ref`. Not smaller: each batch is a git process
+# whose fixed cost grows with the repository. Not unbounded: every row carries a
+# column for each parent in the batch, so the readback parses CHUNK^2 fields.
+AHEAD_BEHIND_CHUNK = 128
 
 # The distinct parents in `group`, packed, one per `%(ahead-behind:)` column.
 # `uniq` keeps first-occurrence order, which `ahead_behind_columns` reads back as
