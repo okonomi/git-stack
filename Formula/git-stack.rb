@@ -12,17 +12,23 @@
 class GitStack < Formula
   desc "Manage stacked branches with plain git"
   homepage "https://github.com/okonomi/git-stack"
-  head "https://github.com/okonomi/git-stack.git", branch: "main"
   license "MIT"
+  head "https://github.com/okonomi/git-stack.git", branch: "main"
 
   # `git` at run time; Spinel only to build.
-  depends_on "git"
   depends_on "okonomi/git-stack/spinel" => :build
+  depends_on "git"
 
   def install
     # A compiled binary cannot ask for its compiler's revision at run time, so
     # `git stack version` reads SPINEL_REF, stamped here before `spin build`.
-    rev = Utils.safe_popen_read("spinel", "--version").split[1]
+    #
+    # Searched for rather than taken by position: depending on the Spinel build,
+    # `spinel --version` prints "spinel <rev>" or "spinel <date>+<n> (<rev>)
+    # [<cc>]". With no revision found nothing is stamped, and the binary says
+    # "unknown" rather than something wrong.
+    version = Utils.safe_popen_read("spinel", "--version")
+    rev = version.split.map { |t| t.delete("()") }.find { |t| t.match?(/\A[0-9a-f]{7,40}\z/) }
     inreplace "bin/git-stack.rb", /^SPINEL_REF = ".*"$/, %Q(SPINEL_REF = "#{rev}") if rev
 
     # Named `git-stack` so git also runs it as `git stack`.
