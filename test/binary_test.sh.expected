@@ -135,6 +135,10 @@ done.
 [exit 0]
 zzz-stack-top parent after sync: zzz-stack-bottom
 
+### tree reads ahead/behind across batches of the chunked scan
+chain rows in tree (expect 130): 130
+chain rows at exactly 1 commit (expect 130): 130
+
 ### plant and fell edit the trunk list on the compiled binary
 $ git stack init main
 trunk set to main
