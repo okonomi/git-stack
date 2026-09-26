@@ -245,16 +245,20 @@ else
 fi
 
 # Both scans that grow with the repository -- the local branch list and the
-# stack-config dump -- are read through `git_out_full` rather than a backtick,
-# because a Spinel-compiled binary's backtick keeps only the first ~4 KB and
-# drops the rest with no error. Past that cut every branch answered "does not
-# exist": `tree` printed live parents as missing AND duplicated their rows (a
-# branch became an orphan root as well as a real child), and `sync` -- which
-# that very output tells the user to run -- then reparented those healthy
-# branches onto trunk, silently destroying the recorded stack.
+# stack-config dump -- used to be truncated: a Spinel-compiled binary's backtick
+# kept only the first ~4 KB and dropped the rest with no error. Past that cut
+# every branch answered "does not exist": `tree` printed live parents as missing
+# AND duplicated their rows (a branch became an orphan root as well as a real
+# child), and `sync` -- which that very output tells the user to run -- then
+# reparented those healthy branches onto trunk, silently destroying the
+# recorded stack.
 #
-# This is invisible to test/*_test.rb: CRuby's backticks do not truncate, so
-# only the compiled binary can show it. The padding branches are long-named and
+# git-stack worked around it with a temp file until the Spinel pinned since
+# a3be2abd stopped truncating; `git_scan` is a plain backtick again. These two
+# sections are now what stands between a future compiler that brings the cap
+# back and a release that destroys stacks. They are invisible to
+# test/*_test.rb: CRuby's backticks never truncated, so only the compiled
+# binary can show it. The padding branches are long-named and
 # tracked so BOTH captures blow past 4 KB, and the stack under test is named
 # `zzz-` so it sorts entirely beyond the cut -- `for-each-ref` emits refnames in
 # sorted order, so truncation always drops the alphabetically last branches.
