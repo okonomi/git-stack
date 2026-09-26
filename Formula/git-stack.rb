@@ -12,12 +12,12 @@
 class GitStack < Formula
   desc "Manage stacked branches with plain git"
   homepage "https://github.com/okonomi/git-stack"
-  head "https://github.com/okonomi/git-stack.git", branch: "main"
   license "MIT"
+  head "https://github.com/okonomi/git-stack.git", branch: "main"
 
   # `git` at run time; Spinel only to build.
-  depends_on "git"
   depends_on "okonomi/git-stack/spinel" => :build
+  depends_on "git"
 
   def install
     # A compiled binary cannot ask for its compiler's revision at run time, so

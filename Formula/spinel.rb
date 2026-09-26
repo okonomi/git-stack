@@ -9,14 +9,14 @@ class Spinel < Formula
   # `version` derives from this rather than repeating the sha: Homebrew detects
   # upgrades by the version string, not `revision:`, so a bump that missed one
   # would leave installs reporting up to date.
-  REVISION = "a3be2abdc09c3d5fa7094948baa7ce4d40dbb397"
+  REVISION = "a3be2abdc09c3d5fa7094948baa7ce4d40dbb397".freeze
 
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
   url "https://github.com/matz/spinel.git", revision: REVISION
   version "0.0.0-#{REVISION[0, 7]}"
-  head "https://github.com/matz/spinel.git", branch: "master"
   license "MIT"
+  head "https://github.com/matz/spinel.git", branch: "master"
 
   # `make deps` curls these gems for their C sources, but Homebrew builds without
   # network, so they are vendored as resources.
