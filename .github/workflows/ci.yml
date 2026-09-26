@@ -298,10 +298,19 @@ jobs:
       # The emitted golden lives in test/ with the other .expected snapshot;
       # never move it under rbs/, the seed *input* directory, or it would seed
       # itself.
+      #
+      # Both sides are compared with the numeric suffix of Spinel's per-call-site
+      # helpers masked (`__enum_find__4077` -> `__enum_find__N`). Since a3be2abd
+      # that number is a position in the source, so an edit that shifts it --
+      # a comment, a new method above a `find` -- renumbers the rows without a
+      # type moving. Only the number is masked: the name and signature of every
+      # row are still compared, so a helper that appears, disappears or widens
+      # still fails here.
       - name: Check emitted RBS against golden file
         run: |
           spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs
-          diff -u test/git-stack.rbs.expected /tmp/emitted.rbs
+          mask() { sed -E 's/^(  def __enum_.*__)[0-9]+:/\1N:/' "$1"; }
+          diff -u <(mask test/git-stack.rbs.expected) <(mask /tmp/emitted.rbs)
 
       # The ratchet the SPINEL_REF note states, enforced rather than merely
       # written down. The golden diff above cannot see the count RISE: the
