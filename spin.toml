@@ -1,11 +1,8 @@
-# Spinel project manifest. `spin build` compiles every bin/*.rb into a native
-# executable under build/bin/ -- here that yields build/bin/git-stack.
+# Spinel manifest. `spin build` compiles bin/git-stack.rb to build/bin/git-stack,
+# the path Formula/git-stack.rb and test/binary_test.sh expect; `spin install`
+# copies it to ~/.local/bin.
 #
-#   spin build && ./build/bin/git-stack help
-#   spin install                # copies it to ~/.local/bin
-#
-# git-stack shells out to `git` for everything, so it needs no dependencies
-# beyond the git binary on PATH.
+# No dependencies: git-stack only shells out to `git`.
 [package]
 name = "git-stack"
 version = "0.1.0"
