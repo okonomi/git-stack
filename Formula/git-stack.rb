@@ -22,7 +22,13 @@ class GitStack < Formula
   def install
     # A compiled binary cannot ask for its compiler's revision at run time, so
     # `git stack version` reads SPINEL_REF, stamped here before `spin build`.
-    rev = Utils.safe_popen_read("spinel", "--version").split[1]
+    #
+    # Searched for rather than taken by position: depending on the Spinel build,
+    # `spinel --version` prints "spinel <rev>" or "spinel <date>+<n> (<rev>)
+    # [<cc>]". With no revision found nothing is stamped, and the binary says
+    # "unknown" rather than something wrong.
+    version = Utils.safe_popen_read("spinel", "--version")
+    rev = version.split.map { |t| t.delete("()") }.find { |t| t.match?(/\A[0-9a-f]{7,40}\z/) }
     inreplace "bin/git-stack.rb", /^SPINEL_REF = ".*"$/, %Q(SPINEL_REF = "#{rev}") if rev
 
     # Named `git-stack` so git also runs it as `git stack`.
