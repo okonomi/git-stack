@@ -182,63 +182,30 @@ def git_run(subcmd)
   $? == 0
 end
 
-# Capture the FULL stdout of `git <subcmd>`, however large, by routing it
-# through a temp file (`File.read` has no cap) instead of a backtick.
+# Capture the stdout of `git <subcmd>` for a scan whose answer the caller TRUSTS
+# -- the local branch list and the stack-config dump -- and die rather than
+# answer if git fails.
 #
-# THE ~4 KB CAP. A Spinel-compiled binary's backtick keeps only the first ~4 KB
-# and silently drops the rest (the same cap AHEAD_BEHIND_CHUNK stays under).
-# Harmless for output bounded by construction (one SHA, one config value), but
-# two scans grow with the repository -- the local branch list and the
-# stack-config dump -- and truncating those yields a WRONG answer, not a smaller
-# one: every branch past the cut reads as "does not exist", so `tree` shows live
-# parents as missing, `restack` skips them, and `sync` reparents those healthy
-# branches onto trunk, destroying the stack. This helper is where those two
-# scans avoid the cap; downstream comments point back here.
-#
-# THE TEMP FILE. Created by us with O_EXCL at an unpredictable path (pid + random
-# suffix), not left to the shell's `>` at a guessable one. On a shared /tmp
-# (TMPDIR unset under cron/CI/sudo) a guessable `git-stack-scan-<pid>` let a
-# hostile local user pre-place a symlink the redirect would follow -- clobbering
-# a victim's file, or swapping the scan between write and read to inject a forged
-# branch/stackParent dump that `sync` then executes as real rewrites and rebases.
-# O_EXCL refuses to open through any pre-placed entry, so we only write a fresh
-# file we own; the random suffix also stops concurrent runs colliding.
+# FAIL CLOSED. These two scans grow with the repository, and a partial or empty
+# one is a WRONG answer, not a smaller one: every branch it misses reads as
+# "does not exist", so `tree` shows live parents as missing, `restack` skips
+# them, and `sync` reparents those healthy branches onto trunk, destroying the
+# stack. `git_out` hands back "" on failure, which here is indistinguishable
+# from "no branches" -- so unless git exited 0, die. Any non-zero counts (not
+# just exit 1): only `$? == 0` reads identically under CRuby and Spinel.
 #
 # `empty_ok` marks the ONE command whose non-zero exit is a legitimate empty
 # result: `git config --get-regexp` exits non-zero when no key matches ("no
-# branch tracked yet"). Every other caller passes false, so any non-zero status
-# is a genuine I/O failure and dies (see the fail-closed note below).
-def git_out_full(subcmd, empty_ok)
-  dir = ENV["TMPDIR"]
-  dir = "/tmp" if dir.nil? || dir.empty?
-
-  path = ""
-  file = nil
-  attempts = 0
-  while file.nil?
-    attempts += 1
-    die("could not create a private scan file under #{dir}") if attempts > 100
-    candidate = "#{dir}/git-stack-scan-#{Process.pid}-#{rand(1_000_000_000)}"
-    begin
-      file = File.open(candidate, File::WRONLY | File::CREAT | File::EXCL, 0600)
-      path = candidate
-    rescue SystemCallError
-      file = nil
-    end
-  end
-  file.close
-
-  # Fail closed: a partial/empty scan is a WRONG answer (see header). If git or
-  # the redirect fails, an empty file that exits 0 is indistinguishable from "no
-  # branches", and sync would then reparent the dropped branches onto trunk. So
-  # unless git exited 0, clean up and die -- except for `empty_ok` callers, whose
-  # non-zero exit is a real "no match". Any non-zero counts (not just exit 1):
-  # only `$? == 0` reads identically under CRuby and Spinel. Own line, per git_run.
-  system("git #{subcmd} > #{sh(path)} 2>/dev/null")
-  ok = $? == 0
-  out = File.read(path)
-  File.delete(path)
-  die("scan failed: git #{subcmd}") unless ok || empty_ok
+# branch tracked yet"). Every other caller passes false.
+#
+# This used to route git through a private temp file, because a Spinel-compiled
+# backtick kept only the first ~4 KB and silently dropped the rest. The Spinel
+# pinned since a3be2abd returns the whole output; test/binary_test.sh still
+# drives both scans past 4 KB, so a compiler that brings the cap back fails
+# there rather than shipping.
+def git_scan(subcmd, empty_ok)
+  out = `git #{subcmd} 2>/dev/null`
+  die("scan failed: git #{subcmd}") unless $? == 0 || empty_ok
   out.strip
 end
 
@@ -688,18 +655,18 @@ end
 # StackTopology parses it once up front so tree/restack recursions read
 # children in memory instead of re-spawning `git` per node (O(N^2) otherwise).
 #
-# Through `git_out_full`, not `git_out`: this output grows with the tracked
-# branch count, so a backtick would truncate it (see git_out_full's ~4 KB cap).
+# Through `git_scan`, not `git_out`: this output grows with the tracked branch
+# count, and a failed read must stop the command (see git_scan).
 def scan_stack_config
-  git_out_full("config --get-regexp '^branch\\..*\\.stackparent$'", true)
+  git_scan("config --get-regexp '^branch\\..*\\.stackparent$'", true)
 end
 
 # Set of every local branch name, in one `git` subprocess. Captured once so the
 # per-node `branch?` lookup is in memory, not a `git show-ref` per tree node.
 #
-# Through `git_out_full`: this list grows with the repo, and a truncated set
-# makes every branch past the cut answer `branch?` with a confident, wrong
-# `false` -- the one lookup the whole traversal trusts (see git_out_full).
+# Through `git_scan`: this list grows with the repo, and a partial set makes
+# every branch it misses answer `branch?` with a confident, wrong `false` --
+# the one lookup the whole traversal trusts (see git_scan).
 #
 # Full `%(refname)` stripped of `refs/heads/` ourselves, not `%(refname:short)`:
 # when a tag shares a branch's name, `:short` emits `heads/<name>`, so `branch?`
@@ -715,7 +682,7 @@ end
 # `Array[String]` keeps every one of them concrete, and this repo's ratchet has no
 # headroom (see rbs/git-stack.rbs).
 def branch_names
-  out = git_out_full("for-each-ref --format='%(refname)' refs/heads/", false)
+  out = git_scan("for-each-ref --format='%(refname)' refs/heads/", false)
   unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") }
 end
 
@@ -916,8 +883,11 @@ def unpack_lines(packed)
 end
 
 # How many branches per batched `git for-each-ref` in scan_ahead_behind. A batch
-# emits at most CHUNK rows of CHUNK+1 columns, so its bytes grow as CHUNK^2; 12
-# keeps it ~2 KB worst case, comfortably under git_out's ~4 KB backtick cap.
+# emits at most CHUNK rows of CHUNK+1 columns -- every row carries a column for
+# every parent in the batch, though it reads only its own -- so its size grows as
+# CHUNK^2. 12 was sized to stay under the ~4 KB backtick cap that git_scan's
+# note describes; with the cap gone it is kept as is, because changing it is a
+# speed trade-off to measure, not a correctness fix.
 AHEAD_BEHIND_CHUNK = 12
 
 # The distinct parents in `group` (up to AHEAD_BEHIND_CHUNK "<branch>\t<parent>"
