@@ -10,7 +10,7 @@
 #
 # The multi-sibling fixture reaches the `.sort` calls in
 # `StackTopology#children_of` / `#walk_order`, which Spinel dispatches only on a
-# concrete `Array[String]`. The large fixtures further down are the only ones
+# concrete `Array[String]`. The chunked-scan fixture further down is the only one
 # reaching a second ahead/behind batch, where a widened `each_slice` receiver once
 # segfaulted `tree`.
 #
@@ -270,6 +270,29 @@ printf 'zzz rows in tree (expect 2): %s\n' \
 git_q checkout -q zzz-stack-top
 run sync
 show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
+
+# More branches than one AHEAD_BEHIND_CHUNK, so `tree` reads a second batch whose
+# first rows rest on parents from the first. Each branch is one commit above its
+# parent, so reading any other parent's column shows as a count other than 1.
+# Built with plumbing: 130 `create`s would dominate the script's run time.
+section "tree reads ahead/behind across batches of the chunked scan"
+new_repo
+parent=main
+i=1
+while [ "$i" -le 130 ]; do
+  name="$(printf 'chain-%03d' "$i")"
+  sha="$(git -C "$repo" commit-tree -p "$parent" -m "$name" "$parent^{tree}")"
+  git_q update-ref "refs/heads/$name" "$sha"
+  git_q config "branch.$name.stackParent" "$parent"
+  parent="$name"
+  i=$((i + 1))
+done
+
+chain_rows() { # chain_rows <grep pattern>
+  (cd "$repo" && NO_COLOR=1 "$GIT_STACK" tree 2>&1) | grep chain- | grep -c -- "$1"
+}
+printf 'chain rows in tree (expect 130): %s\n' "$(chain_rows .)"
+printf 'chain rows at exactly 1 commit (expect 130): %s\n' "$(chain_rows '(1 commit(s))$')"
 
 # `plant` hands `set_trunks` a run-time concatenation and `fell` a `reject`
 # result, array shapes only the shipped binary can prove. The last `fell`
