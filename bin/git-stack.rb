@@ -68,10 +68,7 @@ USE_COLOR = color_enabled?
 # When colour is disabled this is the identity function, so callers never
 # touch escape codes or the matching reset themselves.
 def paint(code, text)
-  # `.to_s` keeps Spinel's return type independent of `text`: `return text`
-  # would tie them together, and the `bold(green(branch))` nesting in tree_name
-  # then locks the whole colour-helper family to untyped.
-  return text.to_s unless USE_COLOR
+  return text unless USE_COLOR
 
   "\033[#{code}m#{text}\033[0m"
 end
@@ -1439,9 +1436,6 @@ class StackTopology
   # `require_ref`, at a parent whose ref no longer exists. `seen` guards a
   # hand-edited parent cycle (A -> B -> A), which would otherwise loop forever;
   # breaking out of it renders the cycle as a root instead of hiding it.
-  #
-  # `return` is deliberately absent from the loop body, per `would_cycle?`: under
-  # Spinel a `return` out of a `loop do...end` corrupts a later `exit`.
   def climb_to_root(branch, require_ref)
     seen = Set.new
     loop do
@@ -1460,26 +1454,11 @@ class StackTopology
   # True if making `new_parent` the parent of `branch` would create a cycle --
   # i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks this
   # topology (like `stack_root`), so the whole walk costs no `git` per level.
-  #
-  # The hit is recorded in `result` and reported after a `break`, NOT with a
-  # `return true` from inside the `loop`. Under Spinel a `return` out of a `loop
-  # do...end` corrupts a later `exit`: with `die(...) if would_cycle?(...)` the
-  # compiled binary printed die's message and then exited 0, so a `parent`/
-  # `track` that correctly REJECTED a cycle still reported success to a script.
-  #
-  # The miss was the engine, not the harness: track_test.rb asserts these very
-  # exit codes and still passed, because CRuby is unaffected and its `return`
-  # returns. Only the compiled artifact can show it, so test/binary_test.sh is
-  # where the guard had to go.
   def would_cycle?(branch, new_parent)
     seen = Set.new
     cur = new_parent
-    result = false
     loop do
-      if cur == branch
-        result = true
-        break
-      end
+      return true if cur == branch
       break if cur.empty? || trunk?(cur)
       break if seen.include?(cur)
       break unless branch?(cur)
@@ -1487,7 +1466,7 @@ class StackTopology
       seen.add(cur)
       cur = parent_of(cur)
     end
-    result
+    false
   end
 
   # Validate that `candidate` can become the parent of `branch`: it must exist,
@@ -1558,8 +1537,7 @@ class StackSnapshot
   end
 
   # Precompute history status for tracked branches without making history a
-  # property of the topology. The batched protocol is unchanged; keeping the
-  # `lines` local remains required by the compiled Spinel binary.
+  # property of the topology.
   def scan_ahead_behind
     pairs = ""
     @topology.tracked_branches.each do |name|
@@ -1572,8 +1550,7 @@ class StackSnapshot
     end
 
     result = ""
-    lines = unpack_lines(pairs)
-    lines.each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
+    unpack_lines(pairs).each_slice(AHEAD_BEHIND_CHUNK) do |chunk|
       result = "#{result}#{ahead_behind_chunk(pack_lines(chunk))}"
     end
     result

@@ -152,9 +152,12 @@ run parent
 # The failing commands, on the SHIPPED binary, for the exit STATUS as much as the
 # message: scripts and `&&` chains read the status, not the text. test/*_test.rb
 # asserts these same codes but cannot catch a Spinel codegen bug, since CRuby is
-# unaffected -- see `would_cycle?` in bin/git-stack.rb for the one that shipped
-# (an error printed, then exit 0). Before this section binary_test.sh ran no
-# failing command at all, so no non-zero exit was proven on the real artifact.
+# unaffected. One shipped: a `return` out of `loop do...end` corrupted a later
+# `exit`, so `would_cycle?` rejecting a cycle printed die's message and then
+# exited 0. `would_cycle?` avoided that `return` until the Spinel pinned since
+# a3be2abd fixed it, and it returns from inside its loop again -- which this
+# section is what proves. Before this section binary_test.sh ran no failing
+# command at all, so no non-zero exit was proven on the real artifact.
 #
 # Both blocks are state-neutral -- the rejections die before writing config, and
 # an ambiguous `up` only prints -- so the fixture's recorded shape carries on
