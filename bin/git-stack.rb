@@ -900,16 +900,17 @@ class StackTopology
   # Walk up recorded parents and answer the last branch reached. Stops at a trunk,
   # at no parent, at a parent outside the tracked graph, and (with `require_ref`)
   # at a parent whose ref is gone. `seen` breaks a hand-edited cycle, which then
-  # renders as a root.
+  # renders as a root. It is a Hash, not a Set: Spinel's Set scans an Array on
+  # every `include?`, which makes the climb quadratic on a long chain.
   def climb_to_root(branch, require_ref)
-    seen = Set.new
+    seen = {}
     loop do
-      seen.add(branch)
+      seen[branch] = true
       parent = parent_of(branch)
       break if parent.empty? || trunk?(parent)
       break unless tracked?(parent)
       break if require_ref && !branch?(parent)
-      break if seen.include?(parent)
+      break if seen.key?(parent)
 
       branch = parent
     end
@@ -917,16 +918,17 @@ class StackTopology
   end
 
   # True if making `new_parent` the parent of `branch` would close a cycle.
+  # `seen` is a Hash for the same reason as in `climb_to_root`.
   def would_cycle?(branch, new_parent)
-    seen = Set.new
+    seen = {}
     cur = new_parent
     loop do
       return true if cur == branch
       break if cur.empty? || trunk?(cur)
-      break if seen.include?(cur)
+      break if seen.key?(cur)
       break unless branch?(cur)
 
-      seen.add(cur)
+      seen[cur] = true
       cur = parent_of(cur)
     end
     false
