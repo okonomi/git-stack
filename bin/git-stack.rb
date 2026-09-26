@@ -4,69 +4,54 @@
 # git-stack -- manage stacked branches with plain git.
 #
 # A "stack" is a chain of branches where each branch records a parent and the
-# commit its parent sat at when the branch was stacked. Both are stored in git
-# config as:
+# commit its parent sat at when the branch was stacked, in git config:
 #
 #     branch.<name>.stackParent = <parent-branch>
 #     branch.<name>.stackBase   = <sha>
 #
-# stackBase pins where the branch's own commits begin, so `restack` replays
-# exactly those commits with `git rebase --onto <parent> <base>`. This matters
-# when a parent is squash-merged into trunk and deleted: a plain rebase would
-# re-apply the parent's already-merged commits (their patch-ids no longer match
-# after squashing, so git can't drop them) and conflict, whereas `--onto` skips
+# stackBase exists because a plain `git rebase <parent>` cannot survive a parent
+# that was squash-merged and deleted: its commits no longer match by patch-id, so
+# git re-applies them and conflicts. `git rebase --onto <parent> <base>` skips
 # everything below the recorded base.
 #
-# The bottom of every stack rests on a trunk (main/master, and optionally
-# others like a git-flow `develop`). Trunks are stored as the multi-valued
-# `stack.trunk` git config key (auto-detected on first use).
+# Trunks (main/master, and optionally others like git-flow's `develop`) are the
+# multi-valued `stack.trunk` key, auto-detected on first use.
 #
-# This is a Ruby port of the original bash script, written in the subset of
-# Ruby that Spinel's AOT compiler accepts so that `spin build` turns it into a
-# standalone native `git-stack` binary. It also runs unchanged under CRuby.
-#
-# See `git stack help` for the list of subcommands.
+# Written in the subset of Ruby that Spinel's AOT compiler accepts, so `spin
+# build` turns it into a native binary; it also runs unchanged under CRuby. Many
+# roundabout-looking shapes below keep Spinel's inferred types concrete --
+# rbs/git-stack.rbs and the emitted-RBS golden in CI hold that line.
 
-# Both resolve in both worlds: CRuby's stdlib, and the equivalent packages
-# pre-installed with Spinel (spliced into the program at compile time).
+# Both ship with Spinel too, spliced into the program at compile time.
 require "optparse"
 require "set"
 
 PROG = "git stack"
 VERSION = "0.1.0"
 
-# The Spinel revision this binary was compiled with, shown by `git stack
-# version`. A compiled binary can't introspect its compiler's revision at run
-# time, so the Homebrew formula stamps this line with the real `spinel
-# --version` before `spin build` (see Formula/git-stack.rb). Left empty here as
-# a placeholder; an un-stamped build reports "unknown".
+# Stamped with `spinel --version` by the Homebrew formula before `spin build`
+# (see Formula/git-stack.rb): a compiled binary cannot ask for its compiler's
+# revision at run time. An un-stamped build reports "unknown".
 SPINEL_REF = ""
 
 # --- output helpers ---------------------------------------------------------
 
-# All terminal decoration goes through this section. Nothing outside it should
-# emit a raw ANSI escape or pair a colour with its reset by hand; callers name
-# the *intent* (`green(name)`, `bold("USAGE")`) and the reset -- and the
-# colour-disabled case -- are handled here in one place.
+# Callers name the intent (`green(name)`, `bold("USAGE")`); only `paint` spells an
+# escape code, its reset, or the colour-off case.
 
-# Colours are enabled only when writing to a terminal (and NO_COLOR is unset).
-#
-# Per the NO_COLOR spec (https://no-color.org/), the mere *presence* of the
-# variable disables colour, regardless of its value -- including an empty
-# string.
+# Per the NO_COLOR spec (https://no-color.org/), the variable's mere presence --
+# even as an empty string -- disables colour.
 def color_enabled?
   return false unless ENV["NO_COLOR"].nil?
 
-  # The STDOUT constant, not the `$stdout` global: equivalent here, and the
-  # piped (not-a-tty) path is the only one the snapshot tests can cover.
+  # `STDOUT`, not `$stdout`: Spinel dispatches `$stdout.tty?` against `unknown`
+  # and the binary crashes in a real terminal (c144c70).
   STDOUT.tty?
 end
 
 USE_COLOR = color_enabled?
 
-# Wrap `text` in the SGR sequence `code` (e.g. "32", "1"), resetting after.
-# When colour is disabled this is the identity function, so callers never
-# touch escape codes or the matching reset themselves.
+# `code` is an SGR parameter such as "32" or "1".
 def paint(code, text)
   return text unless USE_COLOR
 
@@ -108,112 +93,61 @@ end
 
 # --- shell / git helpers ----------------------------------------------------
 
-# Quote a single argument for safe interpolation into a shell command.
+# Quote a single argument for a shell command.
 def sh(arg)
   "'" + arg.to_s.gsub("'") { "'\\''" } + "'"
 end
 
-# A branch name as an UNAMBIGUOUS ref argument, shell-quoted. This is the
-# canonical home for a hazard the rest of the file keeps meeting: git resolves
-# `refs/tags/` before `refs/heads/`, so a tag sharing a branch's name silently
-# wins every place a bare name is handed to git as a rev. Reading it wrong gives
-# a wrong answer (`containing_trunk` picking the wrong trunk, `ahead_behind`
-# counting against the tag); writing it wrong destroys work -- `restack` replayed
-# a stack onto the tag's commit and dropped its parent's commits (issue #96).
+# A branch name as an unambiguous rev, shell-quoted. Git resolves `refs/tags/`
+# before `refs/heads/`, so wherever git reads a bare name as a rev, a same-named
+# tag wins -- `restack` once replayed a stack onto the tag's commit (#96).
 #
-# Use it for every argument git resolves AS A REV. Do NOT use it for an argument
-# that NAMES A BRANCH TO CHECK OUT OR UPDATE -- those take checkout's DWIM, which
-# already prefers `refs/heads/`, and qualifying them breaks the command instead
-# of hardening it. `git rebase <upstream> refs/heads/<branch>` is the trap:
-# it checks the ref out DETACHED, reports "updated detached HEAD", and leaves the
-# branch where it was. So `rebase`'s upstream/`--onto` are qualified while its
-# trailing branch, `checkout`, `checkout -b` and `branch -D` stay bare -- the
-# bare sites say so where they sit, so a later "the last unqualified name" sweep
-# reads as deliberate rather than missed.
+# Not for an argument that names a branch to check out or update (`checkout`,
+# `checkout -b`, `branch -D`, `rebase`'s trailing branch). Those already prefer
+# `refs/heads/`, and `git rebase <upstream> refs/heads/<branch>` detaches HEAD and
+# leaves the branch where it was. Each such site says so where it sits.
 #
-# One rev site deliberately does NOT route through here: the `%(ahead-behind:)`
-# atom in `ahead_behind_chunk` spells the prefix by hand, because it goes inside
-# a format string that is `sh`-quoted whole and cannot carry these quotes.
-#
-# Quotes only the name, not the whole ref: `refs/heads/` is a constant with no
-# shell metacharacters, so quoting it would be noise -- and it keeps the emitted
-# command byte-identical to the hand-written form each call site replaced.
+# Only the name is quoted: `refs/heads/` has no shell metacharacters.
 def branch_ref(name)
   "refs/heads/#{sh(name)}"
 end
 
-# Every git call goes through one of the three wrappers below. Pick by
-# answering two questions in order:
+# Every git call goes through one of these three. Need the output: `git_out`.
+# Need only success: `git_ok`, or `git_run` when git's own messages should reach
+# the user (only `checkout!`, for "Switched to branch").
 #
-#   1. Do you need the command's OUTPUT, or just whether it SUCCEEDED?
-#        output   -> git_out  (returns the trimmed stdout as a String)
-#        success  -> a bool wrapper; go to question 2
-#   2. (bool only) Should git's output be shown to the user, or swallowed?
-#        swallow  -> git_ok   (quiet; the common case for internal checks)
-#        show     -> git_run  (git's own messages reach the terminal)
-#
-# git_run is the rare one -- reach for it only when git's own message is the
-# point (currently just `checkout!`, for "Switched to branch").
-
-# Run `git <subcmd>`, discarding its output; return true on success (exit 0).
+# The status is read as `$? == 0` on its own line: Spinel drops the boolean when a
+# bare `system` is the method's last expression.
 def git_ok(subcmd)
   system("git #{subcmd} >/dev/null 2>&1")
   $? == 0
 end
 
-# Capture the trimmed stdout of `git <subcmd>` (empty string on failure).
+# The trimmed stdout of `git <subcmd>`, or "" on failure.
 def git_out(subcmd)
   `git #{subcmd} 2>/dev/null`.strip
 end
 
-# Run `git <subcmd>` with its stdout/stderr passing through to the terminal;
-# return true on success (exit 0). Unlike git_ok, nothing is redirected away,
-# so git's own messages (e.g. "Switched to branch") stay visible -- use this
-# for the interactive commands whose output the user should see.
-#
-# The `$? == 0` is read on its own line, not as a trailing `system` call:
-# Spinel drops the boolean when a bare `system` is a method's last expression.
-# (Every wrapper that returns a status this way relies on the same rule.)
 def git_run(subcmd)
   system("git #{subcmd}")
   $? == 0
 end
 
-# Capture the stdout of `git <subcmd>` for a scan whose answer the caller TRUSTS
-# -- the local branch list and the stack-config dump -- and die rather than
-# answer if git fails.
+# `git_out` for the two scans every traversal trusts -- the branch list and the
+# stack config -- dying instead of answering when git fails. A partial or empty
+# scan is a wrong answer, not a smaller one: each branch it misses reads as
+# deleted, and `sync` would reparent healthy branches onto trunk.
 #
-# FAIL CLOSED. These two scans grow with the repository, and a partial or empty
-# one is a WRONG answer, not a smaller one: every branch it misses reads as
-# "does not exist", so `tree` shows live parents as missing, `restack` skips
-# them, and `sync` reparents those healthy branches onto trunk, destroying the
-# stack. `git_out` hands back "" on failure, which here is indistinguishable
-# from "no branches" -- so unless git exited 0, die. Any non-zero counts (not
-# just exit 1): only `$? == 0` reads identically under CRuby and Spinel.
-#
-# `empty_ok` marks the ONE command whose non-zero exit is a legitimate empty
-# result: `git config --get-regexp` exits non-zero when no key matches ("no
-# branch tracked yet"). Every other caller passes false.
-#
-# This used to route git through a private temp file, because a Spinel-compiled
-# backtick kept only the first ~4 KB and silently dropped the rest. The Spinel
-# pinned since a3be2abd returns the whole output; test/binary_test.sh still
-# drives both scans past 4 KB, so a compiler that brings the cap back fails
-# there rather than shipping.
+# `empty_ok` is for `git config --get-regexp`, whose non-zero exit also means
+# "nothing matched". Any non-zero counts as failure, not just 1: only `$? == 0`
+# reads the same under CRuby and Spinel.
 def git_scan(subcmd, empty_ok)
   out = `git #{subcmd} 2>/dev/null`
   die("scan failed: git #{subcmd}") unless $? == 0 || empty_ok
   out.strip
 end
 
-# Check out `branch`, or die with a consistent message.
-#
-# Uses git_run (not git_ok) so git's own "Switched to branch" message reaches
-# the terminal instead of being redirected away.
-#
-# Bare name, NOT `branch_ref`: this is the exempt role that helper warns about --
-# checkout's DWIM already prefers `refs/heads/`, and qualifying it would detach
-# HEAD instead. Same for `checkout -b` and `branch -D` elsewhere in the file.
+# A bare name, not `branch_ref`, which would detach HEAD (see there).
 def checkout!(branch)
   die("failed to check out '#{branch}'") unless git_run("checkout #{sh(branch)}")
 end
@@ -222,69 +156,40 @@ def require_repo
   die("not a git repository") unless git_ok("rev-parse --git-dir")
 end
 
-# The current branch, or "" when detached (never dies).
+# The current branch, or "" when detached.
 #
-# Full `refs/heads/` stripped ourselves, not `--short`: `--short` stops
-# shortening as soon as the result would be ambiguous, so a tag named after the
-# checked-out branch makes it answer `heads/<name>`. That name seeds every
-# command starting from "the branch I am on", and because it still resolves as a
-# ref it fails quietly rather than loudly -- the snapshot section "commands read
-# HEAD past a tag sharing the branch's name" walks what that costs, one command
-# at a time. Same defence, same reason, as `existing_branches` (issue #93).
+# Strips `refs/heads/` itself rather than asking for `--short`, which stops
+# shortening once the name is ambiguous: a tag named after the branch makes it
+# answer `heads/<name>` (#93).
 #
-# Still "" when detached: `symbolic-ref --quiet` exits non-zero on a detached
-# HEAD, `git_out` maps that to "", and the early return below spends nothing
-# further. A HEAD pointed outside `refs/heads/` has no prefix to strip and comes
-# back whole, which is what `--short` did with it too.
-#
-# Resolved back to the spelling git STORES, because `.git/HEAD` holds whatever
-# `checkout` was handed: on a case-insensitive filesystem `git checkout Feat-A`
-# succeeds against `feat-a` and records `refs/heads/Feat-A`. The ref is the same
-# file, so git is content, but every reader here compares refnames string-exactly
-# -- so `track` wrote a second `branch.Feat-A.*` nobody reads, `drop` died on a
-# branch it was standing in, and `tree` marked no row (issue #106). Same family as
-# the tag shadow above: HEAD naming something the rest of the file cannot match.
-#
-# Costs one more `git` call on the ordinary path -- the exact check inside
-# `stored_refname`, which says "HEAD is already spelled the way git stores it" and
-# is the answer nearly always. How the rare disagreement is resolved, and why not
-# with `--ignore-case`, is on that method. (`%(HEAD)` is no help for this either:
-# git compares HEAD's stored string to each refname and hits the same mismatch.)
+# Then resolved to the spelling git stores. On a case-insensitive filesystem
+# `git checkout Feat-A` succeeds against `feat-a` and records `Feat-A` in HEAD,
+# while every reader here compares refnames exactly (#106). `%(HEAD)` is no help:
+# git compares HEAD's stored string the same way.
 def current_branch_or_empty
   ref = git_out("symbolic-ref --quiet HEAD")
   return "" if ref.empty?
 
   name = ref.delete_prefix("refs/heads/")
-  # HEAD pointed outside `refs/heads/` -- nothing was stripped, so there is no
-  # branch to resolve it to. Comes back whole, as `--short` returned it too.
+  # HEAD outside `refs/heads/`: no branch to resolve, so returned whole, as
+  # `--short` did.
   return name if name == ref
 
-  # "" when HEAD names a branch that does not exist at all -- an UNBORN branch in
-  # a repo with no commits -- and then HEAD's own spelling is the honest answer.
+  # "" for an unborn branch, whose only spelling is HEAD's own.
   stored = stored_refname(name)
   stored.empty? ? name : stored
 end
 
-# The spelling git STORES for `name`, matched without regard to case, or "" when
-# no branch folds to it. The answer for a name this tool was handed rather than
-# told: HEAD's, and `origin/HEAD`'s. Both come from git or from a clone, neither
-# is something the user typed or can correct, and both are compared string-exactly
-# by every reader here -- so a name that only differs in case has to be resolved
-# rather than refused, or the tool declines to work in a repo git is happy with.
+# The spelling git stores for `name`, matched case-insensitively, or "" when no
+# branch folds to it. Only for names git handed us (HEAD, `origin/HEAD`), which the
+# user cannot correct. A name the user typed must match exactly, or a typo in
+# `init Main` would be silently accepted (#101).
 #
-# NOT for a name the user DID type: `create Main` / `parent Main` / `init Main`
-# must be rejected exactly, because canonicalising a typo would silently accept it
-# against the one setting every other command reads (issue #101).
+# Not `--ignore-case`: it folds ASCII only (`feat-Ä` misses `feat-ä`) and defeats
+# the ref-prefix optimisation. `String#downcase` folds Unicode, as the filesystem
+# did.
 #
-# The exact check comes first and answers nearly always, so the scan is the rare
-# path -- and callers guard an empty `name` before asking, because the exact check
-# on "" degenerates into listing every branch twice for an answer already known.
-#
-# `--ignore-case` would look like the targeted way to do this and is wrong twice:
-# it folds ASCII ONLY, so `refs/heads/feat-Ä` finds nothing beside `feat-ä`, and it
-# defeats the ref-prefix optimisation, so on a large repo it costs more than
-# listing the branches. `String#downcase` folds the whole of Unicode, which is what
-# the filesystem did when it accepted the checkout.
+# Callers skip an empty `name`: the exact check on "" lists every branch, twice.
 def stored_refname(name)
   return name if branch_ref_exists?(name)
 
@@ -297,62 +202,37 @@ def current_branch
   require_branch(current_branch_or_empty)
 end
 
-# `current_branch`'s guard, for a caller that already has HEAD in hand. Reading
-# HEAD is no longer a single `git` call, so a command that needs both "the branch
-# I am on" and "where to return to" reads once and guards here, rather than
-# spending the read twice for one answer (see `cmd_drop`).
+# `current_branch`'s guard, for a caller already holding HEAD -- reading it can
+# cost more than one `git` call, so it is read once (see `cmd_drop`).
 def require_branch(head)
   die("you are in 'detached HEAD' state; check out a branch first") if head.empty?
   head
 end
 
-# True when git would refuse to CREATE `name` -- and nothing else. Named for that
-# one question because it answers it LOOSELY: on a case-insensitive filesystem
-# `show-ref --verify refs/heads/Main` succeeds beside `main`, which is exactly
-# right here, since git itself refuses `git branch Main` there. Matching git's own
-# view lets `create` say "already exists" cleanly instead of failing later inside
-# `checkout -b`.
-#
-# It is deliberately NOT called `branch_exists?`: that name invites a caller with
-# a name read back out of config, which is the loose answer's failure mode and the
-# whole of issue #101. Those callers want `branch_ref_exists?` below.
+# True when git would refuse to create `name`. Deliberately loose: on a
+# case-insensitive filesystem `Main` is taken beside `main`, as git itself says.
+# Not called `branch_exists?`, because a name read back from config needs the
+# exact answer, `branch_ref_exists?` (#101).
 def branch_name_taken?(name)
   git_ok("show-ref --verify --quiet #{branch_ref(name)}")
 end
 
-# True when `name` is EXACTLY a branch git has -- the question for any name read
-# back out of config, about to be compared against one of those or written back as
-# one. Every such reader matches string-exactly, so a spelling git does not have is
-# a dead end: stored as a trunk it drew a phantom row and cut the real stack
-# adrift, and `detect_trunk` persisted a name that was never there (issue #101).
+# True when `name` is exactly a branch git has -- for a name read from config and
+# compared or written back as one (#101). One `git` call per name; for a whole
+# list use `existing_branches`.
 #
-# `for-each-ref` rather than `show-ref --verify`, because its pattern matching is
-# exact where `--verify` inherits the filesystem's case folding.
-#
-# Spawns a `git` subprocess per call, so it is for ONE name. Asking about a whole
-# list means `existing_branches` instead -- one scan whatever the length, which is
-# what `cmd_init` uses and what the per-node loops in `print_tree_row` /
-# `restack_subtree` read from.
-#
-# The pattern matches one level down (`refs/heads/feat` finds `refs/heads/feat/sub`),
-# hence testing for the exact line rather than for any output at all. `git_out`'s
-# cap cannot swallow a true answer: git's D/F rule forbids `feat` and `feat/sub`
-# coexisting, so whenever the exact line is there it is the only line.
+# `for-each-ref`, not `show-ref --verify`, which inherits the filesystem's case
+# folding. Its pattern also matches one level down (`feat` finds `feat/sub`),
+# hence the exact-line test; git's D/F rule makes that line the only one when
+# present.
 def branch_ref_exists?(name)
   rows = git_out("for-each-ref --format='%(refname)' #{branch_ref(name)}")
   unpack_lines(rows).include?("refs/heads/#{name}")
 end
 
-# [behind, ahead] commit counts between `branch` and `parent`, in a single
-# `git rev-list --left-right --count` call: behind is commits parent has that
-# branch lacks, ahead is commits branch has that parent lacks.
-#
-# The per-branch path, for `restack`'s up-to-date check and as `tree`'s fallback
-# when git is too old for the batched `for-each-ref` atom (see scan_ahead_behind).
-#
-# Both ends through `branch_ref` (which says why): these counts pick restack's
-# branch -- fast-forward, replay, or "already up to date" -- so measuring the
-# wrong commit skips work or does the wrong kind.
+# [behind, ahead] of `branch` relative to `parent`. The per-branch form, for
+# `restack` and for `tree` on a git without the batched atom (see
+# scan_ahead_behind).
 def ahead_behind(parent, branch)
   out = git_out("rev-list --left-right --count #{branch_ref(parent)}...#{branch_ref(branch)}")
   parts = out.split("\t")
@@ -361,29 +241,19 @@ def ahead_behind(parent, branch)
   [parts[0].to_i, parts[1].to_i]
 end
 
-# Trunks are the branches every stack ultimately rests on. A repo can have
-# more than one (e.g. git-flow's `main` and `develop`); they are stored as a
-# multi-valued `stack.trunk` git config key. The first configured trunk is the
-# "primary" one -- the trunk a branch falls back to when its own cannot be
-# determined (see `containing_trunk`).
+# Trunks are peers. The first configured one is the primary: the fallback when a
+# branch's own trunk cannot be told (see `containing_trunk`).
 
-# Every configured trunk, in config order (empty list when none is set yet).
+# Every configured trunk, in config order.
 #
-# `map`/`reject` rather than an `each`/`<<` accumulator -- the shape this file
-# reaches for whenever a `split` is being filtered or transformed. It keeps the
-# split's `Array[String]` element type, where a fresh `[]` fed from a block
-# parameter would come back `Array[untyped]` and widen everything the result
-# reaches. The catch is that Spinel resolves these poly-array methods only on a
-# CONCRETE receiver, so the chain has to start at something already typed (a
-# `split`, `keys`, or a pinned parameter) and stay on that path -- never on a
-# value the analyzer has already widened. `spinel-doctor` and the emitted-RBS
-# golden in CI are what hold that line (see rbs/git-stack.rbs).
+# `map`/`reject` rather than an `each`/`<<` accumulator, here and wherever this
+# file filters a `split`: a fresh `[]` fed from a block widens to
+# `Array[untyped]`. Spinel resolves these array methods only on a concrete
+# receiver, so a chain must start at something typed (a `split`, `keys`, or a
+# pinned parameter).
 #
-# `uniq` is the read half of the duplicate-trunk guard `cmd_init` opens (see there
-# for what a repeat costs). Validating input cannot heal a list that is ALREADY
-# doubled -- a repo that ran the old `init main main`, or a hand-written `config
-# --add`, keeps its two rows -- so distinctness is guaranteed where every reader
-# passes instead: here, no migration needed.
+# `uniq` because validating input cannot fix a list already doubled by an old
+# `init main main` or a hand-written `config --add` (#83).
 def configured_trunks
   out = git_out("config --get-all stack.trunk")
   out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }.uniq
@@ -391,76 +261,37 @@ end
 
 # Replace the trunk list with exactly `trunks`.
 def set_trunks(trunks)
-  # --unset-all exits non-zero when the key is absent; that's expected, we
-  # only need any old values gone before adding the new ones.
+  # Fails when the key is absent, which is fine.
   git_ok("config --unset-all stack.trunk")
   trunks.each do |trunk|
     git_ok("config --add stack.trunk #{sh(trunk)}")
   end
 end
 
-# Auto-detect a single trunk: prefer the remote's default branch, then
-# main/master. Dies when none can be determined.
+# The trunk to auto-detect -- the remote's default branch, then main/master -- or
+# "" when none fits. Split from `detect_trunk` because `plant`/`fell` report the
+# answer without dying on its absence.
 #
-# Every candidate must exist as a LOCAL branch, `origin/HEAD`'s included --
-# a trunk is a local branch everywhere else in this file, so a name with no
-# local ref is a dead end (persisted, rendered as a phantom trunk row, then
-# rejected by every `track`/`parent`). `origin/HEAD` pointing at a branch the
-# clone lacks is ordinary (merged and cleaned up, or never checked out), so we
-# fall through to main/master rather than trust it.
+# Every candidate must be a local branch. `origin/HEAD` naming a branch this clone
+# lacks is ordinary, and storing it would leave a phantom trunk.
 #
-# Full refname stripped ourselves, not `--short` -- same defence, same reason, as
-# `current_branch_or_empty`, with this site's own prefix and its own collision:
-# `refs/remotes/origin/<name>` shortens to `origin/<name>`, which a LOCAL BRANCH
-# of that exact name makes ambiguous (no tag involved here, unlike the rest of
-# the family), so `--short` answers `remotes/origin/<name>` and the strip misses.
-# What follows is milder than elsewhere -- the mangled name has no local ref, so
-# the remote's answer is discarded rather than misread -- but discarded silently,
-# and a fall-through to main/master looks exactly like having no `origin/HEAD`.
-#
-# The strip is total rather than heuristic: we asked for that exact symref path,
-# so the answer is under `refs/remotes/origin/` by construction. A HEAD pointed
-# outside it keeps its full refname and folds to no local branch below.
-#
-# Stripping is only half of it, though -- `current_branch_or_empty` resolves the
-# name it strips, and so does this one now, through the same `stored_refname`.
-# The detection itself, answering "" rather than dying when nothing fits.
-#
-# Split out because two callers need the answer WITHOUT the exit: `plant`/`fell`
-# report which branch the next command will detect (or that there is none), and
-# `fell` has to recognise a trunk that is in force by detection rather than by
-# registration. Dying there would be wrong -- nothing has gone wrong, the repo
-# simply has no configured trunk -- and both would otherwise have to re-implement
-# the ladder below to ask.
+# Strips `refs/remotes/origin/` itself rather than asking for `--short`, which
+# answers `remotes/origin/<name>` when a local branch is named `origin/<name>`.
 def detect_trunk_or_empty
   name = git_out("symbolic-ref --quiet refs/remotes/origin/HEAD").delete_prefix("refs/remotes/origin/")
-  # Resolved, not merely checked: `origin/HEAD` may name `Develop` where git
-  # stores `develop`, and recording the remote's answer under a spelling no
-  # reader matches is what this whole family is about. Nothing folds to it in the
-  # ordinary "merged and cleaned up" case, and then "" falls through below --
-  # which is the behaviour the fall-through was written for (issue #108).
-  #
-  # The `name.empty?` guard is about cost, not correctness: `stored_refname("")`
-  # answers "" too, but only after listing every branch twice, and no `origin/HEAD`
-  # at all is the common case.
+  # Resolved, not merely checked: `origin/HEAD` may say `Develop` where git stores
+  # `develop` (#108). The empty guard only saves listing every branch twice.
   stored = name.empty? ? "" : stored_refname(name)
   return stored unless stored.empty?
 
-  # `main`/`master` stay EXACT while the name above gets resolved, and that
-  # asymmetry is deliberate. `origin/HEAD` is a fact about this clone, so
-  # resolving it preserves what the remote said; these two are this tool's own
-  # guess, and resolving a guess widens it -- "does this repo have `main`?" would
-  # become "does anything fold to `main`?", which is the loose question issue #101
-  # took out of stored names. The snapshot section "trunk auto-detect will not
-  # store a name the refs do not have" is what pins that, and it flips if these
-  # are "made consistent" with the line above.
+  # Exact, unlike `origin/HEAD` above. That one is the remote's fact; these are our
+  # guess, and folding a guess would accept anything that folds to `main` (#101).
   return "main" if branch_ref_exists?("main")
   return "master" if branch_ref_exists?("master")
 
   ""
 end
 
-# The same detection for the callers that cannot carry on without an answer.
 def detect_trunk
   name = detect_trunk_or_empty
   die("cannot determine trunk branch; run '#{PROG} init <branch>'") if name.empty?
@@ -468,17 +299,13 @@ def detect_trunk
   name
 end
 
-# The configured trunks that still exist, announcing each name that doesn't.
-# One `git` call per configured trunk -- one in nearly every repo, never a
-# per-node loop -- so the per-name `branch_ref_exists?` is the right check here,
-# rather than a whole-repo `existing_branches` scan this path would pay every time.
+# The configured trunks that still exist, announcing each that doesn't. A `git`
+# call per trunk rather than an `existing_branches` scan: there is rarely more
+# than one.
 #
-# `select` rather than an `each`/`<<` accumulator, for the reason spelled out
-# on `configured_trunks` -- and this is the concrete receiver that rule asks
-# for, `configured` being that method's own result. Widening here costs more
-# than an `untyped` line: `trunk_branches` then hands callers two different
-# array representations and the unchecked cast segfaults, which is why the
-# result is pinned in rbs/git-stack.rbs.
+# `select` on a concrete receiver (see `configured_trunks`). If this widens,
+# `trunk_branches` hands out two array representations and the cast segfaults,
+# which is why rbs/git-stack.rbs pins it.
 def live_trunks(configured)
   configured.select do |trunk|
     live = branch_ref_exists?(trunk)
@@ -489,76 +316,44 @@ end
 
 # Every trunk, auto-detecting and caching one on first use.
 #
-# Configured names are re-checked against the refs on the way out. `init` and
-# `detect_trunk` only ever store a branch that exists, but nothing keeps it
-# there: rename or delete the trunk afterwards and the key still names a branch
-# that is gone -- a dead end wherever a trunk is used (`detect_trunk` says why
-# it refuses to store one), and worse than inert in the heal paths, where `sync`
-# and `drop` hand the trunk they picked straight to `set_parent`: a ghost trunk
-# REPLACES a branch's real recorded parent with a name nothing can rebase onto,
-# the rebase is then skipped, and the run reports success. Every command's trunk
-# list comes through here, so the check lives here rather than at each use.
-#
-# What survives is re-cached, so the announcement prints once rather than per
-# command, and an empty list falls through to auto-detect exactly as an unset
-# key does -- landing a renamed trunk on its new name rather than dying. A repo
-# with nothing left to detect still dies in `detect_trunk`, stale key intact.
+# Configured names are re-checked here, for every command, because a trunk
+# renamed or deleted after `init` leaves a ghost: `sync` and `drop` would record
+# it as a parent, skip the rebase, and report success. Survivors are re-cached so
+# the notice prints once, and an empty list re-detects as an unset key does.
 def trunk_branches
   configured = configured_trunks
   list = live_trunks(configured)
   unless list.empty?
-    # Only when something was actually dropped: the common path reads config
-    # and writes nothing.
     set_trunks(list) if list.length != configured.length
     return list
   end
 
   trunk = detect_trunk
   set_trunks([trunk])
-  # Silent on first use (nothing was configured), but a re-detect replaced a
-  # configured trunk, so name the one that took over.
+  # A re-detect replaced a configured trunk, so say which one took over.
   info "trunk set to #{trunk}" unless configured.empty?
   [trunk]
 end
 
-# True when `branch` is one of the configured trunks.
 def is_trunk?(branch, trunks)
   trunks.include?(branch)
 end
 
-# The trunk `branch` rests on, decided by ANCESTRY rather than config.
+# The trunk `branch` rests on, from ancestry rather than config -- for a branch
+# whose parent is unrecorded or deleted. Naming the primary trunk instead dragged
+# stacks built on `develop` over to `main` (#73).
 #
-# The three callers -- `track` with no argument, `sync`'s orphan heal, and
-# `drop`'s child reconnect -- all face a branch whose parent is unrecorded or
-# already deleted, so there is no stack to walk down; the answer has to come
-# from history. Each used to name the primary trunk directly, which quietly
-# dragged a stack built on `develop` over to `main`.
-#
-# Trunks are peers, so "the" trunk is the NEAREST one: `<trunk>..<branch>`
-# counts the commits `branch` has gained since it left that trunk, and the
-# smallest count wins. A branch stacked on `develop` also carries develop's own
-# commits over `main`, so `main..<branch>` is the longer range and `develop`
-# wins -- which holds whether the trunks are ancestors of the branch or have
-# diverged from it, since `A..B` is measured from their merge-base either way.
-#
-# Ties keep config order, so the primary trunk is the tie-breaker: it answers
-# the genuinely ambiguous case (trunks that still point at the same commit)
-# with the same default as before. Callers announce the trunk they picked --
-# `sync` already did, being the one that rewrites refs.
+# The nearest trunk wins: `<trunk>..<branch>` counts the commits since the branch
+# left it, and a branch on `develop` also carries develop's commits over `main`.
+# Ties keep config order, so the primary trunk breaks them.
 def containing_trunk(branch, trunks)
-  # One trunk is the common repo, and with nothing to compare it against the
-  # loop below can only pick it -- so skip the `git` call it would spend first.
   return trunks[0] if trunks.length < 2
 
   best = trunks[0]
   best_count = -1
   trunks.each do |trunk|
-    # Through `branch_ref` (which says why): read bare, a tag sharing a branch's
-    # name would hand that branch to whichever trunk the tag sits on -- `up` then
-    # checks the stack out from the wrong trunk and `sync` rebases it there.
     out = git_out("rev-list --count #{branch_ref(trunk)}..#{branch_ref(branch)}")
-    # Empty only when the range failed to resolve (a trunk ref that vanished
-    # mid-run); skip it rather than let `"".to_i`'s 0 win every comparison.
+    # Empty when the range failed to resolve; skipped, or `"".to_i`'s 0 would win.
     next if out.empty?
 
     count = out.to_i
@@ -576,7 +371,6 @@ def get_parent(branch)
   git_out("config --get branch.#{sh(branch)}.stackParent")
 end
 
-# Record `parent` as the parent of `branch`; return true on success.
 def set_parent(branch, parent)
   git_ok("config branch.#{sh(branch)}.stackParent #{sh(parent)}")
 end
@@ -585,15 +379,12 @@ def clear_parent(branch)
   git_ok("config --unset branch.#{sh(branch)}.stackParent")
 end
 
-# The recorded stack base of `branch`: the SHA its parent sat at when the
-# branch was stacked. "" when none is recorded (a branch predating stackBase,
-# or one whose merge-base could not be determined at reparent time).
+# The recorded stack base, or "" when none is (a branch predating stackBase, or
+# unrelated histories at reparent time).
 def get_base(branch)
   git_out("config --get branch.#{sh(branch)}.stackBase")
 end
 
-# Record `sha` as the stack base of `branch` -- the point its own commits
-# begin, replayed from by `git rebase --onto`. Return true on success.
 def set_base(branch, sha)
   git_ok("config branch.#{sh(branch)}.stackBase #{sh(sha)}")
 end
@@ -602,11 +393,9 @@ def clear_base(branch)
   git_ok("config --unset branch.#{sh(branch)}.stackBase")
 end
 
-# Record the stack base when (re)parenting an EXISTING branch (`parent`/`track`).
-# Unlike `create`, the branch may already have diverged from its new parent, so
-# the base is the merge-base of `branch` and `parent`, not the parent's tip.
-# When they share no common ancestor (unrelated histories) leave stackBase unset
-# and warn -- `restack` then falls back to a fresh merge-base at replay time.
+# The base for reparenting an existing branch: the merge-base, not the parent's
+# tip, since the branch may already have diverged. With no common ancestor it is
+# left unset, and `restack` computes a merge-base itself.
 def record_reparent_base(branch, parent)
   base = git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
   if base.empty?
@@ -617,122 +406,63 @@ def record_reparent_base(branch, parent)
   nil
 end
 
-# Record the stack base when `branch` sits exactly on `parent`'s tip -- freshly
-# created (`create`) or just replayed onto it (`restack`). Counterpart to
-# `record_reparent_base`: here the tip IS where the branch's commits begin, so
-# no merge-base walk is needed.
+# The base for a branch sitting exactly on `parent`'s tip (after `create` or a
+# replay).
 def record_tip_base(branch, parent)
   set_base(branch, git_out("rev-parse #{branch_ref(parent)}"))
   nil
 end
 
-# Point `branch` at `parent` and re-anchor its stack base, as one step. These
-# two always belong together: a branch left pointing at a new parent with a base
-# from the old one replays the wrong range at restack time (and breaks outright
-# if the old base's history is later deleted). `err` is the message to die with
-# when the parent can't be recorded, so each command keeps its own wording.
-#
-# `restack_subtree` deliberately does NOT come through here -- it records the
-# base itself, from the parent's tip, after a successful rebase.
+# Set the parent and re-anchor the base together: a base left over from the old
+# parent replays the wrong range. `err` keeps each command's own wording.
+# `restack_subtree` does not come through here; it anchors on the tip after
+# rebasing.
 def reparent!(branch, parent, err)
   die(err) unless set_parent(branch, parent)
   record_reparent_base(branch, parent)
   nil
 end
 
-# Drop every stack key for `branch`. Parent and base are cleared as a unit, so a
-# branch can never keep a base pointing into a stack it no longer belongs to.
+# Parent and base go together, so no base outlives the stack it pointed into.
 def untrack!(branch)
   clear_parent(branch)
   clear_base(branch)
   nil
 end
 
-# One scan of git config listing every `branch.<name>.stackParent` entry.
-# StackTopology parses it once up front so tree/restack recursions read
-# children in memory instead of re-spawning `git` per node (O(N^2) otherwise).
-#
-# Through `git_scan`, not `git_out`: this output grows with the tracked branch
-# count, and a failed read must stop the command (see git_scan).
+# Every `branch.<name>.stackParent` in one scan, so traversals read children in
+# memory rather than spawning `git` per node.
 def scan_stack_config
   git_scan("config --get-regexp '^branch\\..*\\.stackparent$'", true)
 end
 
-# Set of every local branch name, in one `git` subprocess. Captured once so the
-# per-node `branch?` lookup is in memory, not a `git show-ref` per tree node.
-#
-# Through `git_scan`: this list grows with the repo, and a partial set makes
-# every branch it misses answer `branch?` with a confident, wrong `false` --
-# the one lookup the whole traversal trusts (see git_scan).
-#
-# Full `%(refname)` stripped of `refs/heads/` ourselves, not `%(refname:short)`:
-# when a tag shares a branch's name, `:short` emits `heads/<name>`, so `branch?`
-# reads the branch as missing and sync reparents its children onto trunk.
 def existing_branches
   Set.new(branch_names)
 end
 
-# The same list before it becomes a Set, for the one reader that has to SEARCH it
-# rather than look a name up: `stored_refname` folds case, and `Set#find` is on
-# Spinel's poly path -- scanning one there widens `current_branch`, `detect_trunk`,
-# `reparent!`, `record_reparent_base` and `print_order` along with it. An
-# `Array[String]` keeps every one of them concrete, and this repo's ratchet has no
-# headroom (see rbs/git-stack.rbs).
+# Every local branch name. `%(refname)` stripped here, not `%(refname:short)`,
+# which answers `heads/<name>` when a tag shares the name.
+#
+# Also exposed as an Array for `stored_refname`, which has to search it:
+# `Set#find` is on Spinel's poly path and would widen every caller.
 def branch_names
   out = git_scan("for-each-ref --format='%(refname)' refs/heads/", false)
   unpack_lines(out).map { |name| name.delete_prefix("refs/heads/") }
 end
 
-# Every branch `up`'s MENU (no name given) offers from `parent`. Builds a
-# throwaway topology (one config scan, no ahead/behind walk) -- the one-shot
-# path for `up`, distinct from the snapshot `tree` threads through rendering.
+# The branches `up`'s menu offers from `parent`: its recorded children, plus, for a
+# trunk, the detached roots `tree` draws under it -- stacks whose parent was
+# untracked or deleted (#85). Only the roots `containing_trunk` assigns to this
+# trunk, as `cmd_tree` places them, or `up` from `main` would check out a stack
+# built on `develop` (#91).
 #
-# For an ordinary branch that is exactly its recorded children. For a TRUNK it is
-# those PLUS a SLICE of the detached roots: the stacks `tree` renders at
-# trunk-child indent because nothing tracked reaches them -- a parent that was
-# untracked while it still had children, or one that was merged and deleted.
-# `tree` drew them there and the menu could not reach them, which is the
-# contradiction issue #85 names.
+# Live roots only: a phantom would reach `checkout!` and fail in git's words, not
+# ours. `containing_trunk` runs last because it costs a `rev-list` per trunk.
 #
-# The gate is `containing_trunk`: a detached root belongs to the ONE trunk its
-# history rests on -- the same question `track` / `sync`'s orphan heal / `drop`'s
-# reconnect each ask (issue #73) -- and only that trunk's menu offers it. Without
-# it, `up` from `main` would offer a develop-grown stack and then check it out,
-# which is #73's mistake in a command that MOVES HEAD.
-#
-# `cmd_tree` now asks the same question to decide where to DRAW each root, so the
-# two agree by construction rather than by coincidence. They used to not: `tree`
-# emitted every root after ALL trunks, at the indent of the LAST trunk's own
-# children, so a trunk could show a row its own menu refused -- and with a real
-# child alongside it, `up` moved HEAD with no prompt from a picture that showed a
-# choice (issue #91). What still differs is liveness, below, and `named_children_of`.
-#
-# `named_children_of` below is the other half of that disagreement: `up <name>`
-# accepts ANY trunk's detached root, because naming it is not the silent jump
-# this gate exists to stop, and refusing a name read straight off `tree`'s own
-# row would recreate the contradiction issue #85 was written to remove.
-#
-# Reads `live_detached_roots`, not `detached_roots`: a root whose ref is gone is
-# a row `tree` draws and `up` must not offer (see that method for why the two
-# differ). Asking the narrower question beats filtering here, which is what kept
-# the guard from having to be repeated in `named_children_of` below.
-#
-# `containing_trunk` is spent only on roots that survive that filter, which is
-# also why it runs last in the loop: it costs a `git rev-list` per trunk, and a
-# phantom would spend one per trunk to be discarded anyway.
-#
-# No root can appear twice: `detached_roots` already drops any whose own parent
-# is a trunk, and that is exactly the set `children_of` answers.
-#
-# `select` and `concat` are safe HERE, and the reason is worth stating because
-# it does not generalise: Spinel resolves the poly-array methods only on a
-# concrete receiver, and off one they compile clean, pass `spin test`, and die
-# with NoMethodError on the shipped binary alone. Both receivers below are
-# pinned `Array[String]` in rbs/git-stack.rbs (`children_of`,
-# `live_detached_roots`), and test/binary_test.sh drives this exact path on the
-# compiled artifact -- which is the only thing that can actually prove it.
-# `concat` mutates a list `StackTopology#children_of` builds fresh per call, so
-# it shares nothing.
+# `select`/`concat` are safe here only because both receivers are pinned
+# `Array[String]` in rbs/git-stack.rbs. Off a concrete receiver they compile and
+# pass `spin test`, then die in the shipped binary; test/binary_test.sh drives
+# this path on the compiled artifact.
 def children_of(parent, trunks)
   topology = StackRepository.load_topology(trunks)
   children = topology.children_of(parent)
@@ -742,18 +472,10 @@ def children_of(parent, trunks)
   children.concat(ours)
 end
 
-# Every detached root `up <name>` may name explicitly from a trunk `parent`:
-# the menu's own list (`children_of`, above) PLUS every OTHER trunk's detached
-# roots too -- so an explicit name reaches any row `tree` draws at trunk-child
-# indent, whichever trunk `containing_trunk` actually assigns it to. See
-# `children_of`'s comment for why the two deliberately differ: naming a branch
-# is not the silent jump `containing_trunk` guards the menu against, so this
-# path skips that gate. It is still the ONLY other topology `cmd_up` may build
-# -- one invocation loads `children_of`'s or this one's, never both.
-#
-# `live_detached_roots` again, so a root whose ref is gone cannot reach
-# `checkout!` down this path either -- the guard is the query, not something
-# each of these two has to remember.
+# What `up <name>` accepts from `parent`: the menu's list plus every other trunk's
+# detached roots. Naming a branch is not the silent jump the menu's
+# `containing_trunk` gate prevents, and refusing a row `tree` drew would bring
+# #85 back.
 def named_children_of(parent, trunks)
   topology = StackRepository.load_topology(trunks)
   children = topology.children_of(parent)
@@ -762,40 +484,13 @@ def named_children_of(parent, trunks)
   children.concat(topology.live_detached_roots)
 end
 
-# The single home of the "a branch with no recorded parent rests on the trunk"
-# rule (it used to sit copied in three spots), and the parent `parent`/`down`
-# answer with: the recorded parent, or the trunk the branch rests on.
+# The parent `parent`/`down` answer with: a trunk is its own (the bottom), a
+# recorded parent wins, and otherwise the trunk the branch's history rests on.
+# The only place that resolves a trunk for a parentless branch; a snapshot cannot
+# afford `containing_trunk` per node (#73).
 #
-# This is now the ONLY path that resolves a trunk for a parentless branch.
-# Rendering used to apply the same rule through a `StackSnapshot`, against a
-# single `trunks[0]` fixed at build time -- the wrong trunk for a branch built on
-# `develop` (issue #73). A snapshot cannot ask per branch (see StackSnapshot), so
-# it stopped asking: it reads recorded parents and nothing else. One-shot
-# commands can afford the question, and this is where it is asked.
-#
-# Trunks are peers, which this answers in two places. A trunk resolves to itself,
-# the self-parent fixed point `down` already reads as "the bottom"; without it a
-# secondary trunk, recording no parent, would fall through and report `develop`'s
-# parent as `main`. And an unrecorded parent resolves through `containing_trunk`,
-# so a branch built on `develop` walks down to `develop` rather than being handed
-# the primary trunk.
-#
-# `containing_trunk` is spent only when there is no recorded parent -- it costs a
-# `git rev-list` per trunk (it short-circuits in the single-trunk repo, but not
-# in the git-flow one this exists for), and a recorded parent is the answer
-# already.
-#
-# It answers ONE HOP: what does this branch sit on. "Where does its stack start"
-# is the other question, and `StackTopology#climb_to_root` is that one's single
-# home -- it stops where this rule does not, at a parent that exists but is
-# tracked nowhere. Two answers were what issue #80 was: `tree` and `restack`
-# each climbed their own way and named different roots for the same stack. If a
-# new traversal needs either question, call the owner rather than re-deriving it.
-#
-# Unifying branch names through this rule pulls the `git`-wrapper family (`sh`,
-# `checkout!`, `branch_ref_exists?`) onto Spinel's untyped slow path; the
-# hand-written seed in rbs/ pins them back to concrete types (fed via `--rbs`,
-# checked by the CI golden). See rbs/git-stack.rbs.
+# One hop only. "Where does this stack start" is `StackTopology#climb_to_root`'s
+# question (#80).
 def effective_parent(branch, trunks)
   return branch if is_trunk?(branch, trunks)
 
@@ -805,14 +500,11 @@ end
 
 # --- tree rendering ---------------------------------------------------------
 
-# The tree row marker for `branch`: "*" when it's the checked-out branch.
 def tree_marker(branch, cur)
   branch == cur ? "*" : " "
 end
 
-# `branch` coloured for a tree row: highlighted (bold green) when it's the
-# checked-out branch, otherwise painted with `default_code` (an SGR code
-# string, or "" for no colour).
+# `default_code` is an SGR code, or "" for no colour.
 def tree_name(branch, cur, default_code)
   return bold(green(branch)) if branch == cur
   return branch if default_code.empty?
@@ -820,12 +512,9 @@ def tree_name(branch, cur, default_code)
   paint(default_code, branch)
 end
 
-# Readers for the `"<left>\t<right>"` lines that several indexes below are
-# packed as (see StackTopology for why packing beats an Array/nested Hash). Every
-# consumer asks for a side by name, so the separator's position is known only here.
-#
-# A line with no tab answers "" -- which every caller already skips on, so it
-# doubles as the malformed-line and empty-trailing-line guard.
+# Readers for `"<left>\t<right>"` lines. A line with no tab answers "", which
+# every caller skips, so malformed and trailing empty lines need no guard of their
+# own.
 def tab_head(line)
   tab = line.index("\t")
   return "" if tab.nil?
@@ -840,37 +529,15 @@ def tab_tail(line)
   line[(tab + 1)..-1]
 end
 
-# The same two readers for the file's OTHER separator. Wherever a list has to
-# survive as a HASH VALUE -- which Spinel widens to `untyped` as an
-# `Array[String]` -- it is packed one entry per line, and these are the pair that
-# packs and unpacks it. Callers never spell the separator, the trailing newline,
-# or the empty-line skip themselves.
+# A list packed one entry per line, wherever it has to be a hash value: Spinel
+# widens an array-valued hash to `Hash[String, untyped]`, and no seed line fixes
+# it -- `Hash[String, Array[String]]` in rbs/git-stack.rbs is silently dropped,
+# not refused, so only the emitted golden shows it failed. A plain
+# `Array[String]` ivar infers fine and needs no packing.
 #
-# The scope of that "wherever" is narrower than it once was, and the difference
-# is worth stating rather than leaving to be rediscovered. A PLAIN
-# `Array[String]` ivar is inferred concretely today (`@items = []` then
-# `@items << name` emits `@items: Array[String]`), so an ivar is no longer a
-# reason to pack on its own; `@children` is packed because it is a hash VALUE.
-# There, nothing helps: the push form, the `h[k] ||= []` form, and a
-# `Hash[String, Array[String]]` line in rbs/git-stack.rbs all still leave
-# `Hash[String, untyped]`. The seed line is the one to watch -- it is neither
-# applied nor refused but silently DROPPED, so pinning an array-valued hash
-# looks like it worked until you diff the emitted golden. (A contradicted
-# scalar seed, by contrast, is applied and breaks the build loudly; `--rbs` is
-# advisory, and this is the shape it declines without saying so.)
-#
-# `unpack_lines` also re-introduces the concrete element type: its `split` is an
-# `Array[String]`, which is the receiver the poly-array methods downstream
-# (`map`, `reject`, `sort`, `each_slice`) need. `pack_lines` is its inverse, and
-# answers "" for an empty list -- not "\n" -- so a round trip is a no-op.
-#
-# Packing is not a speed tax paid for those types, though it was briefly: under
-# the ref before this one, unpacking `@children` measured 26% FASTER on a
-# 300-branch `tree` (968ms vs 1307ms), because the per-node `split` and the
-# per-row concat dominated. Upstream's string-append work (see the SPINEL_REF
-# note in ci.yml) closed that: packed and unpacked now run within 0.7% of each
-# other on the fixture, and packed is 41 KB smaller. Packing costs nothing here
-# beyond the indirection these two functions exist to hide.
+# `unpack_lines`' `split` re-introduces the concrete element type that `map`,
+# `reject`, `sort` and `each_slice` downstream need. `pack_lines([])` is "", not
+# "\n", so a round trip is a no-op.
 def pack_lines(lines)
   lines.map { |line| "#{line}\n" }.join("")
 end
@@ -879,44 +546,28 @@ def unpack_lines(packed)
   packed.split("\n").reject { |line| line.empty? }
 end
 
-# How many branches per batched `git for-each-ref` in scan_ahead_behind. A batch
-# emits at most CHUNK rows of CHUNK+1 columns -- every row carries a column for
-# every parent in the batch, though it reads only its own -- so its size grows as
-# CHUNK^2. 12 was sized to stay under the ~4 KB backtick cap that git_scan's
-# note describes; with the cap gone it is kept as is, because changing it is a
-# speed trade-off to measure, not a correctness fix.
+# Branches per batched `for-each-ref`. The output grows as CHUNK^2 (each row
+# carries a column for every parent in the batch). 12 was sized for a backtick
+# cap that no longer exists; changing it is a speed trade-off to measure.
 AHEAD_BEHIND_CHUNK = 12
 
-# The distinct parents in `group` (up to AHEAD_BEHIND_CHUNK "<branch>\t<parent>"
-# lines), newline-joined -- one entry per `%(ahead-behind:<parent>)` atom column
-# the batch's for-each-ref emits. Newline-packed, not Array[String] (see
-# scan_ahead_behind for the Spinel-widening reason).
-#
-# `uniq` dedups in FIRST-OCCURRENCE order, which is load-bearing rather than
-# incidental: `ahead_behind_columns` reads a parent's position here back as its
-# column number, and `ahead_behind_chunk` appends the atoms in the same order.
+# The distinct parents in `group`, packed, one per `%(ahead-behind:)` column.
+# `uniq` keeps first-occurrence order, which `ahead_behind_columns` reads back as
+# column numbers.
 def ahead_behind_bases(group)
   pack_lines(unpack_lines(group).map { |pl| tab_tail(pl) }.reject { |parent| parent.empty? }.uniq)
 end
 
-# The `refs/heads/...` argument tail for the batch's for-each-ref: every branch
-# in `group`, shell-quoted and space-joined. Same packed-String idiom as
-# ahead_behind_bases.
+# `group`'s branches as the batch's ref arguments.
 def ahead_behind_refs(group)
   branches = unpack_lines(group).map { |pl| tab_head(pl) }.reject { |branch| branch.empty? }
   branches.map { |branch| " #{branch_ref(branch)}" }.join("")
 end
 
-# branch -> the for-each-ref column carrying that branch's counts, for one
-# batch. `bases` lists the distinct parents in the order their `%(ahead-behind:)`
-# atoms are appended, so a parent's position in it IS its column number; `group`
-# maps each branch to its parent. Built once per batch so the readback's row loop
-# is a single hash lookup, not two nested scans.
+# branch -> the for-each-ref column holding its counts, built once per batch.
 #
-# `bases` is split raw rather than through `unpack_lines`: `ahead_behind_bases`
-# is its only producer and drops the empties itself, so a blank-line skip here
-# would be dead code claiming otherwise. `ahead_behind_chunk` splits it the same
-# way, which is what keeps a parent's position identical in both.
+# `bases` is split raw, not through `unpack_lines`: its only producer already
+# drops empties, and `ahead_behind_chunk` has to split it identically.
 def ahead_behind_columns(group, bases)
   parent_col = {}
   bases.split("\n").each_with_index do |b, col|
@@ -934,25 +585,21 @@ def ahead_behind_columns(group, bases)
   cols
 end
 
-# Read one batch's for-each-ref `output` back into "<branch>\t<behind>\t<ahead>"
-# lines. Each row is "<branch>\t<col0>\t<col1>..."; `cols` (from
-# `ahead_behind_columns`) says which column is this branch's.
+# One batch's output as "<branch>\t<behind>\t<ahead>" lines. Each row is
+# "<refname>\t<col0>\t<col1>..."; `cols` says which column is the branch's own.
 def ahead_behind_readback(output, cols)
   result = ""
   output.split("\n").each do |row|
-    # `tab_head` is the `%(refname)` column; strip `refs/heads/` back to the
-    # short branch name the column map and downstream index are keyed by.
     branch = tab_head(row).delete_prefix("refs/heads/")
     next if branch.empty?
 
     idx = cols[branch]
     next if idx.nil?
 
-    # The idx-th tab-separated ahead-behind column ("<ahead> <behind>").
     col = tab_tail(row).split("\t")[idx]
     next if col.nil? || col.empty?
 
-    # The atom prints "<ahead> <behind>"; the consumer wants [behind, ahead].
+    # The atom prints "<ahead> <behind>"; callers want [behind, ahead].
     ab = col.split(" ")
     next if ab.length != 2
 
@@ -961,22 +608,17 @@ def ahead_behind_readback(output, cols)
   result
 end
 
-# One batch of scan_ahead_behind: `group` is up to AHEAD_BEHIND_CHUNK
-# "<branch>\t<parent>" lines. Runs one `git for-each-ref` over those branches,
-# with one `%(ahead-behind:<parent>)` atom per distinct parent, then reads back
-# each branch's own parent column. Returns "<branch>\t<behind>\t<ahead>" lines
-# (empty on git < 2.41, where the atom fails and print_tree_row falls back per node).
+# One batch of scan_ahead_behind: a `for-each-ref` over up to AHEAD_BEHIND_CHUNK
+# branches, one `%(ahead-behind:)` atom per distinct parent. Empty on git < 2.41,
+# where the atom fails and `tree` falls back per node.
 def ahead_behind_chunk(group)
   refs = ahead_behind_refs(group)
   return "" if refs.empty?
 
   bases = ahead_behind_bases(group)
-  # `%(refname)` + strip, not `%(refname:short)`, and full `refs/heads/<parent>`
-  # in the atom, not the bare name -- the hazard `branch_ref` documents. NOT
-  # `branch_ref` itself, and this is the one deliberate exception to that sweep:
-  # the atom goes inside `fmt`, which `sh`-quotes as a whole below, so the quotes
-  # `branch_ref` adds would land nested inside the format string and break it.
-  # Raw split, matching ahead_behind_columns -- see the note there.
+  # `refs/heads/` spelled by hand rather than through `branch_ref`: the atom sits
+  # inside `fmt`, which is `sh`-quoted whole, so `branch_ref`'s quotes would nest
+  # and break it.
   atoms = bases.split("\n").map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
   fmt = "%(refname)#{atoms.join("")}"
 
@@ -984,11 +626,8 @@ def ahead_behind_chunk(group)
   ahead_behind_readback(out, ahead_behind_columns(group, bases))
 end
 
-# Parse a `scan_ahead_behind` result once into a name -> "behind\tahead" index,
-# so each node's lookup is O(1) instead of re-scanning the whole result per node.
-# Values stay packed "<behind>\t<ahead>" strings, not Array[Integer]: an
-# array-valued hash widens to untyped in Spinel's signatures (see
-# scan_ahead_behind). `ahead_behind_of` unpacks back into a fresh Array[Integer].
+# name -> "<behind>\t<ahead>", parsed once so each node's lookup is O(1). Packed
+# rather than Array[Integer] values, which Spinel widens (see pack_lines).
 def ahead_behind_index(ab)
   index = {}
   unpack_lines(ab).each do |line|
@@ -1000,33 +639,16 @@ def ahead_behind_index(ab)
   index
 end
 
-# The pure, in-memory topology of a stack forest. Its source of truth is the
-# recorded-parent relation; `@children` is an inverted index built from it.
+# The in-memory topology of the stack forest: recorded parents, and the children
+# index inverted from them.
 #
-# The domain is deliberately broader than a valid tree. Git config may contain
-# a parent whose ref has been deleted, an existing but untracked parent, or a
-# hand-written cycle. Those states remain representable so `tree` can diagnose
-# them and `sync`/`drop` can repair them. Normal mutations preserve the forest
-# invariant by using `validate_new_parent!`.
+# Broader than a valid tree on purpose. Config may hold a parent whose ref was
+# deleted, an untracked parent, or a hand-written cycle, and `tree` has to show
+# them for `sync`/`drop` to repair. New edges go through `validate_new_parent!`.
 #
 #   @parents   branch -> recorded parent           (config scan, trunks dropped)
-#   @branches  the set of existing local branches   (existing_branches)
-#   @children  parent -> "<child>\n<child>\n..."    (`@parents` inverted)
-#
-# @children is newline-PACKED Strings, and that is what makes it
-# concrete fields: the `Hash[String, Array[String]]` an array value would force
-# widens to `Hash[String, untyped]` (Spinel has no tag for it). Packed, they are
-# `Hash[String, String]`; callers `.split("\n")` a row back into a fresh
-# `Array[String]`, which is where the concrete element type is (re)introduced.
-#
-# Measured against the pinned ref, not assumed: unpacking this one field takes
-# the emitted golden from 43 untyped to 45, `walk_order` with it, and pinning
-# `walk_order` back only recovers one of the two -- the last row is `@children`
-# itself, which no seed line can reach (see pack_lines). It costs nothing at run
-# time either way now, so the type is the whole argument.
-#
-# Build this class from already-read Git state with `from_scan`; the reader and
-# history-derived display data live in StackSnapshot below.
+#   @branches  the set of existing local branches
+#   @children  parent -> "<child>\n<child>\n..."    (packed, see pack_lines)
 class StackTopology
   def self.from_scan(branches, trunks, scan)
     topology = new(branches, trunks)
@@ -1039,46 +661,21 @@ class StackTopology
     @branches = branches
     @trunks = Set.new(trunks)
     @children = {}
-    # Explicit nil so Spinel infers `initialize` as `() -> nil`, not `-> String`
-    # from the trailing assignment.
+    # Explicit nil, or Spinel infers `-> String` from the last assignment.
     nil
   end
 
-  # Parse one `scan_stack_config` string into the parent and child indexes and
-  # capture the existing-branch set. Note: git lowercases a config key's
-  # variable name, so the stored key is `branch.<name>.stackparent`.
+  # Parse a `scan_stack_config` string into the indexes. git lowercases the
+  # variable name, hence `stackparent`.
   #
-  # A trunk's recorded parent is DROPPED here, which is what makes "trunks are
-  # roots by topology" true of every topology rather than a convention `track` and
-  # `parent` merely refuse to break. `branch.<trunk>.stackParent` still exists in
-  # the wild -- written before those guards landed, or by hand -- and reading it
-  # back would let `restack` rebase a shared trunk onto another trunk (rewriting
-  # published history) and make `tree` print the trunk's subtree twice. The
-  # single-command `effective_parent` already answers a trunk with itself; this
-  # is the same rule for the in-memory traversals.
+  # Two kinds of record are dropped here, so no reader has to retest them:
   #
-  # An EMPTY value is dropped too, which makes "a recorded parent is a real
-  # branch name" true of the index rather than something each reader retests.
-  # `set_parent` never writes one, but `branch.<name>.stackParent = ""` exists in
-  # the wild (hand-edited, or left by an editor), and admitting it put a branch
-  # in the index whose parent no reader could resolve: `detached_roots` drew it
-  # as a root, and the row's ahead/behind was then measured against whatever
-  # trunk the snapshot had been handed -- `main` for a branch built on `develop`
-  # (issue #73). Dropping it here reads that config the way the rest of the tool
-  # already does, as untracked.
-  #
-  # It also settles a split that depended on line position. `git config
-  # --get-regexp` emits the key followed by one space for an empty value, and
-  # `scan_stack_config` only `.strip`s the output as a whole -- so the same
-  # config parsed as an empty parent on any line but the last, and as a
-  # space-less (hence skipped) line when it happened to be last.
-  #
-  # The value is `.strip`ped for the same reason, which is what keeps this door
-  # into `branch.<name>.stackParent` agreeing with the other one: `get_parent`
-  # normalizes through `git_out`'s strip, so a hand-written `" "` reads as "no
-  # parent" there. Without the strip here it read as a parent NAMED " ", and
-  # `tree` answered "parent ' ' missing; run sync" for a branch `parent`
-  # resolved to a trunk.
+  #   * A trunk's parent. Old or hand-written ones exist, and honouring one would
+  #     let `restack` rebase a shared trunk onto another trunk.
+  #   * An empty or blank value, which `get_parent` reads as "no parent".
+  #     Indexed, it drew the branch as a root measured against the wrong trunk
+  #     (#73). `--get-regexp` prints the key plus one space for an empty value,
+  #     so without the strip it parsed differently on the last line.
   def load(scan)
     unpack_lines(scan).each do |line|
       space = line.index(" ")
@@ -1097,30 +694,18 @@ class StackTopology
     nil
   end
 
-  # True when `name` is one of this topology's trunks -- the in-memory twin of
-  # the top-level `is_trunk?`, reading the set `load` captured.
   def trunk?(name)
     @trunks.include?(name)
   end
 
-  # True when `name` has a recorded parent, i.e. it is a node of the tracked
-  # graph. A trunk answers false (its record is dropped on the way in) and is
-  # tested with `trunk?` instead. Distinct from `branch?`: that asks whether the
-  # ref exists, this asks whether the stack knows about it.
+  # True when `name` records a parent. Says nothing about the ref (that is
+  # `branch?`); a trunk answers false.
   def tracked?(name)
     !@parents[name].nil?
   end
 
-  # Invert `@parents` into the packed `@children` index, once per topology (the
-  # traversal reads children at every step, so it isn't re-derived per call).
-  #
-  # Rebuilds from empty: rows accumulate with `"#{row}#{name}\n"`, so without the
-  # reset a second `load` would append every child again and `children_of` would
-  # answer ["a", "a", ...] -- enough for `cmd_up` to see "multiple children"
-  # where there's one.
-  #
-  # Every value is a real branch name, so none of them is skipped: `load` is the
-  # one gate, and it drops the empty ones before they reach the index.
+  # Reset first: rows are appended, so a second `load` would list every child
+  # twice and `up` would see "multiple children".
   def index_children
     @children = {}
     @parents.each do |name, value|
@@ -1130,24 +715,17 @@ class StackTopology
     nil
   end
 
-  # The parent recorded for `branch`, or "" when none is recorded -- and always
-  # "" for a trunk, whose record `load` drops on the way in.
+  # "" when none is recorded, which is always the case for a trunk.
   def parent_of(branch)
     parent = @parents[branch]
     parent.nil? ? "" : parent
   end
 
-  # Sorted list of branches that record `branch` as their parent (empty when
-  # none). Reads one packed `@children` row and splits it into a concrete
-  # `Array[String]`; `.sort` orders siblings and pins the element type.
+  # The sorted children of `branch`.
   #
-  # The `.to_s` guards the split: Spinel has widened `@children` to
-  # `Hash[String, untyped]` before, whose value `.split`s to `unknown`, and
-  # iterating `unknown` is a baked-in `NoMethodError` -- all the more so for the
-  # `reject`/`sort` below, which Spinel resolves only on a concrete receiver.
-  # `.to_s` re-narrows to a String so the split stays `Array[String]`. A no-op
-  # under the pinned Spinel, whose seed now pins `@children` itself (see
-  # rbs/git-stack.rbs); kept as the guard for the bump that widens it again.
+  # `.to_s` guards against Spinel widening `@children` again: a widened value
+  # splits to `unknown`, and iterating that is a baked-in NoMethodError. A no-op
+  # while rbs/git-stack.rbs pins the field.
   def children_of(branch)
     row = @children[branch]
     return [] if row.nil?
@@ -1155,47 +733,34 @@ class StackTopology
     unpack_lines(row.to_s).sort
   end
 
-  # The names with a recorded parent. This is intentionally the only way the
-  # snapshot layer reads the canonical parent index; it needs the names to add
-  # history-derived ahead/behind data, but not the relation's representation.
+  # The only view the snapshot gets of the parent index.
   def tracked_branches
     @parents.keys
   end
 
-  # The whole subtree rooted at `root`, DFS pre-order (each parent before its
-  # children, siblings sorted), packed one `"<depth>\t<branch>"` line per node
-  # with `root` at depth 0. `tree` and `restack` split this once and loop flat
-  # (depth is a single `Integer`, not a threaded prefix), and the cycle guard
-  # lives here once.
+  # The subtree at `root` in pre-order (siblings sorted), one "<depth>\t<branch>"
+  # line per node, `root` at depth 0. The cycle guard lives here once.
   def order(root)
     walk_order(root, 0, Set.new, "")
   end
 
-  # The two readers of one packed order line ("<depth>\t<branch>", see `order`),
-  # naming which side means what so callers don't know where the separator sits.
-  # `order_line_branch` answers "" for a tab-less line, which both callers skip --
-  # covering the empty trailing line and malformed lines alike.
+  # Readers for one `order` line. A tab-less line answers "" (and depth 0), which
+  # callers skip.
   def order_line_branch(line)
     tab_tail(line)
   end
 
-  # The depth from one packed order line; 0 for a line with no tab (`""`.to_i),
-  # which `order_line_branch` has already rejected by the time this is read.
   def order_line_depth(line)
     tab_head(line).to_i
   end
 
-  # The same pre-order walk as `order`, depth dropped: just branch names, `root`
-  # first, for callers that traverse but never render (`restack_subtree`).
-  # Decoding what `order` encoded is deliberate -- one shared walk can't disagree
-  # with itself about traversal order or the cycle guard.
+  # `order` without depths, for callers that traverse but never render. Decoded
+  # from `order` so the two cannot disagree on order or on cycles.
   def order_branches(root)
     order(root).split("\n").map { |line| order_line_branch(line) }.reject { |name| name.empty? }
   end
 
-  # Visit a subtree in its canonical pre-order. The packed traversal rows stay
-  # inside StackTopology: callers receive domain values (branch, depth), never
-  # the string transport used to keep Spinel's types concrete.
+  # Yields (branch, depth) in pre-order, so the packed rows never leave this class.
   def each_preorder(root)
     order(root).split("\n").each do |line|
       branch = order_line_branch(line)
@@ -1206,10 +771,8 @@ class StackTopology
     nil
   end
 
-  # Append `branch` (at `depth`) and its descendants to `acc` in pre-order,
-  # reading children from packed `@children`. `visited` guards cyclic parent
-  # chains (A -> B -> A) so the walk terminates, emitting each branch at most
-  # once. `acc` is threaded and returned, not mutated, keeping it a concrete String.
+  # `visited` stops a hand-edited cycle. `acc` is threaded and returned rather
+  # than mutated, which keeps it a concrete String.
   def walk_order(branch, depth, visited, acc)
     return acc if visited.include?(branch)
     visited.add(branch)
@@ -1218,51 +781,30 @@ class StackTopology
     row = @children[branch]
     return acc if row.nil?
 
-    # `.to_s` before the split for the reason spelled out in `children_of`: it
-    # re-narrows a `@children` value Spinel may have widened, keeping the split
-    # an `Array[String]`. No-op under the pinned Spinel.
+    # `.to_s`: see children_of.
     unpack_lines(row.to_s).sort.each do |child|
       acc = walk_order(child, depth + 1, visited, acc)
     end
     acc
   end
 
-  # True when `name` is an existing local branch.
   def branch?(name)
     @branches.include?(name)
   end
 
-  # The extra roots `tree` draws: the top of every tracked stack the walk down
-  # from the trunks never reaches. Two shapes end up here.
+  # The roots `tree` draws besides the trunks: the top of every tracked stack the
+  # trunk walk cannot reach, because its parent was deleted or still exists but
+  # is untracked (#58).
   #
-  #   * The recorded parent was merged and deleted -- the classic orphan, which
-  #     `git stack sync` repairs.
-  #   * The recorded parent still EXISTS but is untracked, as `untrack` on a
-  #     branch with children leaves it. Nothing records that parent, so it is
-  #     not a trunk's child; and it is not missing either, so the orphan rule
-  #     did not catch it. Everything above it dropped out of `tree` without a
-  #     word while `restack` went on rebasing onto it (issue #58).
-  #
-  # Every branch climbs to its own root (`detached_root`) rather than being
-  # tested where it sits, which is what makes the answer independent of how the
-  # branches are named: a stack is emitted once, at its top, even when a child
-  # sorts ahead of it. A root whose own parent is a trunk is exactly a branch
-  # the trunk walk already draws, so it is dropped here rather than drawn a
-  # second time -- the duplicate-row shape the 4 KB truncation bug produced (see
-  # test/binary_test.sh). Emitting a root marks its whole subtree covered, which
-  # is what keeps the rest of that stack from being considered again; the marking
-  # (rather than remembering the roots alone) is load-bearing for a hand-edited
-  # cycle, whose members each climb to a DIFFERENT member as their root.
+  # Each branch climbs to its root rather than being tested where it sits, so the
+  # answer does not depend on how branches sort. A root resting on a trunk is
+  # dropped: the trunk walk already draws it. The whole emitted subtree is marked
+  # covered, not just the root, because members of a cycle each climb to a
+  # different root.
   def detached_roots
     roots = []
     covered = Set.new
-    # Sorted, so the roots come out in the order sibling rows elsewhere in the
-    # tree do. `.sort` on a `.keys` result is safe where the same call on a
-    # `@parents` VALUE would not be: the hash widened to `Hash[String, untyped]`
-    # on its values only, so the keys read back as a concrete `Array[String]`
-    # and `.sort` stays off the poly-array slow path (the shape that compiles
-    # clean and dies only in the shipped binary -- see test/binary_test.sh,
-    # whose fixture walks this line).
+    # `.sort` is safe on `.keys`: the hash widened on its values only.
     @parents.keys.sort.each do |name|
       next if covered.include?(name)
 
@@ -1275,77 +817,26 @@ class StackTopology
     roots
   end
 
-  # `detached_roots` minus the ones whose ref is gone -- the answer for anyone
-  # who will MOVE to a root rather than draw it.
-  #
-  # `detached_roots` deliberately keeps them: config outlives a ref deleted
-  # without `git branch -d` (the phantom shape `orphan_roots` filters), and
-  # `tree` still wants to draw that row. `up` must not offer one -- it would
-  # reach `checkout!` and fail with git's own "did not match any file(s)"
-  # instead of this tool's words. Worse, `containing_trunk` on a phantom gets an
-  # empty `rev-list` for every trunk and falls through to `trunks[0]`, so in a
-  # multi-trunk repo the menu would hand a develop-side phantom to `main` --
-  # exactly the issue #73 mistake that gate exists to avoid.
-  #
-  # This lives here, as a second named query, rather than as a guard copied into
-  # each caller: `up`'s two list builders both need it, and the next one to be
-  # written should get it by asking the right question rather than by
-  # remembering to re-add a filter (issue #85).
+  # `detached_roots` whose ref still exists, for callers that move to a root
+  # rather than draw it. A phantom would fail in `checkout!` with git's words, and
+  # `containing_trunk` would hand it to the primary trunk. A named query rather
+  # than a filter at each caller, so the next caller cannot forget it (#85).
   def live_detached_roots
     detached_roots.select { |root| branch?(root) }
   end
 
-  # Every branch `sync` has to heal, wherever in the forest it sits: one that
-  # exists but whose recorded parent no longer resolves to a ref -- the classic
-  # "parent squash-merged and deleted", which `tree` flags with "run sync".
+  # Every existing branch whose recorded parent's ref is gone: what `sync` heals,
+  # wherever it sits in the forest (#55). A phantom (config outliving its ref) is
+  # skipped; its live children are orphans in their own right.
   #
-  # They are ROOTS in the sense `rebase_roots` below needs: nothing above an
-  # orphan can be walked down to it (its parent is gone), so the subtree it heads
-  # is reachable only by starting AT it. That is what made `sync` narrower
-  # than the hint `tree` prints: `sync` walked one stack, the one `stack_root`
-  # found from the current branch, so an orphan anywhere else in the repository
-  # was told about but never repaired -- healing it required guessing that you
-  # had to check out the orphaned subtree first, which neither the hint nor
-  # sync's own "done." ever said (issue #55).
-  #
-  # Only branches that EXIST are answered. A recorded parent whose own ref is
-  # gone leaves a phantom node in `@parents` (config outlives the branch when
-  # the ref is deleted without `git branch -d`, which prunes `branch.<name>.*`),
-  # and "healing" one would write a parent onto a name no ref answers to. Its
-  # real children are orphans in their own right -- their parent is exactly that
-  # missing name -- so they are each answered here instead, and nothing is lost
-  # by skipping the phantom itself.
-  #
-  # Not to be confused with `detached_roots` above, which answers the rows `tree`
-  # DRAWS as extra roots -- a wider set (an untracked-but-live parent detaches a
-  # stack without orphaning it) reached by climbing rather than by testing each
-  # branch where it sits. This one is the repair list, so it names the branches
-  # that are actually broken, each exactly where it stands.
-  #
-  # Sorted for the reason `detached_roots` sorts, and safe on `.keys` for the
-  # reason spelled out there.
+  # Narrower than `detached_roots`, since a live untracked parent is not broken.
   def orphan_roots
     @parents.keys.sort.select { |name| branch?(name) && parent_missing?(name) }
   end
 
-  # The roots one rebase pass must start from to cover `root`'s own stack AND
-  # every orphaned stack in the repository -- `sync`'s scope stated as a list,
-  # rather than a second sweep run after the first walk finishes. `restack` asks
-  # for no such thing: it passes `[root]` itself, so the difference between the
-  # two commands stays one expression at one call site.
-  #
-  # An orphan already inside an earlier root's subtree is dropped, which is what
-  # keeps a stack from being replayed twice. That is not a rare case in either
-  # direction: `stack_root` stops AT an orphan when you are standing inside its
-  # subtree (its `require_ref`), so `root` is frequently an orphan itself; and a
-  # phantom node -- config outliving the ref -- can carry a live orphan below it,
-  # so one root's subtree really can hold another's.
-  #
-  # Same "emit a stack once, then mark its whole subtree covered" idiom as
-  # `detached_roots`, over a different candidate list: that one answers the roots
-  # `tree` DRAWS, this one the roots a rebase REPLAYS. The orphan test comes
-  # first so a repository with no orphans -- every repository, most days -- pays
-  # a hash scan and not one walk.
+  # The roots one `sync` pass replays from: `root`'s stack plus every orphaned
+  # one. An orphan already inside an earlier root's subtree is dropped, so no
+  # stack is replayed twice.
   def rebase_roots(root)
     orphans = orphan_roots
     return [root] if orphans.empty?
@@ -1361,19 +852,15 @@ class StackTopology
     roots
   end
 
-  # Climb from `branch` to the top of the stack the trunk walk cannot reach: the
-  # last branch whose own parent is absent from the tracked graph. `tree` draws
-  # what this returns, so it stops wherever the next row up would be a branch
-  # `tree` cannot draw.
+  # The root `tree` draws for `branch`'s stack. Unlike `stack_root`, it climbs past
+  # a missing parent, to draw the row that says "run sync".
   def detached_root(branch)
     climb_to_root(branch, false)
   end
 
-  # True when `branch` records a parent that exists as a branch but that the
-  # tree never draws, because nothing tracks it. Such a branch is drawn as a
-  # detached root, at the indent a trunk's own children get, so its row has to
-  # say which branch it really rests on -- `restack` still rebases it onto that
-  # parent, not onto the trunk the indent suggests.
+  # True when the recorded parent exists but is untracked. `tree` then draws this
+  # branch at trunk-child indent, so its row has to name the parent `restack`
+  # really rebases onto.
   def untracked_parent?(branch)
     parent = parent_of(branch)
     return false if parent.empty? || trunk?(parent) || tracked?(parent)
@@ -1381,61 +868,39 @@ class StackTopology
     branch?(parent)
   end
 
-  # True when a recorded parent cannot be resolved to a local branch. This is
-  # distinct from an untracked parent: that parent still exists and must remain
-  # a valid edge for restack and drop.
+  # True when the recorded parent's ref is gone. Unlike an untracked parent, not a
+  # valid edge for restack or drop.
   def parent_missing?(branch)
     parent = parent_of(branch)
     !parent.empty? && !branch?(parent)
   end
 
-  # The one place the reconnect rule is spelled. True when a dropped branch's
-  # children cannot reconnect to its recorded parent -- because there is none,
-  # or because the recorded one no longer resolves to a local branch -- and a
-  # trunk has to stand in. Callers ask this before resolving that trunk, so the
-  # rule is never re-derived outside this class.
+  # True when a dropped branch's children cannot reconnect to its parent (none
+  # recorded, or its ref is gone), so a trunk has to stand in. Callers ask before
+  # paying for `containing_trunk`.
   def reconnect_needs_trunk?(branch)
     parent = parent_of(branch)
     parent.empty? || !branch?(parent)
   end
 
-  # The parent a dropped branch's children should reconnect to. A live recorded
-  # parent -- tracked or not -- remains the exact target. A missing or absent
-  # parent cannot be a target, so callers supply the history-resolved trunk.
+  # A live parent, tracked or not, is the exact target; otherwise `fallback_trunk`.
   def reconnect_target(branch, fallback_trunk)
     return fallback_trunk if reconnect_needs_trunk?(branch)
 
     parent_of(branch)
   end
 
-  # Walk down from `branch` to the root of the stack `restack`/`sync` replay.
-  #
-  # This used to climb PAST an existing-but-untracked parent, where
-  # `detached_root` stopped at it, and the two disagreed about the same stack:
-  # with `feat-a` untracked, `tree` drew the stack from `feat-b` while `restack`
-  # announced "stack rooted at feat-a" -- naming a branch its own output never
-  # draws (issue #80). The set of branches replayed was the same either way (an
-  # untracked root records no parent, so `restack_subtree` skips it and rebases
-  # its children onto it regardless), so this only ever moved the name in the
-  # message; it moved it to a branch the user could not see.
-  #
-  # Both walks now stop at an untracked parent, and share one climb. The `true`
-  # is `climb_to_root`'s `require_ref` -- see its stop list for what that adds;
-  # the reason `restack` wants it is that a parent whose ref is gone is nothing
-  # to replay ONTO, while `tree` keeps climbing to draw the row that says so
-  # ("parent missing; run sync").
+  # The root `restack`/`sync` replay from. Stops at an untracked parent, as
+  # `detached_root` does, so `restack` never names a root `tree` does not draw
+  # (#80); and at a missing parent, which is nothing to replay onto.
   def stack_root(branch)
     climb_to_root(branch, true)
   end
 
-  # The shared climb behind `stack_root` and `detached_root`: walk up the
-  # recorded parents from `branch` and answer the last branch reached.
-  #
-  # Stops at a trunk (the floor of every stack), at a branch that records no
-  # parent, and at a parent absent from the tracked graph -- plus, when
-  # `require_ref`, at a parent whose ref no longer exists. `seen` guards a
-  # hand-edited parent cycle (A -> B -> A), which would otherwise loop forever;
-  # breaking out of it renders the cycle as a root instead of hiding it.
+  # Walk up recorded parents and answer the last branch reached. Stops at a trunk,
+  # at no parent, at a parent outside the tracked graph, and (with `require_ref`)
+  # at a parent whose ref is gone. `seen` breaks a hand-edited cycle, which then
+  # renders as a root.
   def climb_to_root(branch, require_ref)
     seen = Set.new
     loop do
@@ -1451,9 +916,7 @@ class StackTopology
     branch
   end
 
-  # True if making `new_parent` the parent of `branch` would create a cycle --
-  # i.e. `branch` already lies on `new_parent`'s ancestor chain. Walks this
-  # topology (like `stack_root`), so the whole walk costs no `git` per level.
+  # True if making `new_parent` the parent of `branch` would close a cycle.
   def would_cycle?(branch, new_parent)
     seen = Set.new
     cur = new_parent
@@ -1469,10 +932,7 @@ class StackTopology
     false
   end
 
-  # Validate that `candidate` can become the parent of `branch`: it must exist,
-  # must not be `branch` itself, and must not create a cycle. `verb` customizes
-  # the cycle-error wording for the calling command. This topology answers both
-  # the existence check and the whole ancestor walk from its one snapshot.
+  # `verb` words the cycle error for the calling command.
   def validate_new_parent!(branch, candidate, verb)
     die("branch '#{candidate}' does not exist") unless branch?(candidate)
     die("a branch cannot be its own parent") if candidate == branch
@@ -1481,13 +941,12 @@ class StackTopology
   end
 end
 
-# The Git-facing read boundary for stack state. It captures config and local
-# refs, then assembles the pure topology or the richer rendering snapshot.
+# Reads config and refs, and builds the topology or the rendering snapshot from
+# them.
 class StackRepository
   def self.load_topology(trunks)
-    # Preserve the old snapshot order: config first, then local refs. The scan
-    # still represents one best-effort Git moment, but this avoids changing the
-    # established behavior for a ref/config mutation racing the command.
+    # Config before refs, as it always was, so a ref/config change racing the
+    # command behaves as it always has.
     scan = scan_stack_config
     branches = existing_branches
     StackTopology.from_scan(branches, trunks, scan)
@@ -1498,21 +957,11 @@ class StackRepository
   end
 end
 
-# A read-only snapshot used by rendering. It composes the pure topology with
-# Git-history facts that are expensive to ask for repeatedly. Commands that
-# only navigate or rewrite the forest receive StackTopology directly.
+# The topology plus ahead/behind counts, for rendering.
 #
-# It knows nothing about trunks, deliberately. It used to hold one -- a single
-# `trunks[0]` handed in at build time, standing in for "the trunk this branch
-# rests on" the way `restack_subtree` once did (issues #69 / #71) -- and every
-# row a snapshot renders was measured against it. That was the last of those
-# stand-ins, and unlike the one-shot `effective_parent`, a snapshot cannot
-# answer the question per branch: `containing_trunk` costs a `rev-list` per
-# trunk PER NODE, in the very scan built to keep `tree` off per-node
-# subprocesses. It is gone rather than generalized because the only rows that
-# could reach it are the ones `load` now drops (issue #73), leaving the fallback
-# no correct answer to give -- only a wrong one, against the primary trunk.
-# Rendering reads recorded parents (`StackTopology#parent_of`) and nothing else.
+# Holds no trunk: resolving one per node would cost a `rev-list` per trunk per
+# node, in the scan built to keep `tree` off per-node subprocesses. The rows that
+# once needed one are dropped by `load` (#73).
 class StackSnapshot
   def initialize(topology)
     @topology = topology
@@ -1524,8 +973,8 @@ class StackSnapshot
     @topology
   end
 
-  # [behind, ahead] from the cached index. The sentinel asks the renderer to
-  # fall back to the compatible per-branch Git query on older Git versions.
+  # [behind, ahead]; [-1, -1] tells the renderer to ask per branch instead (git
+  # without the batched atom).
   def ahead_behind_of(branch)
     packed = @ab[branch]
     return [-1, -1] if packed.nil?
@@ -1536,8 +985,6 @@ class StackSnapshot
     [fields[0].to_i, fields[1].to_i]
   end
 
-  # Precompute history status for tracked branches without making history a
-  # property of the topology.
   def scan_ahead_behind
     pairs = ""
     @topology.tracked_branches.each do |name|
@@ -1557,18 +1004,9 @@ class StackSnapshot
   end
 end
 
-# The note printed beside a branch whose recorded parent is not a normal tracked
-# edge -- "" when it is one. This is the SINGLE home of these two sentences.
-#
-# `tree` used to own them inline, and `parent`/`down` said nothing at all: `down`
-# checked out a branch `tree` never drew, and `parent` printed its name with no
-# hint that the stack above it renders somewhere else (issue #85). They now print
-# THIS, not a copy of it, so the two commands cannot drift into describing the
-# same branch differently.
-#
-# The two cases are exclusive by construction, so the order of the tests below
-# carries no meaning: `untracked_parent?` requires the parent's ref to EXIST,
-# `parent_missing?` requires it not to.
+# The note for a branch whose parent is untracked or missing, or "". The one
+# source of these sentences for `tree`, `parent` and `down`, so they cannot drift
+# (#85). The two cases are exclusive, so the order of the tests is meaningless.
 def parent_note(branch, topology)
   parent = topology.parent_of(branch)
   return yellow("(parent '#{parent}' is untracked)") if topology.untracked_parent?(branch)
@@ -1577,22 +1015,11 @@ def parent_note(branch, topology)
   ""
 end
 
-# Print `parent_note` for `branch` on STDERR, or nothing when there is none --
-# what `parent` and `down` do with the note `tree` prints in its row.
+# `parent_note` on stderr, clear of `parent`'s scripted stdout.
 #
-# STDERR, not stdout: `parent`'s stdout is the branch name a script reads, and
-# it still yields exactly that. Both commands print through here rather than
-# each spelling out the same two lines, for the reason `parent_note` itself
-# exists -- a copy is a copy that drifts (issue #85).
-#
-# The empty recorded parent short-circuits BEFORE the topology is built, and
-# that is the whole point of the guard: `StackRepository.load_topology` costs a
-# repo-wide config scan plus a repo-wide `for-each-ref`, while both of
-# `parent_note`'s cases need `parent_of(branch)` non-empty to say anything. A
-# branch resting straight on a trunk records no parent, so without this guard
-# the ordinary `down` -- the most-run command in the tool -- paid two whole-repo
-# scans to be handed "". `parent_note` still decides what the note SAYS; this
-# only decides whether the question is worth asking.
+# Checks for a recorded parent before building the topology, which costs two
+# repo-wide scans: `down` from a branch on a trunk, the most common command, has
+# no note to print.
 def print_parent_note(branch, trunks)
   return nil if get_parent(branch).empty?
 
@@ -1601,17 +1028,14 @@ def print_parent_note(branch, trunks)
   nil
 end
 
-# Print one tree row for `branch`, indented two spaces per `depth`. One node of
-# the traversal, no recursion: `cmd_tree` drives the order and calls this per
-# line, reading the pre-built snapshot so the whole tree costs no `git` per node.
+# One tree row, indented two spaces per `depth`, read from the snapshot alone.
 def print_tree_row(branch, depth, cur, snapshot)
   extra = ""
   topology = snapshot.topology
   parent = topology.parent_of(branch)
   if !parent.empty? && topology.branch?(parent)
-    # Counts from the batched `for-each-ref` (see scan_ahead_behind); the
-    # sentinel guards the git-too-old case with a per-node fallback.
     behind, ahead = snapshot.ahead_behind_of(branch)
+    # git without the batched atom: ask per branch.
     if behind < 0
       behind, ahead = ahead_behind(parent, branch)
     end
@@ -1622,11 +1046,8 @@ def print_tree_row(branch, depth, cur, snapshot)
     end
   end
 
-  # An untracked parent is never drawn, so this row sits at root indent as if it
-  # rested on the trunk. Name the parent it actually rests on -- silence here is
-  # what made the whole subtree look like it belonged to the trunk. A parent
-  # whose ref is gone gets the sync hint from the same place, which is what keeps
-  # this row and `git stack parent` from saying different things (see parent_note).
+  # A row whose parent is not drawn above it must say where it really rests, or
+  # the subtree looks like it belongs to the trunk.
   note = parent_note(branch, topology)
   unless note.empty?
     extra = extra.empty? ? note : "#{extra} #{note}"
@@ -1636,10 +1057,8 @@ def print_tree_row(branch, depth, cur, snapshot)
   nil
 end
 
-# Print the topology subtree, offset `base` levels deep.
-# `tree` calls this once per trunk (base 0, and skipping the depth-0 root, which
-# it prints itself with the trunk styling) and once per detached root (base 1, so
-# a stack the trunks cannot reach renders where a trunk's children would).
+# `root`'s subtree, `base` levels deep. `tree` passes base 0 for a trunk, skipping
+# the root row it styles itself, and base 1 for a detached root.
 def print_order(root, base, skip_root, cur, snapshot)
   snapshot.topology.each_preorder(root) do |branch, depth|
     next if skip_root && depth == 0
@@ -1651,64 +1070,38 @@ end
 
 # --- subcommands ------------------------------------------------------------
 
-# The first CLI argument, or "" when none was given.
 def arg0(args)
   args.empty? ? "" : args[0]
 end
 
-# True when `flag` (e.g. "--delete") appears anywhere in `args`. Command-level
-# flags reach a subcommand mixed in with its positional arguments (see
-# COMMAND_FLAGS / parse_global_flags), so a command reads them by name rather
-# than by position.
+# Command-level flags arrive mixed in with the operands (see COMMAND_FLAGS).
 def has_flag?(args, flag)
   args.include?(flag)
 end
 
-# The first non-flag argument in `args`, or "" when there is none -- so a lone
-# `drop --delete` (no branch named) still falls back to the current branch. A
-# flag like `--delete` may appear before or after the branch name, so the branch
-# can't just be `args[0]`.
-#
-# An empty argument (`git stack drop ""`) is skipped rather than returned: it
-# names no branch, so the current-branch fallback is the right answer, and the
-# accumulator this replaced took the same view -- its "found one yet?" test was
-# the name being non-empty.
+# The first operand or "", wherever a flag sits -- so `drop --delete` still falls
+# back to the current branch.
 def first_operand(args)
   name = args.find { |a| operand?(a) }
   name.nil? ? "" : name
 end
 
-# True when `arg` is a positional -- something that could name a branch. The one
-# definition of that, because two readers depend on it agreeing: this decides
-# which argument `first_operand` hands the command, and `validate_args!` counts
-# the same things to decide whether there are too many. Spelled apart, a command
-# line could be rejected for an argument the command would never have read.
+# The one definition of a positional, shared with `validate_args!` so a command
+# line is never rejected for an argument the command would not read. `""` names
+# no branch.
 def operand?(arg)
   !arg.empty? && !arg.start_with?("-")
 end
 
-# `plant`/`fell` with no arguments: report the trunk list, WITHOUT writing one.
+# `plant`/`fell` with no arguments: report the trunks without registering one.
 #
-# Deliberately not `init`'s listing, which goes through `trunk_branches` and so
-# registers whatever it detects -- that is `init`'s job, and it is the wrong job
-# here twice over. It contradicts `plant`'s own contract (see `cmd_plant`): a
-# listing that registers `main` turns the very next `plant my-base` from
-# "my-base is the trunk" into "main and my-base are", so merely LOOKING would
-# change what the command that follows does. And it dies on the repo whose trunk
-# is dead with nothing to detect, which is a repo `fell` is meant to be usable
-# in -- `fell <name>` worked there while `fell` alone did not.
+# Not `init`'s listing, which registers what it detects: merely looking would turn
+# the next `plant my-base` into "main and my-base", and it dies in a repo `fell`
+# has to work in. A detection is labelled as one because `fell` cannot remove it.
 #
-# An unregistered detection is reported as exactly that, rather than as a
-# registered trunk: it is what the next command will use, but `fell` cannot
-# remove it (see `cmd_fell`), so the two must not look alike here.
-#
-# The RUNGS are shared helpers, but the order they are tried in -- the live half
-# of the configured list, and detection only when that is empty -- is `trunk_branches`'
-# rule, restated here and once more in `cmd_fell`. Nothing couples them
-# mechanically, and they have to agree: this command exists to say what the next
-# one will resolve, so a fallback rule changed in `trunk_branches` alone would
-# make it report a trunk that command will not use. Changing the rule means
-# changing all three.
+# The order -- live configured trunks, else detection -- restates
+# `trunk_branches`' rule, as `cmd_fell` does. Nothing couples the three, so change
+# them together.
 def report_trunks
   live = live_trunks(configured_trunks)
   unless live.empty?
@@ -1725,22 +1118,9 @@ def report_trunks
   nil
 end
 
-# Reject a name typed twice in one trunk list. Shared by the three commands that
-# take one, because a repeat means the same thing to each of them.
-#
-# A repeat is rejected, not quietly deduped: `init main main` is a typo, and this
-# list is the one setting every other command reads -- storing something the user
-# did not type is how the same trunk, and its whole subtree, came to be drawn
-# twice by `tree` (issue #83). `fell develop develop` is the same typo, and
-# saying so beats a second removal that silently no-ops against a list the first
-# one already changed.
-#
-# Names are compared string-exactly, as every reader of the trunk list does --
-# see `cmd_init` on why the spelling has to be git's own.
-#
-# Called AFTER each command's per-name check, so the message a command line earns
-# is the one about the name itself: `init nope nope` is still "branch 'nope' does
-# not exist", the more useful of the two things wrong with it.
+# Rejected rather than deduped: a repeat is a typo, and a stored one drew a trunk's
+# subtree twice (#83). Called after the per-name checks, so `init nope nope` still
+# says "does not exist".
 def check_trunk_repeats!(names)
   seen = Set.new
   names.each do |name|
@@ -1751,30 +1131,19 @@ def check_trunk_repeats!(names)
   nil
 end
 
-# Set the whole trunk list at once. The wholesale form -- `plant`/`fell` edit
-# this same list one name at a time.
+# Set the whole trunk list; `plant`/`fell` edit it one name at a time.
 def cmd_init(args)
   if args.empty?
-    # Through `trunk_branches`, unlike `report_trunks`: resolving a trunk and
-    # recording it IS what `init` is for, so the listing form registers a
-    # detection rather than merely naming it.
+    # Unlike `report_trunks`, registers a detection: recording the trunk is
+    # `init`'s job.
     trunks = trunk_branches
     info "trunk(s): #{trunks.join(", ")}"
     return
   end
 
-  # Existence is checked against the EXACT stored refnames (see `branch_ref_exists?`
-  # for the mechanism), because a loose match let `init main Main` pass the repeat
-  # check on two distinct strings and store one branch as two trunks -- the same
-  # symptom, one spelling along. Every other reader compares this list
-  # string-exactly, so the commands that PERSIST a name have to demand the
-  # spelling git actually has.
-  #
-  # Deduping on the resolved commit would be wrong: `containing_trunk` explicitly
-  # supports trunks that point at the same commit.
-  #
-  # One repo-wide scan, on a once-per-repo command, and it is the same set `tree`
-  # and `sync` already trust.
+  # Exact stored names (see `branch_ref_exists?`): a loose match let
+  # `init main Main` store one branch as two trunks. Not deduped by commit
+  # either, since `containing_trunk` supports trunks at the same commit.
   refs = existing_branches
   args.each do |trunk|
     die("branch '#{trunk}' does not exist") unless refs.include?(trunk)
@@ -1785,120 +1154,65 @@ def cmd_init(args)
   info "trunk set to #{args.join(", ")}"
 end
 
-# Grow a new root: register `args` as trunks ALONGSIDE the ones already there.
+# Register trunks alongside the existing ones. `init` needs the whole list
+# retyped, and a name left out silently unregisters that trunk.
 #
-# The incremental half of `init`, and the reason it exists: `init` writes the
-# whole list, so adding `develop` to a repo that already had `main` and `release`
-# meant re-typing all three -- and a fat-fingered omission there does not fail,
-# it silently unregisters a trunk, leaving every stack resting on it redrawn as a
-# detached root.
+# Reads `configured_trunks`, not `trunk_branches`, so it never auto-detects: that
+# dies in a repo with no main/master -- exactly where `plant my-base` is needed --
+# and elsewhere would plant `main` beside the name asked for.
 #
-# Reads `configured_trunks` rather than `trunk_branches`: this command must not
-# auto-detect. `trunk_branches` DIES on a repo with no `main`/`master` and
-# nothing configured, which is exactly the repo where `plant my-base` is the
-# thing to type -- and on a repo that does have `main` it would silently plant
-# `main` too, beside the name the user actually asked for. So an empty list is an
-# ordinary starting point here: `plant main` on a fresh repo means what
-# `init main` means. A configured name whose branch has since been deleted is
-# left alone rather than pruned as a side effect; `trunk_branches` still drops
-# it, with its note, on the next command that resolves a trunk.
-#
-# A branch already tracked in a stack may be planted, and its recorded
-# `stackParent` is left in place rather than cleared. Every reader already
-# ignores a trunk's parent (see trunk_test.rb's "a trunk's recorded parent is
-# ignored by tree and restack"), so the link is inert while the branch is a
-# trunk -- and keeping it makes `fell` an exact undo, putting the branch back
-# into the stack it was promoted out of.
+# A planted branch keeps its `stackParent`. Every reader ignores a trunk's parent,
+# and keeping it makes `fell` an exact undo.
 def cmd_plant(args)
   return report_trunks if args.empty?
 
   refs = existing_branches
   trunks = configured_trunks
   args.each do |name|
-    # Same scan, and the same exactness rule, as `cmd_init` -- whose comment is
-    # the one that says why the spelling has to be git's own. Left as its own
-    # loop rather than shared with it: the two run different per-name checks, and
-    # hoisting only the existence half would split this into two passes and
-    # change which complaint `plant <a-trunk> <no-such-branch>` earns.
+    # Not shared with `cmd_init`'s loop: the per-name checks differ, and splitting
+    # them would change which error `plant <a-trunk> <no-such-branch>` gets.
     die("branch '#{name}' does not exist") unless refs.include?(name)
-    # Not a silent no-op: the trunk list is a set, so "plant it again" cannot be
-    # what was meant, and the reasoning `check_trunk_repeats!` carries applies
-    # just the same to a repeat spread across two invocations.
+    # Not a silent no-op: the list is a set, so planting again cannot be meant.
     die("'#{name}' is already a trunk") if is_trunk?(name, trunks)
   end
   check_trunk_repeats!(args)
 
-  # Appended, not sorted or prepended: config order IS precedence -- the first
-  # trunk is the primary one, `containing_trunk`'s tie-breaker -- so planting a
-  # new trunk must not displace the primary a repo already relies on.
-  #
-  # What is kept is the LIVE half of the old list. Rewriting the key is this
-  # command's own act, so carrying a name whose branch is gone across that write
-  # would put it in the summary line below as though planting had confirmed it --
-  # and `trunk_branches` drops it on the very next command anyway. `live_trunks`
-  # says which name it dropped, so nothing goes quietly.
-  #
-  # This knowingly asks about existence a second way: `refs` above is one
-  # whole-repo scan, and `live_trunks` spends a `git` call per configured trunk to
-  # answer the same question about the OTHER half of the list. Both compare exact
-  # stored refnames, and that half is one or two names, so the re-ask is cheaper
-  # than widening `live_trunks` -- whose signature is pinned in rbs/git-stack.rbs
-  # -- to take a ref set for this single caller's sake.
+  # Appended: config order is precedence, so the primary trunk stays first. Only
+  # live names are carried over, or a dead one would look confirmed in the
+  # summary. `live_trunks` re-asks existence rather than taking `refs`, since its
+  # signature is pinned in rbs/git-stack.rbs.
   planted = live_trunks(trunks) + args
   set_trunks(planted)
   info "planted #{green(args.join(", "))}; trunk(s): #{planted.join(", ")}"
   nil
 end
 
-# Cut a root down: unregister `args`, keeping the rest of the list.
+# Unregister trunks, keeping the rest. Config only: the branch stays as an
+# untracked branch, and stacks on it are drawn as detached roots.
 #
-# Config only -- the branch ref is untouched, as `drop` leaves a dropped branch
-# alone. Felling `develop` demotes it to an ordinary, UNTRACKED branch: whatever
-# was stacked on it keeps recording it as a parent, so nothing is orphaned and
-# `restack` still replays onto it, but `tree` now draws that stack as a detached
-# root under the trunk its history rests on, noting the untracked parent.
-# `git stack track` on the felled branch is what folds it back into a stack.
+# Felling the last trunk is allowed and leaves the key unset, so the next command
+# auto-detects. That is how a wrong detection is undone without an `init` naming
+# the very branch you wanted gone.
 #
-# Felling the LAST trunk is allowed, and leaves the key unset -- the state a repo
-# is in before it ever runs `init`. The next command auto-detects again, which is
-# the point: `fell main` in a repo whose real base is elsewhere is how you undo a
-# wrong auto-detection, and refusing at zero would make that require an `init`
-# naming the very branch you were trying to be rid of.
-#
-# Reads `configured_trunks`, not the live list, so a name whose branch is already
-# gone can still be named. `trunk_branches` does prune such a name on the next
-# command that resolves a trunk, but only as a side effect of having a live trunk
-# left to return: in the repo where it is the LAST name, and nothing is
-# detectable, it dies with the stale key intact (see `detect_trunk`). Felling it
-# is the way to be rid of the name itself -- `init <live-branch>` gets that repo
-# moving again too, but only by naming a replacement, which is a different thing
-# to want.
+# Reads `configured_trunks`, not the live list, so a dead name can still be
+# felled: when it is the last name and nothing is detectable, `trunk_branches`
+# dies before it can prune it.
 def cmd_fell(args)
   return report_trunks if args.empty?
 
   trunks = configured_trunks
-  # Which of them still exist, asked ONCE and before anything is removed, so
-  # `live_trunks` names each dead branch a single time. This is also the list the
-  # removal works on: a dead name left in the config by a fell is worse than
-  # inert, because a remainder of ONLY dead names reads as an empty list to
-  # `trunk_branches`, which then re-detects and re-registers the very branch that
-  # was just felled -- the removal undone by the next command, reported as a
-  # success by this one.
+  # Asked once, before removing anything, so each dead name is announced once. The
+  # removal works on this list: a remainder of only dead names reads as empty, and
+  # the next command would re-detect the branch just felled.
   live = live_trunks(trunks)
-  # With nothing configured left alive, the trunk in force is a DETECTION, and it
-  # is not in `trunks` to be felled. Resolved only on that path: the ladder costs
-  # two to five `git` calls (see `detect_trunk_or_empty`), and a repo with a live
-  # configured trunk has no use for the answer. Reused below rather than asked
-  # again -- `live.empty?` is the path that reaches the second question too.
+  # With no live configured trunk, the trunk in force is a detection. Asked only
+  # then, since the ladder costs several `git` calls.
   detected = live.empty? ? detect_trunk_or_empty : ""
   args.each do |name|
     next if is_trunk?(name, trunks)
 
-    # Naming the detected trunk is not a typo, so it does not get the typo's
-    # message. It cannot be felled either: an unset key is precisely what asks
-    # for detection, so "removing" this name would leave the next command
-    # detecting it again -- a command that reported success and changed nothing.
-    # Registering the trunk you do want is the move, so say so.
+    # An unset key is what asks for detection, so "removing" the detected trunk
+    # would change nothing. Point at registering the one wanted instead.
     if !detected.empty? && name == detected
       die("'#{name}' is auto-detected, not registered; run '#{PROG} init <branch>' or '#{PROG} plant <branch>' to register the trunk you want")
     end
@@ -1906,9 +1220,7 @@ def cmd_fell(args)
   end
   check_trunk_repeats!(args)
 
-  # `reject` on `live_trunks`' own result -- a concrete receiver, per the typing
-  # note there. Order is preserved, so felling a secondary trunk leaves the
-  # primary primary, and felling the primary promotes the next name in line.
+  # Order kept, so felling the primary promotes the next name.
   left = live.reject { |name| args.include?(name) }
   set_trunks(left)
   felled = green(args.join(", "))
@@ -1917,17 +1229,9 @@ def cmd_fell(args)
     return nil
   end
 
-  # Nothing left, so the next command detects. Which branch that is, or that
-  # there is none, is the whole content of "what happens now", and it is knowable
-  # here. Left as "will auto-detect one" it was wrong in both directions: silent
-  # about re-registering a branch just felled, and a promise of detection in the
-  # repo where the next command instead dies asking for `init`.
-  #
-  # `detected` already holds the answer whenever `live` was empty, and detection
-  # reads only refs -- never `stack.trunk` -- so the `set_trunks` above cannot
-  # have changed it. Asking again there re-ran the whole ladder for a string in
-  # scope; the fresh call is for the other way in, where every LIVE trunk was
-  # felled and the question was never put.
+  # Say which branch the next command will detect, or that none is left.
+  # Detection reads refs only, never `stack.trunk`, so `detected` is still right
+  # when it was asked.
   now = live.empty? ? detected : detect_trunk_or_empty
   if now.empty?
     info "felled #{felled}; no trunk left, and none to detect -- the next command will ask for '#{PROG} init <branch>'"
@@ -1945,8 +1249,7 @@ def cmd_create(args)
   parent = current_branch
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
-  # The base is the parent's tip: a freshly created branch has no commits of its
-  # own yet, so its stack begins exactly where the parent currently sits.
+  # A new branch has no commits yet, so its stack begins at the parent's tip.
   record_tip_base(name, parent)
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
@@ -1954,42 +1257,18 @@ end
 def cmd_tree(_args)
   trunks = trunk_branches
   cur = current_branch_or_empty
-  # One StackSnapshot captures the whole stack up front -- topology, branches, and
-  # every node's counts -- so the loops below read it in memory, no `git` per node.
   snapshot = StackRepository.load_snapshot(trunks)
 
-  # Each trunk is a visual root; its children are the stack roots resting on it.
-  # `order(trunk)` includes the trunk itself at depth 0, which we skip here --
-  # the trunk row is printed with its own (cyan, "(trunk)") styling.
+  # Detached roots are drawn under the trunk `containing_trunk` assigns them --
+  # the answer `up`'s menu uses, so a trunk never shows a choice its menu refuses
+  # (#91). Resolved once per root before the loop; asking inside it would cost
+  # trunks^2 x roots `rev-list`s.
   #
-  # Stacks the trunks cannot reach -- a parent merged and deleted, or untracked
-  # while it still had children -- render as extra roots, drawn UNDER the trunk
-  # `containing_trunk` assigns them to. That placement is the whole point:
-  # trunk-child indent reads as a claim about which trunk a stack rests on, and
-  # emitted in one batch after the LAST trunk the claim was simply wrong. `up`'s
-  # menu has always answered per-trunk (`children_of` asks `containing_trunk`
-  # too), so a trunk could show two children here and then move HEAD without
-  # asking, having only ever counted one (issue #91).
+  # Parallel arrays rather than a Hash or a packed index, both of which widened
+  # `print_order` and its callees to untyped.
   #
-  # Each root's trunk is resolved ONCE, before the trunk loop, and read back
-  # positionally. This is the only `git` `tree` spends outside the snapshot, so
-  # what it costs is worth being exact about: `containing_trunk` is itself a
-  # `rev-list` PER TRUNK, so asking it again inside the loop -- the obvious way
-  # to write this -- would cost trunks^2 x roots rather than trunks x roots, and
-  # the latter is what `up` already spends to build the menu this now agrees
-  # with. A single-trunk repo pays nothing at all (`containing_trunk`
-  # short-circuits) and its output is unchanged.
-  #
-  # Two parallel arrays, not a Hash: `roots` stays the concrete `Array[String]`
-  # the topology pins, so the name reaching `print_order` keeps its type. Routing
-  # it through a packed `"<root>\t<trunk>"` index instead measured worse -- it
-  # widened `print_order` / `order` / `each_preorder` / `walk_order` to untyped
-  # and needed three fresh seed pins to claw back (see rbs/git-stack.rbs).
-  #
-  # A phantom root -- drawn here, but with its ref gone -- has no answerable
-  # trunk: every range comes back empty and it lands on the primary. `up` never
-  # faces that (it filters to `live_detached_roots` precisely so a phantom cannot
-  # be walked to); `tree` still draws the row, so it has to place it somewhere.
+  # A phantom root has no answerable trunk and lands on the primary; `tree` still
+  # has to draw it somewhere.
   roots = snapshot.topology.detached_roots
   homes = roots.map { |root| containing_trunk(root, trunks) }
   trunks.each do |trunk|
@@ -2007,9 +1286,7 @@ def cmd_parent(args)
   trunks = trunk_branches
   if new_parent.empty?
     puts effective_parent(branch, trunks)
-    # The name went to stdout, where a script reads it; the note goes to stderr,
-    # where a person does (see print_parent_note). Only this read path prints
-    # one -- setting a parent below has no note and should not pay to find out.
+    # Only the read path looks for a note; setting a parent has none to print.
     print_parent_note(branch, trunks)
     return
   end
@@ -2024,8 +1301,7 @@ def cmd_track(args)
   trunks = trunk_branches
   parent = arg0(args)
   die("cannot track trunk '#{branch}'") if is_trunk?(branch, trunks)
-  # No parent named: the branch already sits on a trunk, so track it there --
-  # the trunk its history actually rests on, not just the primary one.
+  # The trunk its history rests on, not just the primary.
   parent = containing_trunk(branch, trunks) if parent.empty?
   StackRepository.load_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
@@ -2042,14 +1318,11 @@ def cmd_down(_args)
   branch = current_branch
   trunks = trunk_branches
   parent = effective_parent(branch, trunks)
-  # True for every trunk, and for a branch hand-configured as its own parent.
+  # Every trunk, and a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_ref_exists?(parent)
-  # `down` walks to the branch `restack` actually replays onto, and that is not
-  # always a branch `tree` drew a row for: an untracked parent is a real edge
-  # with no row. Say so before moving HEAD somewhere the user has never seen
-  # (issue #85). Only the untracked case reaches this line -- a parent whose ref
-  # is gone already died above, with a message that says the same thing.
+  # An untracked parent has no row in `tree`; say so before moving HEAD there
+  # (#85).
   print_parent_note(branch, trunks)
   checkout!(parent)
 end
@@ -2059,14 +1332,10 @@ def cmd_up(args)
   trunks = trunk_branches
   want = arg0(args)
 
-  # The explicit-name and menu paths each build exactly one topology, through
-  # whichever of `named_children_of` / `children_of` fits the path -- never
-  # both -- so a single `up` invocation is one config scan, not two.
   unless want.empty?
     children = named_children_of(branch, trunks)
-    # Same wording, same priority, as the menu path below: a branch with no
-    # children AT ALL says so, rather than "'x' is not stacked..." implying
-    # some OTHER name would have worked.
+    # The menu path's wording: "'x' is not stacked..." would imply some other name
+    # would have worked.
     die("no branch stacked on top of '#{branch}'") if children.empty?
     die("'#{want}' is not stacked directly on '#{branch}'") unless children.include?(want)
     checkout!(want)
@@ -2088,30 +1357,18 @@ def cmd_up(args)
   exit 1
 end
 
-# Resolve the base commit to feed `git rebase --onto <parent> <base> <branch>`.
-# The base is where the branch's own work begins -- below it, commits belong to
-# the parent and must NOT be replayed.
+# The base for `git rebase --onto <parent> <base> <branch>`: where the branch's
+# own work begins.
 #
-# Prefers the recorded stackBase, but only when it still names a real commit
-# that is an ancestor of `branch` (a rewritten or never-ancestor base would
-# replay the wrong range); otherwise falls back to the merge-base of `branch`
-# and `parent`.
+# The recorded stackBase, while it is still a commit and an ancestor of `branch`;
+# otherwise the merge-base. A valid base below the merge-base is clamped up to
+# it: after a manual rebase or pull, the commits in between are already in
+# `parent` and would conflict. A base above it is kept -- that is the
+# squash-merged-parent case `--onto` exists for.
 #
-# A valid recorded base is additionally clamped forward to the merge-base: a
-# manual rebase/pull (or a parent that advanced past the branch) can leave the
-# recorded base far below where they now diverge. When it is an ancestor of the
-# merge-base, every commit between the two is already in `parent`, so replaying
-# from it would re-apply and conflict -- the merge-base is correct. A base
-# *above* the merge-base is left as-is: the squash-merged-parent case `--onto`
-# exists for, where the branch's commits legitimately start below it.
-#
-# Returns "" only when even the merge-base is unavailable (unrelated histories,
-# or a vanished parent during orphan heal) -- the caller then falls back to a
-# plain `git rebase <parent> <branch>`.
+# "" when even the merge-base is unavailable; the caller then plain-rebases.
 def resolve_stack_base(branch, parent)
   base = get_base(branch)
-  # Both the clamp target for a stale recorded base and the fallback when the
-  # recorded base is unusable; "" disables the clamp and signals plain-rebase.
   mb = parent.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
   if !base.empty? &&
      git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
@@ -2122,18 +1379,13 @@ def resolve_stack_base(branch, parent)
   mb
 end
 
-# Replay `branch`'s own commits (those above its stack base) onto `parent`'s tip,
-# or die with the manual recovery command. A plain `git rebase <parent>` would
-# replay all of `parent..branch`, re-applying a squash-merged parent's work and
-# conflicting; `--onto` with the recorded base avoids that. With no base at all
-# we fall back to the plain rebase, for branches predating stackBase.
-#
-# `verb` is the subcommand to send the user back to after a conflict.
+# Replay `branch`'s own commits onto `parent`, or die with the recovery command.
+# `verb` is the command to re-run after resolving a conflict.
 def replay_onto!(branch, parent, verb)
   info "restacking #{cyan(branch)} onto #{cyan(parent)}"
   base = resolve_stack_base(branch, parent)
-  # Both arms: the rev (upstream, or `--onto`'s new base) is qualified, the
-  # trailing branch stays bare because git CHECKS IT OUT -- see `branch_ref`.
+  # The rev is qualified; the trailing branch stays bare because git checks it out
+  # (see `branch_ref`).
   if base.empty?
     info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
     ok = git_ok("rebase #{branch_ref(parent)} #{sh(branch)}")
@@ -2151,29 +1403,17 @@ def replay_onto!(branch, parent, verb)
   nil
 end
 
-# Rebase the whole stack rooted at `root`, each branch onto its parent, in
-# `topology.order_branches(root)` order (each parent before its children). That order,
-# and the cycle guard, are fixed up front, so this is a flat loop.
+# Rebase every branch in `root`'s subtree onto its parent, parents first.
 #
-# `verb` is the subcommand to name on conflict, passed in rather than derived
-# from `heal_orphans`: `drop` heals nothing yet must still send the user to
-# `restack` (its splice is already in config, re-running `drop` would be wrong).
+# An untracked branch is left alone, not rebased onto a trunk. With
+# `heal_orphans` (`sync`), a branch whose parent is gone is first reparented onto
+# the trunk its own history rests on -- per branch, since the wrong trunk would
+# drop the commits of the one it was built on.
 #
-# A branch with no recorded parent is untracked and left untouched -- NOT rebased
-# onto a trunk. When `heal_orphans` is true (`sync`), a branch whose recorded
-# parent no longer exists is reparented onto the trunk it rests on first; when
-# false (`restack`) it is left untouched. Reparenting rewrites config but not
-# `topology`, and an orphan roots its own subtree, so the pre-computed order still holds.
-#
-# The heal takes the whole trunk LIST, not one trunk chosen by the caller: which
-# trunk an orphan belongs to is per-branch (`containing_trunk`), and getting it
-# wrong here doesn't just mis-record a parent -- the replay below then rebases the
-# branch onto the wrong trunk, dropping the commits of the one it was built on.
-#
-# `topology` is built with `StackRepository.load_topology` (no ahead/behind
-# counts). Safe to reuse across the traversal because neither restack nor sync
-# creates or deletes branch refs mid-walk (sync only rewrites config; rebase
-# updates history in place).
+# `verb` is passed rather than derived from `heal_orphans`: `drop` heals nothing
+# but must send the user to `restack`. `topology` stays valid for the whole walk,
+# as nothing here creates or deletes refs and a healed orphan roots its own
+# subtree.
 def restack_subtree(root, trunks, heal_orphans, verb, topology)
   topology.order_branches(root).each do |branch|
     parent = topology.parent_of(branch)
@@ -2187,60 +1427,37 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology)
 
     if !parent.empty? && topology.branch?(parent)
       behind, ahead = ahead_behind(parent, branch)
-      # `behind == 0`: already on the parent's tip, nothing to move; still falls
-      # through to the re-anchor below (which back-fills a missing base).
+      # `behind == 0` has nothing to move but is still re-anchored below, which
+      # back-fills a missing base.
       if behind > 0
         if ahead == 0
-          # No commits of its own above the parent -- a strict ancestor whose work
-          # already sits there while the parent advanced past it. Nothing to
-          # replay (`--onto` would re-apply and conflict); fast-forward instead.
+          # No commits of its own: fast-forward, since `--onto` would re-apply the
+          # parent's work and conflict.
           info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
-          # Two branch names, one bare and one qualified, on purpose: `checkout`
-          # names the branch to move onto, `merge` takes a rev -- see `branch_ref`.
+          # `checkout` names a branch, `merge` takes a rev (see `branch_ref`).
           ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{branch_ref(parent)}")
           die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
         else
           replay_onto!(branch, parent, verb)
         end
       end
-      # Every path above leaves the branch on the parent's tip (both moving paths
-      # `die` on failure), so re-anchor the recorded base there for a later parent
-      # advance to replay from.
+      # Every path above ends on the parent's tip or dies.
       record_tip_base(branch, parent)
     end
   end
   nil
 end
 
-# The shared body of `restack` and `sync`: replay each stack so every branch
-# sits on its parent, then return to the branch the command was run from. The
-# two differ in the two ways `heal_orphans` carries -- whether a branch whose
-# parent was deleted is healed onto trunk first, and how much of the forest is
-# in scope. `restack` replays the stack it was run in and nothing else; reaching
-# outside it would rebase branches the user never named. `sync` also takes the
-# orphaned stacks that one cannot reach, because `tree` prints "run `git stack
-# sync`" beside every orphan it draws, wherever it is run -- and from `main` the
-# command it recommended used to answer "done." and repair nothing, the missing
-# precondition (stand inside the orphaned subtree) appearing in neither output
-# (issue #55).
+# The shared body of `restack` and `sync`, returning to the starting branch.
 #
-# Only orphans widen the scope, never the other detached roots `tree` draws: a
-# parent that is untracked but still EXISTS is not broken, `restack` rebases
-# onto it, and `tree` says so in its own words ("(parent 'x' is untracked)")
-# rather than sending the user here.
-#
-# `verb`/`gerund` are the calling command's own name, passed in rather than
-# derived from `heal_orphans`, so each command states its wording once (see the
-# same separation in `restack_subtree`). One `info` line serves every root: an
-# orphan needs no special wording here, since the heal announces itself per
-# branch, naming the parent that went missing.
+# `restack` replays only the current stack; anything more would rebase branches
+# the user never named. `sync` also takes every orphaned stack, because `tree`
+# prints "run sync" beside an orphan wherever it is run (#55). An untracked but
+# live parent is not broken, so it never widens the scope.
 def run_stack_rebase(heal_orphans, verb, gerund)
   original = current_branch
   trunks = trunk_branches
-  # Built before the root walk, which reads topology out of it, not a subprocess
-  # per level. It stays the pre-heal picture throughout, reused for the reason
-  # `restack_subtree` documents: the heal rewrites config, not the in-memory
-  # graph, so every root below is planned from one consistent snapshot.
+  # Planned from one pre-heal snapshot; the heal rewrites config only.
   topology = StackRepository.load_topology(trunks)
   root = topology.stack_root(original)
   roots = heal_orphans ? topology.rebase_roots(root) : [root]
@@ -2266,70 +1483,46 @@ def cmd_sync(_args)
   run_stack_rebase(true, "sync", "syncing")
 end
 
-# Splice `branch` out of the stack: reconnect each child to `branch`'s own
-# parent, untrack `branch`, and restack the moved subtrees. The first-class "the
-# bottom of my stack merged, re-base the rest" move -- run *while the merged
-# branch still exists*, so its recorded parent (the grandparent) is still
-# readable and children reconnect exactly, unlike delete-then-`sync` which only
-# heals onto trunk. (Contrast `untrack`, which orphans the children instead.)
+# Splice `branch` out: reconnect its children to its parent, untrack it, and
+# restack them -- for when the bottom of a stack has merged. Run while the branch
+# still exists, so children reconnect to the real grandparent; delete-then-`sync`
+# could only heal them onto trunk.
 #
-# Non-destructive by default: rewrites stack config only, never the branch ref.
-# `--delete` is opt-in `git branch -D` after a successful splice. No merge
-# detection -- invoking `drop` IS the assertion that the branch is done.
+# Rewrites config only; `--delete` also removes the ref. No merge detection:
+# running `drop` is the assertion that the branch is done.
 def cmd_drop(args)
   delete = has_flag?(args, "--delete")
   operand = first_operand(args)
-  # Read HEAD once and use it for both questions it answers here: which branch to
-  # drop when none was named, and where to return afterwards. Nothing between them
-  # moves HEAD, and reading it is no longer a single `git` call (see
-  # `current_branch_or_empty`), so asking twice paid for the same answer twice.
+  # HEAD read once, for both the default branch and where to return.
   original = current_branch_or_empty
   branch = operand.empty? ? require_branch(original) : operand
   trunks = trunk_branches
   die("cannot drop trunk '#{branch}'") if is_trunk?(branch, trunks)
 
-  # One snapshot answers every read the splice needs -- exists?, parent,
-  # children -- from a single scan. NOT reused past the rewrites below, which
-  # invalidate it.
+  # Stale after the rewrites below, which rebuild it.
   topology = StackRepository.load_topology(trunks)
   die("branch '#{branch}' does not exist") unless topology.branch?(branch)
 
-  # StackTopology owns the reconnect rule. It preserves a live untracked parent,
-  # but a missing or absent parent needs the trunk this branch's history rests
-  # on. `reconnect_needs_trunk?` is that rule, and `reconnect_target` answers
-  # with the same predicate -- so this caller only asks whether a trunk is worth
-  # resolving (`containing_trunk` spends a `git rev-list` per trunk), never what
-  # the target should be.
-  #
-  # A recorded parent that no longer exists is no reconnect target either, and
-  # the restack below doesn't heal orphans -- writing that dead name onto each
-  # child would turn one orphan into N, silently. `validate_new_parent!` would
-  # die on it; this is the one reparent site whose parent is read rather than
-  # typed by the user, so a missing one heals onto trunk, as `sync` does. Same
-  # guard as `restack_subtree`'s heal, minus its `heal_orphans` opt-in.
+  # A missing parent cannot be the target: the restack below does not heal, so
+  # writing that name onto each child would turn one orphan into N. The trunk is
+  # resolved only when needed, since `containing_trunk` costs a `rev-list` per
+  # trunk.
   parent = topology.parent_of(branch)
   trunk = topology.reconnect_needs_trunk?(branch) ? containing_trunk(branch, trunks) : ""
-  # `parent_missing?` only picks the message: an absent parent reconnects to the
-  # same trunk but has no dead name to report.
+  # Only a missing parent has a dead name to report.
   if topology.parent_missing?(branch)
     info "'#{branch}': parent '#{parent}' no longer exists; reconnecting children onto trunk '#{trunk}'"
   end
   parent = topology.reconnect_target(branch, trunk)
 
-  # Capture children BEFORE rewriting config. Each is reparented as `parent`/
-  # `track` do it (set_parent + record_reparent_base), re-anchoring stackBase to
-  # merge-base(child, parent) so `restack`'s `--onto` replays from the right point.
   moved = topology.children_of(branch)
   moved.each do |child|
     reparent!(child, parent, "failed to reparent '#{child}' onto '#{parent}'")
   end
 
-  # Untrack the dropped branch; its ref stays intact unless `--delete` was passed.
   untrack!(branch)
   info "dropped #{green(branch)}; reparented children onto #{cyan(parent)}"
 
-  # Restack each moved subtree onto its new parent. Rebuild the topology first so
-  # it reflects the config rewrites above.
   topology = StackRepository.load_topology(trunks)
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
@@ -2337,16 +1530,15 @@ def cmd_drop(args)
   end
 
   if delete
-    # Can't delete the branch you're on; step onto its former parent first.
+    # The checked-out branch cannot be deleted.
     git_ok("checkout #{sh(parent)}") if current_branch_or_empty == branch
-    # Bare on purpose: `branch -D` works in the branch namespace, so a same-named
-    # tag cannot be the thing deleted here (see `branch_ref` for the split).
+    # Bare: `branch -D` only sees branches (see `branch_ref`).
     die("dropped '#{branch}' but failed to delete its ref") unless git_ok("branch -D #{sh(branch)}")
     info "deleted branch #{green(branch)}"
   end
 
-  # Return to where we started when that branch still exists -- the restack may
-  # have left HEAD on a moved child, and `--delete` may have removed `original`.
+  # The restack may have left HEAD on a moved child, and `--delete` may have
+  # removed `original`.
   if !original.empty? && original != current_branch_or_empty && branch_ref_exists?(original)
     git_ok("checkout #{sh(original)}")
   end
@@ -2355,12 +1547,10 @@ end
 
 def cmd_version(_args)
   puts "#{PROG} #{VERSION}"
-  # Only the Spinel-compiled binary was "built with" Spinel, and it's the only
-  # engine whose RUBY_DESCRIPTION is "spinel" (CRuby names its own version).
+  # Only a Spinel-built binary reports "spinel" here; CRuby names its own version.
   return unless RUBY_DESCRIPTION == "spinel"
 
-  # SPINEL_REF is stamped at build time (empty when un-stamped); the 12-char
-  # slice matches `spinel --version`'s short rev.
+  # 12 characters, matching `spinel --version`'s short rev.
   rev = SPINEL_REF.empty? ? "unknown" : SPINEL_REF[0...12]
   puts "built with spinel #{rev}"
 end
@@ -2406,53 +1596,31 @@ end
 
 # --- dispatch ---------------------------------------------------------------
 
-# Command-level flags a subcommand consumes itself (vs. the global -h/-v), as
-# `"<flag>\t<the one command that accepts it>"`. Explicit so a typo like
-# `--delet` is still rejected and the tolerated set lives in one place.
-#
-# The OWNER is in the table rather than in `validate_args!` because these flags
-# are lifted out of argv before the subcommand is known and re-attached to
-# whatever ran -- so "which command may have this" is knowledge the lifting side
-# cannot hold, and a flag whose owner lived in a separate `cmd != "drop"` test
-# would be accepted everywhere the moment a second flag was added. One row is the
-# whole contract: what to lift, and who may keep it.
+# Command-level flags, as "<flag>\t<the one command that accepts it>". Listed, so
+# a typo like `--delet` is still rejected. The owner lives in the row because
+# these flags are lifted out of argv before the command is known.
 COMMAND_FLAGS = ["--delete\tdrop"].freeze
 
-# The command that accepts `flag`, or "" when nothing does. The one reader of a
-# row's layout, so a second column or a different separator lands here alone.
+# The command that accepts `flag`, or "".
 def flag_owner(flag)
   row = COMMAND_FLAGS.find { |r| tab_head(r) == flag }
   row.nil? ? "" : tab_tail(row)
 end
 
-# True when `arg` is one of the command-level flags above, whoever owns it. Every
-# row has an owner (that is the table's contract), so having one is the test.
 def command_flag?(arg)
   !flag_owner(arg).empty?
 end
 
-# `max_operands`' answer for a name it has never heard of. -2 rather than a nil:
-# the emitted-RBS golden pins this method `(String) -> Integer`, and a nilable
-# return would widen it and everything it feeds (see the typing note on
-# `configured_trunks`). -1 is already a sentinel here, so this reads as one.
+# Not nil: the golden pins `max_operands` as `(String) -> Integer`, and a nilable
+# return would widen everything it feeds. -1 already means "unlimited".
 UNKNOWN_COMMAND = -2
 
-# How many positional arguments each command accepts: -1 for unlimited (the
-# three trunk-list commands take a whole list of names), 1 for the commands that
-# name an optional branch, 0 for the rest. UNKNOWN_COMMAND means this table has never heard of the name, and
-# `validate_args!` turns that into "unknown command" -- the same message `main`'s
-# `case` gives, reported one step earlier.
+# How many operands each command accepts: -1 for unlimited, UNKNOWN_COMMAND for a
+# name not listed.
 #
-# This IS the list of commands, aliases spelled out, kept in `main`'s `case` order
-# so the two can be diffed by eye. Nothing mechanically checks they agree, so the
-# failure mode is chosen instead: because an unlisted name DIES here, a command
-# added to the dispatch and forgotten here is unreachable and the first invocation
-# says so. Defaulting the tail to 0 -- or returning early on the unknown -- would
-# instead have let it run with no validation at all, the silence this removes.
-#
-# Which is also why the arity is NOT folded into `main`'s `case` arms to make one
-# list of it: a new arm would then simply omit its guard, and be silently
-# unvalidated. Two lists with a loud failure beat one list with a quiet one.
+# This duplicates `main`'s `case`, in the same order. Not folded into it: here an
+# unlisted command dies on its first run, whereas a `case` arm could simply omit
+# its guard and run unvalidated.
 def max_operands(cmd)
   case cmd
   when "init", "plant", "fell" then -1
@@ -2468,23 +1636,12 @@ def max_operands(cmd)
   end
 end
 
-# Reject a command line the dispatcher would otherwise absorb in silence, before
-# anything reads or writes the repo.
-#
-# Two silences, one rule. An argument past what a command reads was simply
-# dropped -- `create feat-b oops` made `feat-b` and never mentioned `oops`, so a
-# typo looked like success. And `--delete` is lifted out of argv before the
-# subcommand is even known (see COMMAND_FLAGS), then re-attached to whatever ran,
-# so every command accepted it and only `drop` did anything with it.
-#
-# `--delete` reuses `parse_global_flags`'s wording rather than a message of its
-# own: to the user this IS the unknown-option case -- `create --delete` and
-# `create --delet` are the same mistake, and only an implementation detail (which
-# flag the dispatcher happens to lift) decided which path reported it.
+# Reject what the dispatcher would otherwise absorb in silence, before touching the
+# repo: an extra operand (`create feat-b oops` ignored `oops`), or a lifted flag
+# reaching a command that does not own it. The latter reuses the unknown-option
+# wording, since to the user it is the same mistake.
 def validate_args!(cmd, args)
   max = max_operands(cmd)
-  # Not a command at all. Reported here, with `main`'s own wording, rather than
-  # skipped -- see UNKNOWN_COMMAND for why this dies instead of returning.
   die("unknown command '#{cmd}' (try '#{PROG} help')") if max == UNKNOWN_COMMAND
 
   args.each do |arg|
@@ -2493,25 +1650,18 @@ def validate_args!(cmd, args)
   end
   return nil if max < 0
 
-  # `operand?` decides what counts, so this and `first_operand` cannot disagree --
-  # notably on `""`, which names no branch, so `drop "" feat-a` is one operand and
-  # the command handles it as it always did.
   operands = args.reject { |a| !operand?(a) }
   return nil if operands.length <= max
 
-  # `max` is 0 or 1 here, so this picks wording, not control flow.
   die(max == 0 ? "'#{cmd}' takes no arguments" : "'#{cmd}' takes at most one argument")
   nil
 end
 
-# Parse the global flags (-h/-v) out of `argv`, returning the command they map to
-# ("help"/"version") or "" when none was given. Flags are removed in place and
-# may appear anywhere (`tree -v` prints the version).
+# Take -h/-v out of `argv`, wherever they appear, and return "help", "version" or
+# "".
 #
-# Spinel's optparse is an exact-match subset of CRuby's (no clustering, no
-# abbreviation, no `--`) and its `parse!` leaves an unknown flag in argv instead
-# of raising -- the leftover check below reports it with CRuby's own message,
-# keeping the script and compiled binary aligned.
+# Spinel's `parse!` leaves an unknown flag in argv instead of raising, so the
+# leftover check reports it with CRuby's message.
 def parse_global_flags(argv)
   cmd = ""
   parser = OptionParser.new
@@ -2528,10 +1678,8 @@ def parse_global_flags(argv)
 end
 
 def main(argv)
-  # Lift command-level flags out before global parsing: CRuby's `parse!` raises
-  # on any long option the parser doesn't register, so an unregistered `--delete`
-  # would be reported as an invalid *global* option. Pulled aside here and
-  # re-attached to the subcommand's args below.
+  # Lifted first: CRuby's `parse!` rejects any unregistered long option, so
+  # `--delete` would be reported as an invalid global option.
   flags = argv.select { |a| command_flag?(a) }
   cleaned = argv.reject { |a| command_flag?(a) }
 
@@ -2547,9 +1695,7 @@ def main(argv)
   end
   rest += flags
 
-  # Before `require_repo`, not after: what is wrong here is the command line, and
-  # that reads the same in any directory. Reporting "not a git repository" for
-  # `tree bogus` would answer a question the user did not get wrong yet.
+  # Before `require_repo`: a bad command line is wrong in any directory.
   validate_args!(cmd, rest)
 
   repo_optional = cmd == "version" || cmd == "help"
@@ -2574,8 +1720,7 @@ def main(argv)
   else
     die("unknown command '#{cmd}' (try '#{PROG} help')")
   end
-  # Explicit nil: as the trailing expression the `case`'s mixed branch types
-  # (nil from most handlers, Array[String] from cmd_tree) would widen to untyped.
+  # Explicit nil: the `case`'s mixed branch types would widen to untyped.
   nil
 end
 

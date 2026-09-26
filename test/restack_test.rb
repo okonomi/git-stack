@@ -5,10 +5,6 @@
 
 require_relative "support/helper"
 
-# restack's choice of root against an untracked parent is covered in
-# sync_test.rb's "restack and sync name the same root tree draws, with an
-# untracked parent" section, alongside sync's -- not here.
-
 section "restack replays descendants onto the updated parent"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -42,9 +38,6 @@ gsq("untrack") # feat-a is current; drop its parent
 run("restack") # must NOT rebase feat-a onto the trunk
 show("HEAD", "git branch --show-current")
 
-# A branch that predates stackBase (its config has stackParent but no stackBase)
-# must still restack correctly: `restack` falls back to the live merge-base of
-# the branch and its parent, then re-records the base.
 section "restack falls back to merge-base when stackBase is unrecorded"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")

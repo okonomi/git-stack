@@ -5,11 +5,8 @@
 
 require_relative "support/helper"
 
-# `tree` and `restack`/`sync` have to agree on where a stack STARTS; they used
-# not to (issue #80 -- `StackTopology#stack_root` carries the story). The three
-# commands run in ONE section on purpose: the regression is only visible as a
-# disagreement between their outputs, so they have to sit next to each other in
-# the transcript for a diff to show it. Nothing else here would notice.
+# One section on purpose: the bug was `tree`, `restack` and `sync` naming
+# different roots, which only shows side by side (#80).
 section "restack and sync name the same root tree draws, with an untracked parent"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -81,17 +78,10 @@ run("tree")
 gsq("sync")
 run("tree")
 
-# `tree` prints "run `git stack sync`" beside every orphan it draws, from
-# wherever it is run -- so sync has to be able to repair every one of them from
-# wherever IT is run. It used to walk only the stack holding the current branch:
-# standing on `main`, the command tree had just recommended answered "done." and
-# changed nothing, and the missing precondition (be inside the orphaned subtree)
-# appeared in neither output (issue #55). The two commands run in one section
-# because the regression is exactly a disagreement between them.
-#
-# other-b is here to be left alone: it is detached from the trunk walk too, but
-# its parent still exists and is merely untracked, so it is no orphan and sync
-# has no business rebasing it.
+# `tree` recommends `sync` beside any orphan, from anywhere, so `sync` has to
+# heal every orphan from anywhere (#55); side by side for the same reason as
+# above. other-b is detached too, but its parent is merely untracked: not an
+# orphan, and not touched.
 section "sync heals an orphan in another stack when run from the trunk"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -114,10 +104,8 @@ show("other-b stackParent (untouched)", "git config --get branch.other-b.stackPa
 show("HEAD", "git branch --show-current")
 run("tree")
 
-# Every orphan in the repository is healed, not just the first one found, and
-# the sweep runs even when the current branch is itself inside an orphaned
-# stack: feat-b is the root of the walk sync starts with, so it must not be
-# replayed a second time by the sweep that repairs other-b.
+# Run from inside an orphaned stack: feat-b roots the first walk, so the sweep
+# that heals other-b must not replay it again.
 section "sync heals every orphaned stack in one pass, without repeating its own"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -136,12 +124,8 @@ show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 show("other-b stackParent", "git config --get branch.other-b.stackParent")
 show("HEAD", "git branch --show-current")
 
-# The reason `restack` uses `git rebase --onto <parent> <stackBase>` instead of a
-# plain `git rebase <parent>`: when a parent is squash-merged into trunk and
-# deleted, its several commits become ONE new commit whose patch-id matches none
-# of the originals, so a plain rebase re-applies them and conflicts. feature-a
-# has TWO commits here on purpose -- a single-commit squash would share a1's
-# patch-id and be dropped even by a plain rebase, hiding the bug.
+# Two commits on feature-a: a one-commit squash matches its patch-id, so even
+# a plain rebase would drop it, hiding the bug `--onto` exists for.
 section "sync recovers a branch whose parent was squash-merged and deleted"
 new_repo
 gsq("create feature-a"); commit("a.txt", "a1")
@@ -163,11 +147,8 @@ puts "feature-b contains b1: #{`cd #{$repo} && git log --oneline feature-b | gre
 show("feature-b stackBase == main tip",
      'test "$(git config --get branch.feature-b.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
 
-# A branch whose own commits already sit in its parent, with the parent advanced
-# past it (a base branch merged into trunk, then trunk moved on): it has commits
-# in `base..branch` but none above the parent, so `rebase --onto <parent> <base>`
-# would re-apply commits the parent already has and conflict. sync must instead
-# fast-forward it to the parent -- never enter a rebase.
+# feat-a has commits in `base..branch` but none above its parent, so
+# `rebase --onto` would re-apply what the parent already has and conflict.
 section "sync fast-forwards a branch fully merged into its parent"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -184,15 +165,9 @@ show("feat-a stackBase == main tip",
      'test "$(git config --get branch.feat-a.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
 show("HEAD", "git branch --show-current")
 
-# A branch whose recorded stackBase has gone stale: git-stack only re-records the
-# base when it moves the branch itself, so a manual `git rebase` (or a `git pull`)
-# leaves the recorded base pointing far below the branch's real fork point. Here
-# feat-b is manually rebased onto feat-a -- absorbing feat-a's `s2` commit -- while
-# its stackBase stays pinned at feat-a's *original* tip. feat-a then advances with a
-# conflicting `s3`. `sync` must replay only feat-b's own `b1`, not re-apply the `s2`
-# that is already in feat-a: rebasing from the stale base would re-apply `s2` and
-# conflict against `s3`. resolve_stack_base clamps the stale base forward to the
-# live merge-base so only `b1` is replayed.
+# git-stack re-records the base only when it moves a branch itself, so a manual
+# `git rebase` leaves it stale. Replaying from it would re-apply s2 (already in
+# feat-a) and conflict with s3; clamped to the merge-base, only b1 is replayed.
 section "sync clamps a stale stackBase to the merge-base instead of re-applying parent commits"
 new_repo
 gsq("create feat-a"); commit("shared.txt", "s1")

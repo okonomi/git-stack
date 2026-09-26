@@ -9,10 +9,8 @@ section "version shows the program version"
 new_repo
 run("version")
 
-# No `new_repo` here or below: this and "an unknown flag is rejected" are the
-# only two sections in the whole suite that skip it, both running in the repo
-# "version shows the program version" built above -- reordering these sections,
-# or inserting one between them, would silently change which repo they run in.
+# No `new_repo` here or in the next section: both run in the repo built above,
+# so reordering sections, or inserting one between, changes the repo they use.
 section "global flags are parsed with optparse"
 run("-v")
 run("--version")
@@ -21,19 +19,10 @@ run("-h")
 section "an unknown flag is rejected"
 run("--bogus")
 
-# A typo in an argument used to be silent: every command read only the argument
-# it wanted and dropped the rest, so `create feat-b oops` created `feat-b` and
-# said nothing about `oops`. Worse for `--delete`, which the dispatcher lifts out
-# BEFORE the subcommand is known and re-attaches to whatever ran, so it was
-# accepted everywhere and honoured only by `drop`.
-#
-# One section for all of it because the shapes are one rule, not several: a
-# command's arity (`init` unlimited, the branch-taking ones at most one, the rest
-# none) and its flags are checked together, before the repo is touched. The last
-# two shows are that "before": the run above must not have created a branch or
-# moved HEAD. `--delete` on `drop` itself keeps working, proved where it always
-# was (see drop_test.rb's "drop --delete removes the branch ref after
-# splicing" section) (issue #83).
+# Arity and command-level flags are one rule, checked before the repo is
+# touched -- the last two shows prove nothing was created or moved. `--delete`
+# is lifted out of argv before the command is known, so without an owner check
+# every command accepted it (#83).
 section "commands reject extra arguments and flags they do not take"
 new_repo
 gsq("create feat-a")
@@ -45,10 +34,8 @@ run("restack --delete")
 show("branches", "git branch --format='%(refname:short)' | tr '\\n' ' '")
 show("HEAD", "git branch --show-current")
 
-# An empty argument names no branch -- `arg0` and `first_operand` both say so in
-# as many words -- so counting it as a positional would reject command lines the
-# commands themselves handle. A wrapper writing `git stack down "$maybe_unset"`
-# is the ordinary way to hit this. `drop "" feat-a` still drops `feat-a`.
+# An empty argument names no branch, so counting it would reject command lines
+# the commands handle; `git stack down "$maybe_unset"` is the ordinary way in.
 section "an empty argument is not counted as a positional"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")

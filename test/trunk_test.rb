@@ -6,11 +6,9 @@
 
 require_relative "support/helper"
 
-# A list that is already duplicated cannot be fixed by validating input: repos
-# that ran the old `init main main`, or a hand-written `config --add`, still carry
-# two rows. Written straight to config here to be exactly that repo. Every reader
-# goes through `configured_trunks`, so deduping there is what stops `tree` drawing
-# the trunk -- and its whole subtree -- twice.
+# An old `init main main` or a hand-written `config --add` leaves two rows,
+# which validating input cannot fix; read back as-is, `tree` drew the trunk's
+# subtree twice (#83).
 section "an already-duplicated trunk list is deduped on read"
 new_repo
 gsq("init main")
@@ -19,9 +17,7 @@ setup("git config --add stack.trunk main")
 show("stack.trunk (raw config)", "git config --get-all stack.trunk | tr '\\n' ' '")
 run("tree")
 
-# `init` and auto-detect only ever record a branch that exists, but nothing
-# keeps it there. These three cover a recorded trunk that was renamed or
-# deleted afterwards -- the name reads back fine and is a ghost.
+# A trunk renamed or deleted after `init` still reads back fine from config.
 section "sync re-detects a renamed trunk instead of reparenting onto its old name"
 new_repo
 setup("git branch -m main master")
@@ -56,14 +52,9 @@ setup("git branch -m main feature")
 run("tree")
 show("stack.trunk", "git config --get-all stack.trunk")
 
-# The other half of asking exactly, and the half that is NOT about case folding --
-# so unlike refnames_test.rb's "a trunk whose stored spelling is not the refname
-# is not live" and "trunk auto-detect will not store a name the refs do not
-# have" sections, this one fails on every filesystem if the check regresses.
-# `for-each-ref refs/heads/main` matches one level down and answers
-# `refs/heads/main/wip`, so testing "did it print anything" would resurrect the
-# phantom trunk: `detect_trunk` would store `main` in a repo that has no such
-# branch. Only the exact-line test refuses it.
+# `for-each-ref refs/heads/main` also matches `refs/heads/main/wip`, so testing
+# for any output would store `main` in a repo without it. Unlike the
+# case-folding sections in refnames_test.rb, this fails on every filesystem.
 section "a branch one level down does not stand in for its parent name"
 new_repo
 setup("git branch -m main main/wip")
@@ -80,13 +71,9 @@ setup("git checkout -q develop")
 gsq("create feat-d"); commit("d.txt", "d1")
 run("tree")
 
-# A hand-emptied `branch.<name>.stackParent` is untracked config, not an edge.
-# Admitting it put the branch in the parent index with a parent nothing could
-# resolve: `tree` drew it as a detached root and measured the row against the
-# snapshot's single build-time trunk -- main, for a branch built on develop
-# (issue #73). Two entries are written so the empty one is not the last line of
-# `git config --get-regexp`, whose trailing space the scan's `.strip` removed:
-# the same config used to parse two different ways depending on its position.
+# A hand-emptied stackParent is untracked, not an edge; indexed, it drew feat-d
+# as a root measured against main (#73). Two entries, so the empty one is not
+# the last `--get-regexp` line, whose trailing space the scan strips.
 section "an emptied stackParent is read as untracked, not as the primary trunk"
 new_repo
 setup("git branch develop main")
@@ -94,17 +81,15 @@ gsq("init main develop")
 setup("git checkout -q develop"); commit("d.txt", "d1")
 setup("git checkout -q -b feat-d"); commit("x.txt", "x1")
 setup("git config branch.feat-d.stackParent ''")
-# a whitespace-only value is the same non-answer, and has to read the same way
-# through both doors into this key: `get_parent` normalizes it through
-# `git_out`'s strip, so the scan strips too. Untreated it was a parent NAMED " ".
+# A blank value reads as empty through `get_parent`, so the scan has to agree;
+# untreated it was a parent named " ".
 setup("git checkout -q -b feat-w develop"); commit("w.txt", "w1")
 setup("git config branch.feat-w.stackParent ' '")
 setup("git checkout -q main")
 gsq("create feat-m"); commit("m.txt", "m1")
 show("feat-d stackParent is empty", "git config --list | grep -c '^branch\\.feat-d\\.stackparent=$'")
 show("feat-w stackParent is blank", "git config --list | grep -c '^branch\\.feat-w\\.stackparent= $'")
-# feat-d is one commit past develop and two past main, so a row for it here
-# would have named the count that gives it away. Neither draws a row at all.
+# A row for feat-d would show a count against the wrong trunk; neither is drawn.
 run("tree")
 # navigation was already right (it reads the branch's own history) and stays so
 setup("git checkout -q feat-d")
@@ -148,13 +133,9 @@ run("parent")
 run("down")
 show("HEAD", "git branch --show-current")
 
-# The heaviest of the three that track_test.rb's "track with no argument picks
-# the trunk the branch rests on" leads (drop_test.rb's "drop reconnects
-# children to the trunk the dropped branch rested on" is the other): sync's
-# orphan heal doesn't just record a parent, it rebases onto it. Healing this
-# stack onto main would replay feat-b off develop and drop develop's own
-# commits from it -- so the checks below assert the ref, not only the config.
-# main is advanced first so a wrong trunk really would move feat-b.
+# The heal rebases, not just records: onto main it would drop develop's d1 from
+# feat-b, so the ref is checked, not only the config. main is advanced first so
+# a wrong trunk really would move feat-b.
 section "sync heals an orphan onto the trunk its stack rests on"
 new_repo
 setup("git branch develop main")
@@ -188,12 +169,9 @@ setup("git checkout -q feat-b")
 run("sync")
 show("feat-b stackParent", "git config --get branch.feat-b.stackParent")
 
-# A trunk that still carries a `stackParent` -- recorded before `track`/`parent`
-# learned to refuse a trunk, or set by hand -- must be read back as a root
-# anyway: `tree` must not print its subtree a second time under the other trunk,
-# and `restack` must not rebase the shared trunk onto it (rewriting published
-# history). main is advanced past develop first, so a trunk that were treated as
-# a stack member really would be replayed.
+# An old or hand-written `stackParent` on a trunk: honoured, `tree` would draw
+# the subtree twice and `restack` would rebase a shared trunk. main is advanced
+# first so such a rebase would really move develop.
 section "a trunk's recorded parent is ignored by tree and restack"
 new_repo
 setup("git branch develop main")
@@ -210,16 +188,8 @@ show("develop after", "git rev-parse develop")
 show("feat-d stackParent", "git config --get branch.feat-d.stackParent")
 
 # --- editing the list: plant / fell -----------------------------------------
-#
-# `init` writes the WHOLE list, so growing or shrinking it meant re-typing every
-# name -- and an omission there is silent, unregistering a trunk rather than
-# failing. These sections cover the two commands that edit the same list one name
-# at a time, and what the edit does to the stacks resting on it.
 
-# `plant` rewrites the key, so what it carries across that write is the LIVE half
-# of the old list: a name whose branch is gone would otherwise appear in the
-# summary line as though planting had confirmed it, and `trunk_branches` drops it
-# on the next command regardless.
+# A dead name carried across the write would look confirmed in the summary.
 section "plant drops a dead trunk from the list it writes"
 new_repo
 setup("git branch develop main")
@@ -245,22 +215,16 @@ show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 # config only -- the branch itself survives being felled
 show("branches", "git branch --format='%(refname:short)' | tr '\\n' ' '")
 
-# The listing form must not WRITE one. `init`'s listing registers what it
-# detects -- that is what `init` is for -- but the same behaviour here made
-# merely looking change what the next command does: the detected `main` was
-# persisted, so the `plant my-base` that followed produced "main, my-base"
-# instead of the "my-base" the same command produces on an untouched repo. The
-# second half of this section is that pair, run in the order that used to
-# differ.
+# Looking must not change what the next command does: a listing that registered
+# `main` turned the following `plant my-base` into "main, my-base". The second
+# half runs that pair.
 section "plant and fell report the list with no arguments, and register nothing"
 new_repo
 setup("git branch develop main")
 gsq("init main develop")
 run("plant")
 run("fell")
-# an unregistered detection is named as exactly that -- it is what the next
-# command will use, but `fell` cannot remove it, so it must not read as a
-# registered trunk
+# a detection is labelled as one: `fell` cannot remove it
 new_repo
 setup("git branch my-base main")
 run("plant")
@@ -268,9 +232,7 @@ show("stack.trunk (still unwritten)", "git config --get-all stack.trunk")
 run("plant my-base")
 show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
-# The list is a set, so neither "plant it twice" nor "fell what is not there" can
-# be what was meant. The shows are that nothing was written on the way to the
-# error: a rejected edit must leave the list exactly as it was.
+# A rejected edit must leave the list exactly as it was.
 section "plant and fell reject a name the list already answers for"
 new_repo
 setup("git branch develop main")
@@ -282,22 +244,16 @@ run("fell develop")
 run("fell main main")
 show("stack.trunk (unchanged)", "git config --get-all stack.trunk | tr '\\n' ' '")
 
-# `plant` must not auto-detect. On a repo that has never run `init` it starts
-# from the empty list rather than resolving one first -- planting `main` beside
-# the name the user actually typed is exactly the surprise `init` exists to
-# avoid, and in a repo with no main/master at all `trunk_branches` would die
-# outright, on the one command that needs no help finding a trunk.
+# No auto-detect: it would plant `main` beside the name typed, and it dies in a
+# repo without main/master.
 section "plant on a repo that never ran init does not pull in a detected trunk"
 new_repo
 setup("git branch my-base main")
 run("plant my-base")
 show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
-# Allowed on purpose: the empty key is the state a repo is in before `init`, so
-# the next command auto-detects again. Which branch that will be is named here
-# rather than left as "one": detection answers `main` again, so this is the case
-# where felling the last trunk is undone by the very next command, and the only
-# thing separating that from a silent no-op is the message saying so.
+# Detection answers `main` again, so only the message tells this apart from a
+# silent no-op.
 section "felling the last trunk leaves the next command to auto-detect"
 new_repo
 gsq("init main")
@@ -306,12 +262,8 @@ show("stack.trunk (unset)", "git config --get-all stack.trunk")
 run("tree")
 show("stack.trunk (re-detected)", "git config --get-all stack.trunk")
 
-# The same re-detection, arrived at without an empty list -- and the reason
-# `fell` writes back the LIVE remainder rather than the raw one. `develop` is
-# configured but deleted, so a fell of `main` that kept it reported "trunk(s):
-# develop" and exited 0, while the next command read that all-dead list as
-# empty, re-detected, and put `main` straight back: the removal reverted, with
-# nothing having said so.
+# Written back raw, the remainder (`develop`, deleted) would read as empty next
+# time, re-detect, and put `main` straight back.
 section "fell is not undone by a remainder of dead trunks"
 new_repo
 setup("git branch develop main")
@@ -321,11 +273,8 @@ run("fell main")
 show("stack.trunk (unset, not 'develop')", "git config --get-all stack.trunk")
 run("tree")
 
-# An auto-detected trunk is in force but not registered, and the empty key is
-# exactly what asks for the detection -- so there is no row to remove and
-# "felling" it would leave the next command detecting the same branch again.
-# Refused with its own message rather than the typo's, because naming it is not
-# a typo: `tree` does call this branch a trunk.
+# An unset key is what asks for detection, so felling it could change nothing.
+# Not the typo's message: `tree` does call this branch a trunk.
 section "fell refuses a trunk that is auto-detected rather than registered"
 new_repo
 setup("git branch my-base main")
@@ -333,12 +282,8 @@ run("fell main")
 run("plant my-base")
 show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
-# `fell` validates against the raw config, not the live list, so a name whose
-# branch is gone can still be named. `trunk_branches` prunes such a name itself
-# here -- there is a live trunk left for it to return -- so this is about not
-# having to run something else to get it done. The "no longer exists" note comes
-# from the liveness question being asked of the whole list before anything is
-# removed (see `cmd_fell`), which is what keeps it to one line per dead name.
+# Named from raw config, not the live list. The "no longer exists" note prints
+# once, because liveness is asked before anything is removed.
 section "fell removes a trunk whose branch is already gone"
 new_repo
 setup("git branch develop main")
@@ -347,11 +292,9 @@ setup("git branch -D develop")
 run("fell develop")
 show("stack.trunk", "git config --get-all stack.trunk | tr '\\n' ' '")
 
-# ... and the repo where that self-pruning cannot help: the dead name is the LAST
-# trunk and nothing is detectable, so every command dies with the stale key
-# intact (the "a trunk that is gone with no replacement" section above is that
-# error). Reading the live list here would leave `fell` refusing the one name in
-# the config, on the one repo where removing it is the point.
+# The dead name is the last trunk and nothing is detectable, so every other
+# command dies; checked against the live list, `fell` would refuse the one name
+# in config.
 section "fell works on the repo where a dead trunk cannot be pruned"
 new_repo
 gsq("init main")
@@ -362,10 +305,8 @@ show("stack.trunk (unset)", "git config --get-all stack.trunk")
 run("plant feature")
 run("tree")
 
-# What felling costs the stack resting on the trunk: nothing is orphaned (the
-# recorded parent still exists and `restack` still replays onto it), but the
-# felled branch is untracked now, so its stack is drawn as a detached root under
-# the trunk its history rests on rather than nested under a trunk row.
+# Nothing is orphaned -- the parent still exists and `restack` replays onto it
+# -- but the stack is now drawn as a detached root.
 section "a stack on a felled trunk keeps its parent and is drawn as a detached root"
 new_repo
 setup("git branch develop main")
@@ -378,11 +319,8 @@ run("fell develop")
 show("feat-d stackParent", "git config --get branch.feat-d.stackParent")
 run("tree")
 
-# Planting a branch that is already tracked promotes it to a root, and its
-# recorded parent is left in place rather than cleared -- every reader ignores a
-# trunk's parent (see "a trunk's recorded parent is ignored by tree and restack"
-# above), so the link is inert while the branch is a trunk and makes `fell` an
-# exact undo of the `plant`.
+# The recorded parent is kept, inert while the branch is a trunk, so `fell` is
+# an exact undo.
 section "planting a tracked branch promotes it, and felling it puts it back"
 new_repo
 gsq("init main")
