@@ -1,4 +1,15 @@
 class Object
+  def __enumw_map: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def __enumw_select: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def __enumw_reject: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def __enumw_filter_map: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def __enumw_each_with_object: (untyped, untyped) -> void # spinel: widened to untyped (slow path)
+  def __enumw_inject0: (untyped) -> untyped # spinel: widened to untyped (slow path)
+  def __enumw_inject1: (untyped, untyped) -> untyped # spinel: widened to untyped (slow path)
+  def __enumw_with_index: (untyped, Integer) -> void # spinel: widened to untyped (slow path)
+  def __enumw_each_slice: (untyped, untyped) -> void # spinel: widened to untyped (slow path)
+  def __enumw_each_cons: (untyped, untyped) -> void # spinel: widened to untyped (slow path)
+  def __enumw_each_entry: (untyped) -> void # spinel: widened to untyped (slow path)
   def color_enabled?: () -> bool
   def paint: (String, String) -> String
   def bold: (String) -> String
@@ -56,8 +67,8 @@ class Object
   def unpack_lines: (String) -> Array[String]
   def ahead_behind_bases: (String) -> String
   def ahead_behind_refs: (String) -> String
-  def ahead_behind_columns: (String, String) -> Hash[untyped, untyped] # spinel: widened to untyped (slow path)
-  def ahead_behind_readback: (String, Hash[untyped, untyped]) -> String # spinel: widened to untyped (slow path)
+  def ahead_behind_columns: (String, String) -> Hash[String, Integer]
+  def ahead_behind_readback: (String, Hash[String, Integer]) -> String
   def ahead_behind_chunk: (String) -> String
   def ahead_behind_index: (String) -> Hash[String, String]
   def parent_note: (String, StackTopology) -> String
@@ -95,6 +106,17 @@ class Object
   def validate_args!: (String, Array[String]) -> nil
   def parse_global_flags: (Array[String]) -> String
   def main: (Array[String]) -> nil
+  def __enum_any?__2455: (Array[untyped]) -> bool # spinel: widened to untyped (slow path)
+  def __enum_any?__2577: (untyped) -> bool # spinel: widened to untyped (slow path)
+  def __enum_all?__3068: (Array[untyped]) -> bool # spinel: widened to untyped (slow path)
+  def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
+  def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
+  def __enum_find__4077: (Array[String]) -> String
+  def __enum_each_with_index__4993: (Array[String]) -> Array[String]
+  def __enum_find__6437: (Array[String]) -> String
+  def __enum_each_with_index__7010: (Array[String]) -> Array[String]
+  def __enum_find__8232: (Array[String]) -> String
+  def __enum_find__8481: (Array[String]) -> String
 end
 
 class OptionParser
@@ -121,8 +143,9 @@ end
 
 class Set
   @data: Array[untyped]
-  def initialize: (untyped) -> Set # spinel: widened to untyped (slow path)
+  def initialize: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
   def initialize_copy: (untyped) -> Array[untyped] # spinel: widened to untyped (slow path)
+  def check_frozen: () -> nil
   def add: (untyped) -> Set # spinel: widened to untyped (slow path)
   def <<: (untyped) -> Set # spinel: widened to untyped (slow path)
   def add?: (untyped) -> Set # spinel: widened to untyped (slow path)
@@ -154,7 +177,7 @@ class Set
   def superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_subset?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def proper_superset?: (untyped) -> bool # spinel: widened to untyped (slow path)
-  def <=>: (untyped) -> untyped # spinel: widened to untyped (slow path)
+  def <=>: (untyped) -> Integer # spinel: widened to untyped (slow path)
   def disjoint?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def intersect?: (untyped) -> bool # spinel: widened to untyped (slow path)
   def classify: () -> Hash[untyped, untyped] # spinel: widened to untyped (slow path)
@@ -163,11 +186,14 @@ class Set
   def flatten!: () -> Set
   def inspect: () -> String
   def __enum_to_a: () -> Array[untyped] # spinel: widened to untyped (slow path)
-  def each#pf: () -> Set
-  def map#pf: () -> Array[untyped] # spinel: widened to untyped (slow path)
-  def delete_if#pf: () -> Set
+  def __to_enum_each: () -> untyped
+  def each#pf: () -> untyped # spinel: widened to untyped (slow path)
   def self.[]: (Array[untyped]) -> Set # spinel: widened to untyped (slow path)
   def self.check_enum: (untyped) -> untyped # spinel: widened to untyped (slow path)
+  def self.check_set: (untyped) -> untyped # spinel: widened to untyped (slow path)
+end
+
+class RecursionGuard
 end
 
 class StackTopology

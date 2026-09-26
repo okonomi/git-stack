@@ -108,6 +108,13 @@
 # the new one still represents it that way. Untyped and correct beats concrete
 # and reinterpreted, so these two stay on the slow path.
 #
+# At a3be2abd the compiler reached `Hash[String, Integer]` for both on its own,
+# and they are still NOT pinned -- now for the opposite reason. The type is
+# inferred, so a pin would add nothing today, and the day it did add something
+# would be a ref that builds the hash poly again: exactly the ref on which this
+# pin compiles and segfaults. Left unpinned, that ref widens them back to
+# untyped, and with RATCHET at 0 the ratchet step fails on it instead.
+#
 # So: add a pin when a widening makes one necessary, and keep it once the need
 # passes -- but only where the assertion is still true of how the value is
 # actually built. Every entry here is a faithful assertion -- branch names,

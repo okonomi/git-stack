@@ -16,7 +16,7 @@ class Spinel < Formula
   # form rather than repeating it: Homebrew keys upgrade detection on the
   # version string, not on `revision:`, so a bump that updated one and not the
   # other would leave installs reporting up-to-date and never rebuilding.
-  REVISION = "d897e15298d54342bd1e5dca9d9a8131ae35f1c5"
+  REVISION = "a3be2abdc09c3d5fa7094948baa7ce4d40dbb397"
 
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
   homepage "https://github.com/matz/spinel"
