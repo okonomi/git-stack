@@ -1,21 +1,14 @@
-# Homebrew formula for Spinel, Matz's ahead-of-time Ruby compiler.
+# Homebrew formula for Spinel, pinned for git-stack's build rather than as a
+# general-purpose package. Upstream has no packages or tags, so the stable build
+# pins a commit; `brew install --HEAD okonomi/git-stack/spinel` builds upstream
+# `master` for trying the latest.
 #
-# Spinel is not packaged upstream and has no tagged releases, so the stable
-# build pins a specific commit. It lives in the okonomi/git-stack tap because
-# git-stack build-depends on it to compile its native binary — it is not meant
-# as a general-purpose Spinel package.
-#
-# `brew install --HEAD okonomi/git-stack/spinel` builds straight from the tip
-# of upstream `master` instead, for testing against the latest Spinel.
-#
-# Keep REVISION in sync with SPINEL_REF in .github/workflows/ci.yml and the
-# SessionStart hook (.claude/hooks/session-start.sh) -- CI checks that the three
-# agree, so a half-finished bump fails there rather than shipping.
+# REVISION must match SPINEL_REF in .github/workflows/ci.yml and the
+# SessionStart hook; CI fails when the three disagree.
 class Spinel < Formula
-  # The one place this formula spells the commit. `version` derives its short
-  # form rather than repeating it: Homebrew keys upgrade detection on the
-  # version string, not on `revision:`, so a bump that updated one and not the
-  # other would leave installs reporting up-to-date and never rebuilding.
+  # `version` derives from this rather than repeating the sha: Homebrew detects
+  # upgrades by the version string, not `revision:`, so a bump that missed one
+  # would leave installs reporting up to date.
   REVISION = "a3be2abdc09c3d5fa7094948baa7ce4d40dbb397"
 
   desc "Ahead-of-time Ruby compiler (pinned build for git-stack)"
@@ -25,9 +18,8 @@ class Spinel < Formula
   head "https://github.com/matz/spinel.git", branch: "master"
   license "MIT"
 
-  # `make deps` normally curls these gems from rubygems.org for their bundled
-  # C sources, but Homebrew builds with no network. Vendor them as resources
-  # and unpack them into vendor/ so the build runs offline.
+  # `make deps` curls these gems for their C sources, but Homebrew builds without
+  # network, so they are vendored as resources.
   resource "prism" do
     url "https://rubygems.org/gems/prism-1.9.0.gem"
     sha256 "7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85"
@@ -39,11 +31,9 @@ class Spinel < Formula
   end
 
   def install
-    # Unpack the vendored gems into the layout `make deps` produces, so its
-    # dependency targets are already satisfied and no network fetch happens.
-    # A .gem is a tar wrapping data.tar.gz, which holds the gem's files.
-    # HEAD builds reuse these too; bump the resources above if upstream's
-    # Makefile ever moves off prism 1.9.0 / rbs 4.0.1.
+    # Laid out as `make deps` would leave them, so its targets are already
+    # satisfied. A .gem is a tar wrapping data.tar.gz. HEAD builds reuse these
+    # too, so bump the resources if upstream moves off prism 1.9.0 / rbs 4.0.1.
     { "prism" => buildpath/"vendor/prism",
       "rbs"   => buildpath/"vendor/rbs" }.each do |name, dest|
       resource(name).stage do
@@ -56,10 +46,9 @@ class Spinel < Formula
 
     system "make", "deps" # no-op: vendor/ is already populated
     system "make"
-    # Installs the real binaries under lib/spinel/ with bin/ symlinks into
-    # them; those binaries resolve their runtime lib via /proc/self/exe
-    # (realpath on macOS), so they keep working through Homebrew's own bin
-    # symlinks and when invoked from another formula's build.
+    # The binaries find their runtime lib through their own realpath, so they
+    # keep working behind Homebrew's bin symlinks and from another formula's
+    # build.
     system "make", "install", "PREFIX=#{prefix}"
   end
 

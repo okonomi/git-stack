@@ -1,125 +1,30 @@
-# Hand-written type seed fed to Spinel via `--rbs` (see spin build and the CI
-# golden check). Unlike test/git-stack.rbs.expected -- which is the *emitted*
-# golden and must never live under rbs/, or it would seed itself -- this file is
-# an input: signatures we assert so the analyzer keeps these methods on the
-# concrete fast path.
+# Hand-written type seed fed to Spinel via `--rbs` -- an INPUT. The emitted golden
+# is test/git-stack.rbs.expected, and must never live under rbs/, or it would seed
+# itself.
 #
-# `effective_parent` (bin/git-stack.rb) unifies these methods' branch-name
-# parameters with its own result and, left to inference alone, widens them to
-# Spinel's untyped slow path. Each takes a branch (or parent) name -- always a
-# String -- so pinning them here is a faithful assertion, not a fib to the
-# compiler; it keeps the compiled binary unboxed and the emitted golden free of
-# new untyped.
+# Many methods take a branch name that Spinel unifies across call sites
+# (`effective_parent`'s result, `containing_trunk`'s, the trunk list). Left to
+# inference, those parameters widen to untyped: the slow path, and new lines in
+# the golden. Most pins below restate what an earlier compiler inferred unaided,
+# re-asserted after a bump widened them.
 #
-# `effective_parent` is pinned for the same reason one step out: it takes the
-# trunk LIST (it answers "is this branch itself a trunk?" before resolving the
-# parent), and an `Array[String]` parameter inferred from scratch widens to
-# `Array[untyped]`, which then flows out through what its result feeds --
-# `branch_ref_exists?` and `checkout!` in `cmd_down`.
+# Every entry must be a FAITHFUL assertion -- branch names, colour text, packed
+# lists and the trunk list are String / Array[String] at every call site. A pin
+# that disagrees with how the compiler builds a value does not narrow it, it
+# reinterprets it. That is why `ahead_behind_columns` / `ahead_behind_readback`
+# are deliberately absent: on a ref that builds their hashes poly (spinel 328a5ac)
+# the old `Hash[String, Integer]` pin compiles into a segfault, whereas unpinned
+# they just widen and the ratchet fails. A golden that shows a signature proves
+# only that the OLD compiler inferred it.
 #
-# `containing_trunk` and `restack_subtree` are the trunk-list pair: the first
-# picks the trunk a branch rests on, so its untyped result would spread through
-# every reparent it feeds (`set_parent`, `record_reparent_base`, `reparent!`);
-# the second now takes the whole list rather than one caller-chosen trunk, and
-# widens the same way `effective_parent` does. Both are faithful: a branch name
-# and the trunk list, String and Array[String] at every call site.
+# Pins are kept even when today's compiler no longer needs them: a redundant pin
+# is cheap, and it turns the next bump's widening into a golden diff rather than a
+# quiet slowdown. `rbs/paint.rbs` was once deleted as redundant and had to come
+# back one bump later.
 #
-# StackTopology is built from an already-read config scan and the current ref
-# set. StackSnapshot owns the Git-reading factory and the history-derived
-# ahead/behind index, keeping the topology itself pure.
-#
-# Everything below the first four entries was added when Spinel moved to
-# 0b8527df4b87, whose inference propagated that same unification further than
-# the pin before it: without them the golden carried widened `class Object`
-# signatures (`paint`, `green`, `set_trunks`, `is_trunk?`, `clear_parent`,
-# `clear_base`, `untrack!`) that had been concrete.
-#
-# Under the Spinel pinned now (ci.yml holds the ref; this file deliberately does
-# not repeat it) the METHOD pins remain redundant -- inference holds those
-# signatures on its own, and the golden is byte-identical with them removed. They stay anyway, and that is deliberate: a pin is cheap,
-# and being redundant against TODAY'S compiler is not the same as being
-# unnecessary. It is what stops the next bump from quietly widening a signature
-# instead of failing the golden diff. This file has already learned that once --
-# `rbs/paint.rbs` was deleted on exactly the "inference no longer needs it"
-# reasoning, and the `paint`/`green` pins had to be written again one bump later.
-#
-# The StackTopology / StackSnapshot ivar pins at the bottom are the working exception: they are
-# NOT redundant today. They are what took the golden from 41 untyped to 39, and
-# what made the bump to master tip safe -- without them the same source emits 49
-# there, and 40 with only `@ab` dropped (see the ci.yml note that measures each
-# candidate ref).
-#
-# `parent_note` and `untracked_parent?` are the issue #85 pair: the note `tree`
-# prints is now also read by `parent`/`down`, so its branch-name parameter is
-# unified across three call sites instead of one. That is exactly the shape the
-# first four entries were written for, and both assertions are faithful -- a
-# branch name and the topology it is asked about, String and StackTopology at
-# every call site.
-#
-# `named_children_of` joins `children_of` as the fix-wave's own pair: `up
-# <name>` now reads a second one-shot topology alongside the menu's, built the
-# same way and returned the same shape, so it is unified right along with it.
-# Faithful for the same reason `children_of` is -- a parent name and the trunk
-# list, String and Array[String].
-#
-# `live_trunks` / `trunk_branches` are pinned against a CRASH rather than a
-# golden diff -- the one failure mode this file's rule does not cover. Widen
-# `live_trunks`'s `select` and `trunk_branches` answers a poly array on the
-# configured path and the `[trunk]` literal's string array on the detect path;
-# callers unbox both with the same unchecked cast, so the first `trunk?`
-# segfaults on any repo with `stack.trunk` set rather than surfacing as a new
-# `untyped` line (17447ac has the codegen). `live_trunks` is the entry doing
-# that work -- pinned, both of `trunk_branches`' return paths are `Array[String]`
-# already, so its own entry is this file's cheap-pin rule, not a second
-# assertion. Both faithful: the trunk list, `Array[String]` at every call site.
-#
-# `cyan` through `replay_onto!` are the next wave of that same unification, and
-# they are the 0b8527df story a second time: eleven `class Object` signatures
-# that had been concrete widened at their branch-name (and packed-list)
-# parameters, taking the golden from 39 untyped to 54 in one bump. Every entry
-# restates the signature the previous ref inferred unaided, so the emitted
-# golden is what proves each faithful before it is asserted here. `cyan` is the
-# `rbs/paint.rbs` lesson arriving again, on the one colour helper the earlier
-# wave left unpinned.
-#
-# `Set#merge` at the bottom is the same assertion one class out: our only two
-# calls pass `order_branches`'s `Array[String]`, and the element type is lost
-# on the way in without it.
-#
-# `branch_ref` is the one entry here that was NOT written after a golden diff:
-# it is a new method (issue #96), and it is the exact shape this file's first
-# paragraph describes -- a branch-name parameter reached from a dozen call sites,
-# `effective_parent`'s unification among them. Unpinned it emits `(untyped) ->
-# String` and takes the golden to 43, one over RATCHET; pinned it is concrete and
-# the count holds at 42. Faithful for the usual reason: every caller passes a
-# branch name, String at all of them.
-#
-# `ahead_behind_columns` / `ahead_behind_readback` widened in that same wave and
-# are deliberately NOT pinned, which is this file's one worked example of an
-# unfaithful assertion. Their `Hash[String, Integer]` is what the old ref
-# inferred, but the new one builds a poly hash there on purpose (spinel 328a5ac:
-# an empty-hash local keyed by a block result cannot be assumed String-keyed,
-# because the String-keyed variant reads a boxed key as a `const char *`).
-# Asserting the old signature does not narrow that hash, it reinterprets it --
-# `cc` says so, `incompatible pointer types ... 'sp_PolyPolyHash *' from a
-# function with result type 'sp_StrIntHash *'` -- and `tree` segfaults on the
-# fixture past the 4 KB scan boundary. The golden proving a signature is
-# necessary but not sufficient: it proves the OLD compiler inferred it, not that
-# the new one still represents it that way. Untyped and correct beats concrete
-# and reinterpreted, so these two stay on the slow path.
-#
-# At a3be2abd the compiler reached `Hash[String, Integer]` for both on its own,
-# and they are still NOT pinned -- now for the opposite reason. The type is
-# inferred, so a pin would add nothing today, and the day it did add something
-# would be a ref that builds the hash poly again: exactly the ref on which this
-# pin compiles and segfaults. Left unpinned, that ref widens them back to
-# untyped, and with RATCHET at 0 the ratchet step fails on it instead.
-#
-# So: add a pin when a widening makes one necessary, and keep it once the need
-# passes -- but only where the assertion is still true of how the value is
-# actually built. Every entry here is a faithful assertion -- branch names,
-# colour text, and the trunk list, all String / Array[String] at every call site
-# -- so none of them can lie to the compiler, whatever inference does next.
+# `live_trunks` guards a crash rather than a golden line: widened, it makes
+# `trunk_branches` return two array representations that callers unbox with one
+# unchecked cast, and the first `trunk?` segfaults (17447ac).
 class Object
   def sh: (String) -> String
   def branch_ref: (String) -> String
@@ -156,44 +61,14 @@ class Object
   def replay_onto!: (String, String, String) -> nil
 end
 
-# `parent_of` / `children_of` join `branch?` for the same reason, and the graph
-# queries `stack_root` / `would_cycle?` / `validate_new_parent!` join them --
-# becoming methods on the topology relocated their pins here rather than retiring
-# them. They used to take the trunk LIST besides, which widened exactly as
-# `effective_parent`'s does; the topology now keeps its trunks in a Set and
-# answers `trunk?` itself, so the parameter (always the same list the topology
-# was built from) is gone and only the branch names are left to pin.
+# The ivar pins hold the fields every reader widens with: a widened `@children`
+# takes `order`, `walk_order`, `detached_roots`, `print_order` and `cmd_tree`
+# down with it. One pin per field instead of one per reader.
 #
-# The three ivar pins below are the seed's other half, and they are what keeps
-# this file's method pins from being fought uphill: `@parents` and `@children`
-# had drifted to `Hash[String, untyped]` / `Hash[untyped, untyped]` on their
-# own, and every reader of a widened `@children` widens with it -- `order`,
-# `order_branches`, `walk_order`, `detached_root(s)`, and `print_order` /
-# `cmd_tree` one call further out. Pinning the fields is one assertion each
-# instead of eight, and it holds them at the source.
-#
-# They are faithful: StackTopology's `@parents` maps a branch name to its
-# recorded parent and `@children` a parent to its newline-PACKED child rows.
-# StackSnapshot owns `@ab`, mapping a branch to packed "<behind>\t<ahead>".
-#
-# The packing is what makes those String -> String pins expressible at all, and
-# it is worth knowing WHY the obvious alternative is not a pin you can write:
-# `@children: Hash[String, Array[String]]` over an array-valued hash is dropped
-# on the floor -- not applied, not refused -- and the field still emits as
-# `Hash[String, untyped]`. A seed line that has no effect is worse than none,
-# because it reads like a guarantee. See pack_lines in bin/git-stack.rb.
-#
-# Pinning them also puts `children_of` / `walk_order` back where their comments
-# assume they are: with `@children` concrete, their `.to_s` guards before
-# `.split` are no-ops again (measured: removing both leaves the golden
-# unchanged) rather than the load-bearing re-narrowing they had become. The
-# guards stay anyway, on this file's standing rule -- a pin is cheap, and being
-# redundant against today's compiler is not the same as being unnecessary.
-#
-# `detached_roots` joins them for the third piece of the same change: `up` now
-# reads it, so its hand-built `[]` is unified with the concrete children list it
-# is appended to, and an `Array[untyped]` there would take `cmd_up`'s `include?`
-# / `length` / `[0]` down with it.
+# They are expressible only because `@children` and `@ab` are packed Strings. A
+# `Hash[String, Array[String]]` pin is silently dropped -- neither applied nor
+# refused -- so it would read like a guarantee while guaranteeing nothing (see
+# pack_lines in bin/git-stack.rb).
 class StackTopology
   @parents: Hash[String, String]
   @children: Hash[String, String]
@@ -225,6 +100,8 @@ class StackRepository
   def self.load_snapshot: (Array[String]) -> StackSnapshot
 end
 
+# Our only callers pass `order_branches`'s Array[String]; without this the element
+# type is lost on the way in.
 class Set
   def merge: (Array[String]) -> Set
 end

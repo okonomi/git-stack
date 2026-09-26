@@ -10,12 +10,9 @@ new_repo
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
-# `origin/HEAD` is a symbolic ref like any other, so this file's remaining
-# sections and refnames_test.rb's "init resolves the remote's default branch to
-# the spelling git stores" section point it at a remote-tracking ref directly
-# rather than cloning: detect_trunk only ever reads `git symbolic-ref
-# refs/remotes/origin/HEAD`, and a real remote would make the snapshot depend on
-# a second throwaway repo's path.
+# From here on, `origin/HEAD` points at a remote-tracking ref directly rather
+# than a clone: detection reads only that symref, and a real remote would put a
+# second repo's path into the snapshot.
 
 section "init prefers the remote's default branch over main"
 new_repo
@@ -32,11 +29,8 @@ setup("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone")
 run("init")
 show("stack.trunk", "git config --get stack.trunk")
 
-# Why `--short` answers `remotes/origin/develop` here is on `detect_trunk`; what
-# it costs is what this section is for. Nothing looks wrong from outside: the
-# remote's answer is thrown away and detection falls through to main, which is
-# indistinguishable from a repo that simply has no `origin/HEAD`. `develop` is
-# what origin/HEAD names, so `develop` is what init must record.
+# Nothing looks wrong when this breaks: the remote's answer is discarded and
+# detection falls through to main, as if there were no `origin/HEAD` at all.
 section "init reads the remote's default branch past a local branch named origin/<name>"
 new_repo
 setup("git branch develop main")
@@ -65,12 +59,7 @@ section "init rejects a non-existent trunk"
 new_repo
 run("init nope")
 
-# A repeated trunk used to be stored twice, and `tree` then drew that trunk --
-# and its whole subtree -- twice over. Rejecting rather than quietly deduping:
-# `init main main` is a typo, and the trunk list is the one setting every other
-# command reads, so saying so beats silently storing something the user did not
-# type. The existing list must survive the rejection, which is the second show:
-# a failed `init` writes nothing (issue #83).
+# A failed `init` writes nothing; the second show is the list surviving (#83).
 section "init rejects a duplicate trunk name"
 new_repo
 setup("git branch develop main")

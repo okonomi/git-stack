@@ -9,8 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # Fast feedback: the test is a plain Ruby program, so run the snapshot
-  # transcript under CRuby and diff it against the committed expectation.
+  # Fast feedback: the snapshot tests are plain Ruby, so run them under CRuby.
   cruby:
     name: Snapshot test (CRuby)
     runs-on: ubuntu-latest
@@ -30,135 +29,22 @@ jobs:
           done
           exit $status
 
-  # Full check: compile the CLI and the test with Spinel, run `spin test`, then
-  # build the native binary and exercise it directly over a fixture repo so the
-  # actual shipped artifact is validated at run time. Spinel is built from
-  # source (it is not packaged), mirroring the SessionStart hook.
+  # Compile with Spinel and check what CRuby cannot see: `spin test`, the
+  # static type-health check, the shipped binary run over a fixture, and the
+  # emitted types. Spinel is not packaged, so it is built from source.
   spinel:
     name: Compiled test (Spinel)
     runs-on: ubuntu-latest
     env:
-      # The source of truth for the pinned Spinel revision; the SessionStart
-      # hook and Formula/spinel.rb repeat it, and the step below fails if they
-      # disagree (a comment alone did not hold -- they have silently drifted
-      # across bumps before).
+      # The source of truth for the pinned Spinel revision. The SessionStart hook
+      # and Formula/spinel.rb repeat it, and the first step fails if they disagree:
+      # a comment alone did not keep them in step.
       #
-      # 77f5094 was master tip, which the two bumps before it were not: tip kept
-      # measuring worse. 1f747d86 took the emitted golden from 42 untyped to 48,
-      # and 77f5094 itself measured 49 on its own -- both times with
-      # print_order / cmd_tree / effective_parent_of / order / walk_order /
-      # detached_roots widening to the slow path behind @children / @ab dropping
-      # to bare untyped. What changed is the fix rather than the compiler: the
-      # widening always started at those two fields, and rbs/git-stack.rbs now
-      # pins them directly (the seed reaches instance variables, which this file
-      # long assumed it did not). With that pin the same tip emits 39, below the
-      # 41 that stood before -- and emits it byte-identically under the old ref,
-      # so the golden is not tied to either.
-      #
-      # 4803e38e was master tip again, and was the quiet kind of bump the ivar
-      # pin was supposed to make possible: it emitted the golden byte-identically
-      # to 77f5094 for this source, so the count held at 39 rather than moving at
-      # all. Nothing widened, nothing narrowed.
-      #
-      # bf4816ed was the loud kind, and it was the first bump to raise RATCHET.
-      # Unpinned it emits 54: fifteen signatures widen, thirteen
-      # of them `class Object` methods losing a branch-name parameter to the same
-      # unification the seed's first four entries were written for. Eleven of
-      # those are pinned back in rbs/git-stack.rbs, and `Set#merge` with them --
-      # every one restating what 4803e38e inferred unaided, and all twelve inert
-      # under that ref, which still emits the old golden byte-identically. What
-      # is left is 42, and the three are load-bearing rather than lazy:
-      #
-      #   - `ahead_behind_columns` / `ahead_behind_readback` (2). Pinning these
-      #     back to `Hash[String, Integer]` COMPILES AND SEGFAULTS: upstream
-      #     328a5ac makes an empty-hash local keyed by a block result poly on
-      #     purpose (the String-keyed variant reads a boxed key as `const char *`),
-      #     so the old signature no longer describes how the hash is built. `cc`
-      #     warns `incompatible pointer types ... 'sp_PolyPolyHash *' from a
-      #     function with result type 'sp_StrIntHash *'`, and `tree` dies on the
-      #     4 KB-boundary fixture. The seed carries the worked example; the rule
-      #     it teaches is that the golden proving a signature is necessary but not
-      #     sufficient -- it proves the OLD compiler inferred it, not that the new
-      #     one still represents it that way.
-      #   - `map#pf` (1). Not a widening at all: this ref emits Set's poly forms
-      #     as their own rows (`each#pf` / `map#pf` / `delete_if#pf`), and `map`
-      #     was already untyped in the golden. One new LINE matching `untyped`,
-      #     the same type as before.
-      #
-      # So that bump bought the two Hash rows honestly and the third was an
-      # emission-granularity artefact. Raising RATCHET rather than forcing the
-      # hashes concrete is the whole point: untyped and correct beats concrete
-      # and reinterpreted.
-      #
-      # d897e152 added one row, and it is the cheapest kind there is:
-      # `Set#initialize_copy`, emitted because upstream c60015b gives a
-      # duplicated Set its own storage. It is a new METHOD on the bundled Set,
-      # untyped like every other row in that class; not one git-stack signature
-      # moved, and the rest of the golden is byte-identical to what bf4816ed
-      # emits for this source. It landed as RATCHET 42 -> 43 and is the reason
-      # the count is now SCOPED instead: a row in upstream's own library was
-      # never ours to narrow, so it no longer moves the ceiling at all -- see
-      # the ratchet step, which counts our classes and leaves that row to the
-      # golden diff. Under the scoped count this bump moved nothing.
-      #
-      # What this bump actually buys is runtime, and it is the reason to take it
-      # rather than sit on bf4816ed. Upstream's string-append work (bdf60528
-      # builds a string in a loop without copying it every time, c93e5363 keeps
-      # the append handle across the recompute frame, d897e152 itself extends
-      # that to a straight-line accumulator) lands directly on the packed-String
-      # idiom this file's types are built around -- `pack_lines`, `walk_order`'s
-      # threaded `acc`, `ahead_behind_readback`'s `result`. Measured on a
-      # 300-branch chain, `tree` goes 1307ms -> ~400ms; under callgrind on the
-      # 72-branch fixture the whole run drops from 289M to 38.4M instructions,
-      # with `_int_malloc` falling out of the profile entirely.
-      #
-      # That number retires a live argument for UNPACKING those fields. Under
-      # bf4816ed, holding `@children` as `Hash[String, Array[String]]` measured
-      # 26% FASTER (968ms vs 1307ms) -- packing's split/concat traffic was
-      # costing real time, and only the type ratchet argued against it. Under
-      # this ref the gap is gone: packed 38,354,319 instructions vs unpacked
-      # 38,099,554, a 0.7% difference, and packing now wins on size too (471,304
-      # vs 512,656 bytes). Packing is the cheaper representation again, not just
-      # the concrete one. (Unpacking still costs types regardless: an
-      # array-valued Hash widens to `Hash[String, untyped]` on every ref tried,
-      # and an `@children: Hash[String, Array[String]]` line in the seed is
-      # silently DROPPED rather than applied or refused -- see pack_lines.)
-      #
-      # The remaining hot spot is nothing to do with either: `sp_poly_eq` +
-      # `sp_Set_include_p` + `sp_poly_eql` are 71% of `tree`, the poly
-      # `Set#include?` linear scan behind `@branches` / `visited`. That is where
-      # the next real win is, and `Set` is bundled, so it is upstream's to make.
-      #
-      # The procedure is unchanged, and it is what caught the bf4816ed segfault:
-      # before bumping, re-run the golden check against the candidate -- AND the
-      # compiled-binary fixture, which is the only check that saw it (the golden,
-      # `spin test` and doctor were all green on the build that crashed). The
-      # number is a ratchet, not a constant: it may fall freely, and it rises
-      # only with a note like this one saying which widening bought each row.
-      # It now counts OUR classes only, so a candidate ref that grows Set or
-      # OptionParser no longer reads as a regression here -- what such a ref
-      # must still do is come through the golden diff and the fixture run
-      # unchanged, which is what the history above is a record of.
-      #
-      # a3be2abd (this ref) was master tip, 2701 commits past d897e152, and it
-      # is the first bump to LOWER our count: 2 -> 0. The two rows the bf4816ed
-      # note above calls load-bearing, `ahead_behind_columns` and
-      # `ahead_behind_readback`, now infer `Hash[String, Integer]` unaided --
-      # with no pin, so nothing is being asserted over how the hash is built,
-      # and the compiled-binary fixture (the check that caught the old
-      # segfault) runs clean on it. Every other git-stack signature is
-      # byte-identical.
-      #
-      # What did move is all `require "set"`, and it is why the ratchet step
-      # now skips `__`-prefixed rows: upstream's Set is written against
-      # Enumerable helpers that the compiler emits as `class Object` methods
-      # (`__enumw_map`, `__enum_any?__2455`, ...). Sixteen are untyped, and
-      # sitting in `Object` they would count as ours -- a two-line program that
-      # only requires set emits all of them, and bin/git-stack.rb defines no
-      # `__` method nor calls `any?` / `all?`. Set itself grew `check_frozen` /
-      # `self.check_set`, swapped its `#pf` rows for `__to_enum_each`, and
-      # brought an empty `RecursionGuard` class with no untyped row. Set is
-      # still Array-backed at this ref, so `include?` is still a linear scan.
+      # Before bumping, run the golden check AND the compiled-binary fixture
+      # against the candidate. The fixture is the only check that saw the
+      # bf4816ed segfault; the golden, `spin test` and doctor were all green on
+      # the build that crashed. The history of each bump -- what widened, what
+      # was pinned back, what it bought -- belongs in that bump's commit message.
       SPINEL_REF: a3be2abdc09c3d5fa7094948baa7ce4d40dbb397
       SPINEL_REPO: https://github.com/matz/spinel.git
       SPINEL_PREFIX: ${{ github.workspace }}/.spinel
@@ -170,27 +56,20 @@ jobs:
         with:
           ruby-version: .ruby-version
 
-      # SPINEL_REF above is the source of truth; the hook and the formula repeat
-      # it. Checked before the expensive build so a half-finished bump fails in
-      # seconds. Formula/spinel.rb derives its `version` short hash from
-      # REVISION, so matching REVISION covers that string too.
+      # Checked before the expensive build, so a half-finished bump fails in
+      # seconds. Formula/spinel.rb derives its `version` from REVISION, so
+      # matching REVISION covers that string too.
       - name: Check the pinned revision agrees everywhere
         run: |
           set -euo pipefail
           grep -q "SPINEL_REF:-$SPINEL_REF}" .claude/hooks/session-start.sh
           grep -q "REVISION = \"$SPINEL_REF\"" Formula/spinel.rb
 
-      # `spin` is self-contained under SPINEL_PREFIX after `make install`, so
-      # caching that directory lets us skip the rebuild on later runs.
-      #
-      # Restore and save are split rather than using the combined `actions/cache`
-      # because that action saves in a post step gated on `success()`. A ref bump
-      # invalidates the key by design, and the steps most likely to fail right
-      # after one are the checks below -- so with the combined action a red run
-      # would throw the freshly built compiler away and rebuild it from source on
-      # every retry. Saving straight after the build banks it once. (`save-always`
-      # is not the fix; the action documents it as deprecated and non-working,
-      # pointing at this split.)
+      # Restore and save are split rather than using the combined `actions/cache`,
+      # which saves only on `success()`. A bump invalidates the key, and the
+      # checks right after one are the likeliest to fail, so a red run would
+      # discard the fresh compiler and rebuild it on every retry. (`save-always`
+      # is documented as deprecated and non-working, pointing at this split.)
       - name: Restore Spinel install
         id: cache-spinel
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -225,27 +104,15 @@ jobs:
           spin --version
           spin test
 
-      # Type-health gate. `spinel-doctor` statically flags the exact class of
-      # bug the fixture binary run and the golden RBS file were bolted on to
-      # defend against: a method the Spinel runtime can't service on an
-      # `untyped`/`unknown` receiver (Array#sort and its poly-array siblings --
-      # uniq/select/reject/compact/flatten/take/zip/index/reduce/sort_by), which
-      # compiles clean and passes `spin test` yet dies with NoMethodError only on
-      # the shipped binary. doctor's `unresolved` leg reports those from a compile
-      # pass, so it fires without a fixture having to happen to walk the hazardous
-      # path. It exits non-zero on any error-severity finding (unresolved /
-      # unsupported / build / behavior); `inference` widenings are info-only and
-      # do NOT fail the step, so a merely-intended type shift stays silent here --
-      # catching a *regression* to `untyped` remains the golden RBS check's job
-      # below, which is why both still run. Point it at the CLI and the test:
-      # `spin test` compiles the test with Spinel too, so it can carry the same
-      # hazard.
+      # spinel-doctor flags a method the Spinel runtime cannot dispatch on an
+      # untyped receiver (Array#sort and its poly-array siblings) from a compile
+      # pass, without a fixture having to walk that path. It is not a substitute
+      # for the golden check below: widening to untyped is only info severity
+      # here and never fails. The test files are checked too, since `spin test`
+      # compiles them with Spinel.
       #
-      # `spinel-doctor` is installed beside `spin` by `make install` at the
-      # pinned SPINEL_REF (its Makefile installs TOOL_NAMES = doctor reduce
-      # flatten), so it is already on PATH under $SPINEL_PREFIX/bin -- no extra
-      # copy step needed. The guard turns a future ref that drops it into a loud
-      # failure instead of a silently-skipped "command not found".
+      # The guard turns a ref that stops shipping doctor into a failure rather
+      # than a skipped "command not found".
       - name: Type-health check (spinel-doctor)
         run: |
           command -v spinel-doctor >/dev/null || {
@@ -257,108 +124,47 @@ jobs:
             spinel-doctor "$f"
           done
 
-      # Runtime check on the *shipped* artifact. `spin test`'s harness shells
-      # out to `ruby bin/git-stack.rb`, and the cruby job runs the script under
-      # CRuby -- so neither ever executes the compiled binary. A method the
-      # Spinel runtime does not support (e.g. Array#sort) compiles clean and
-      # passes both snapshots, then dies with NoMethodError only on the real
-      # binary. Build it and drive it over a fixture repo (trunk / nesting /
-      # multiple siblings / an orphan), diffing the transcript against the
-      # committed snapshot. Regenerate after an intentional change with:
-      #
-      #   spin build && test/binary_test.sh > test/binary_test.sh.expected
-      #
-      # `tree` runs against the multi-sibling stack on purpose: sibling
-      # ordering is the only path that reaches the `.sort` calls in
-      # StackTopology#children_of / #walk_order, where an unsupported runtime
-      # method would otherwise slip through unseen.
+      # Neither `spin test` (whose harness runs `ruby bin/git-stack.rb`) nor the
+      # cruby job ever executes the compiled binary; see test/binary_test.sh for
+      # what only it can catch.
       - name: Run compiled binary against fixture
         run: |
           spin build
           test/binary_test.sh | diff -u test/binary_test.sh.expected -
 
-      # Golden-file check on Spinel's inferred types: the snapshot is the
-      # committed output of `spinel --emit-rbs --rbs rbs/ bin/git-stack.rb`. The
-      # `--rbs rbs/` feeds the same hand-written seed `spin build` uses, so the
-      # golden reflects the types the shipped binary is actually compiled with. A
-      # diff here means a source change shifted inference -- an `untyped (slow
-      # path)` line appearing is a type regression; anything else means refresh
-      # the snapshot with:
-      #
-      # Kept even though spinel-doctor now runs above: doctor lists the same
-      # widenings but only at *info* severity (it never fails on them), so a
-      # regression to `untyped` that doctor's error legs don't independently flag
-      # -- e.g. a poly array Spinel resolves without an `unresolved` warning --
-      # would slip past doctor and is caught only by this golden diff. The two
-      # are complementary; revisit retiring this file only if doctor grows an
-      # error-severity signal for untyped widening.
+      # The committed output of `spinel --emit-rbs` with the same `--rbs rbs/` seed
+      # `spin build` uses, so it shows the types the shipped binary is compiled
+      # with. After an intended type change, refresh it with:
       #
       #   spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=test/git-stack.rbs.expected
       #
-      # The emitted golden lives in test/ with the other .expected snapshot;
-      # never move it under rbs/, the seed *input* directory, or it would seed
-      # itself.
+      # It lives in test/, never under rbs/, where it would seed itself.
       #
-      # Both sides are compared with the numeric suffix of Spinel's per-call-site
-      # helpers masked (`__enum_find__4077` -> `__enum_find__N`). Since a3be2abd
-      # that number is a position in the source, so an edit that shifts it --
-      # a comment, a new method above a `find` -- renumbers the rows without a
-      # type moving. Only the number is masked: the name and signature of every
-      # row are still compared, so a helper that appears, disappears or widens
-      # still fails here.
+      # The numeric suffix of Spinel's per-call-site helpers is masked
+      # (`__enum_find__4077` -> `__enum_find__N`): it is a source position, so
+      # adding a comment renumbers rows without a type moving. Names and
+      # signatures are still compared.
       - name: Check emitted RBS against golden file
         run: |
           spinel --emit-rbs --rbs rbs/ bin/git-stack.rb --output=/tmp/emitted.rbs
           mask() { sed -E 's/^(  def __enum_.*__)[0-9]+:/\1N:/' "$1"; }
           diff -u <(mask test/git-stack.rbs.expected) <(mask /tmp/emitted.rbs)
 
-      # The ratchet the SPINEL_REF note states, enforced rather than merely
-      # written down. The golden diff above cannot see the count RISE: the
-      # documented way to land an intended type shift is to regenerate the
-      # golden, and a regenerated file always matches itself. So the ceiling
-      # lives here, in a literal that a regeneration does not touch.
+      # The golden diff cannot see the untyped count RISE: an intended type change
+      # regenerates the golden, and a regenerated file matches itself. So the
+      # ceiling is a literal a regeneration does not touch. Lower it in the commit
+      # that narrows types; raising it has to be a reviewable line in the diff.
       #
-      # Lowering RATCHET is an ordinary part of a change that narrows types
-      # (do it in the same commit). Raising it is the move this step exists to
-      # stop being silent -- it stays a deliberate, reviewable line in the diff,
-      # next to the note explaining which widening bought it.
+      # Only the classes this repo writes are counted. Rows in the classes Spinel
+      # injects for a `require` are upstream's and cannot be narrowed here, so
+      # counting them left raising the ceiling as the only remedy for a bump --
+      # the reflex this step exists to stop. They are still compared in the
+      # golden diff above.
       #
-      # WHAT IS COUNTED. Only the classes this repo writes. The emitted golden
-      # also carries the classes Spinel injects for a `require` -- `Set` from
-      # set, `OptionParser` and its flattened `ParseError` from optparse -- and
-      # those are upstream's code, arriving with whatever signatures the pinned
-      # compiler ships. Counting them made the ceiling mostly noise: of the 43
-      # this replaces, FORTY-ONE came from those three and two from ours
-      # (`ahead_behind_columns` and `ahead_behind_readback`, the pair the seed
-      # deliberately leaves on the slow path). A widening in bin/git-stack.rb
-      # could have doubled our own share without moving the number.
-      #
-      # The d897e152 bump is the worked example, and it is why the count is
-      # scoped rather than raised again: upstream added `Set#initialize_copy`,
-      # +1 untyped in a class this repo never calls `dup` or `clone` on. Every
-      # behavioural gate was green on it; the only red was this threshold
-      # counting upstream's library, and the sole remedy available was raising
-      # the ceiling -- the exact reflex the note above forbids. A row we cannot
-      # narrow does not belong in a number we are forbidden to raise.
-      #
-      # Those signatures are NOT unwatched: they are in the golden, so the diff
-      # step above still shows every one of them changing, which is where an
-      # upstream shift belongs -- reviewable, not a threshold.
-      #
-      # A class Spinel injects that is not in SPINEL_CLASSES counts as ours and
-      # fails here. That is deliberate: a new `require` (or a new upstream class)
-      # should land as a considered line in this list, the same way raising
-      # RATCHET is a considered line -- never as a silent hole in the guard.
-      #
-      # The same goes one level down, for METHODS Spinel injects into a class
-      # we do own: since a3be2abd, the Enumerable helpers upstream's Set is
-      # written against land in `class Object` under `__`-prefixed names
-      # (`__enumw_map`, `__enum_any?__2455`), so they are reported as
-      # `Object#__` on the spinel side. That is only safe while no `__` method
-      # is ours, so the step checks that first rather than trusting it.
-      #
-      # RATCHET is 0 since a3be2abd: every signature this repo writes is
-      # concrete, so ANY untyped row in our classes is now a regression.
+      # An injected class missing from SPINEL_CLASSES counts as ours and fails, so
+      # a new `require` lands as a considered line rather than a hole. The same
+      # holds for the `__`-prefixed helpers Spinel injects into `class Object`,
+      # which is only safe while no `__` method is ours -- hence the check first.
       - name: Check the untyped ratchet has not risen
         run: |
           RATCHET=0

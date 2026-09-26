@@ -1,48 +1,27 @@
 #!/usr/bin/env bash
 #
-# Runtime snapshot test for the *compiled* git-stack binary.
+# Runtime snapshot test for the COMPILED git-stack binary.
 #
-# `spin test` compiles test/*_test.rb, but that harness still shells out to
-# `ruby bin/git-stack.rb` -- so the command under test runs under CRuby, and
-# the native binary that actually ships is never executed. Any method the
-# Spinel runtime does not support (e.g. `Array#sort`) compiles and passes the
-# CRuby snapshot, then dies with NoMethodError only on the real binary.
+# `spin test` compiles the test harness, but the harness still runs
+# `ruby bin/git-stack.rb`, so the shipped binary is never executed there. A method
+# the Spinel runtime cannot dispatch compiles, passes both snapshots, and dies
+# only on the real binary -- which is what this script runs. It adds to
+# test/*_test.rb rather than replacing it.
 #
-# This script closes that gap: it builds ONE known-shape fixture repository
-# (trunk / nested branches / multiple siblings / an orphan whose parent was
-# merged and deleted) and drives the compiled binary over it, printing a
-# transcript of each command's combined stdout+stderr and exit status. CI
-# diffs that transcript against test/binary_test.sh.expected; any change -- a
-# different message, a new line, a NoMethodError, a changed exit code -- fails.
+# The multi-sibling fixture reaches the `.sort` calls in
+# `StackTopology#children_of` / `#walk_order`, which Spinel dispatches only on a
+# concrete `Array[String]`. The large fixtures further down are the only ones
+# reaching a second ahead/behind batch, where a widened `each_slice` receiver once
+# segfaulted `tree`.
 #
-# The `tree` command is exercised against the multiple-sibling stack on
-# purpose: sibling ordering is the only path that reaches the `.sort` calls in
-# `StackTopology#children_of` and `#walk_order`, which is exactly where an
-# unsupported runtime method would hide.
-#
-# The large fixture below carries the other half of that job, and has already
-# earned it twice: it is the only test that reaches a SECOND ahead/behind batch,
-# where `scan_ahead_behind`'s `each_slice` receiver has to stay rooted or the
-# binary segfaults mid-`tree` (see the note there). Small fixtures need one
-# batch and never notice. Those `.sort`s are also load-bearing
-# for type inference -- Spinel only dispatches `sort` on a concrete
-# `Array[String]`, never on a poly array -- so this fixture doubles as the
-# runtime proof that the element type stayed narrow.
-#
-# This is the binary counterpart to test/*_test.rb's CRuby snapshot; it adds
-# a check, it does not replace one. It does NOT cover `version`, whose output
-# deliberately differs on the binary (it stamps the build's Spinel ref, which
-# is not deterministic across builds).
-#
-# Point GIT_STACK at the binary to test (default: build/bin/git-stack next to
-# this checkout). Build it first, then run or regenerate the snapshot:
+# Not covered: `version`, whose output stamps the build's Spinel ref.
 #
 #     spin build
 #     test/binary_test.sh | diff -u test/binary_test.sh.expected -   # check
 #     test/binary_test.sh > test/binary_test.sh.expected             # regen
 #
-# It only reads the finished binary, so it runs under any POSIX-ish shell with
-# git on PATH -- no Ruby, no Spinel toolchain.
+# GIT_STACK overrides the binary (default: build/bin/git-stack). Needs only a
+# POSIX-ish shell and git.
 
 set -u
 
@@ -133,15 +112,10 @@ git_q branch -d feat-x
 section "tree renders siblings, nesting, and the orphan"
 run tree
 
-# `children_of` for a TRUNK appends `detached_roots` via `each`/`<<` (issue #85)
-# -- an array built at run time and then handed to `cmd_up`'s `include?` /
-# `length` / `[0]`. That shape compiles clean and passes both the CRuby and
-# `spin test` snapshots; only the SHIPPED binary can show a Spinel array method
-# choking on it. `main` is still checked out from the fixture above, with
-# `feat-a` (a recorded child) and `feat-x-child` (the orphan `tree` just drew at
-# trunk-child indent) both reachable from it, so this is ambiguous on purpose:
-# the point is that `feat-x-child` appears in the pick list at all, proving
-# `up` reaches the row `tree` draws, not the exit code.
+# `children_of` builds the trunk's list at run time (`select`/`concat`), and
+# `cmd_up` reads it with `include?` / `length` / `[0]` -- a shape only the
+# shipped binary can prove. Ambiguous on purpose: what matters is that
+# `feat-x-child`, the orphan `tree` just drew, is offered at all.
 section "up from the trunk offers the orphan's root alongside feat-a (issue #85)"
 run up
 
@@ -149,29 +123,18 @@ section "parent reports the recorded parent"
 git_q checkout -q feat-b
 run parent
 
-# The failing commands, on the SHIPPED binary, for the exit STATUS as much as the
-# message: scripts and `&&` chains read the status, not the text. test/*_test.rb
-# asserts these same codes but cannot catch a Spinel codegen bug, since CRuby is
-# unaffected. One shipped: a `return` out of `loop do...end` corrupted a later
-# `exit`, so `would_cycle?` rejecting a cycle printed die's message and then
-# exited 0. `would_cycle?` avoided that `return` until the Spinel pinned since
-# a3be2abd fixed it, and it returns from inside its loop again -- which this
-# section is what proves. Before this section binary_test.sh ran no failing
-# command at all, so no non-zero exit was proven on the real artifact.
-#
-# Both blocks are state-neutral -- the rejections die before writing config, and
-# an ambiguous `up` only prints -- so the fixture's recorded shape carries on
-# unchanged into the sections below.
+# Failing commands, for the exit STATUS: scripts read it, and a Spinel codegen
+# bug once let `would_cycle?`'s `return` out of `loop` corrupt a later `exit`,
+# so a rejected cycle exited 0. CRuby cannot see that. Every rejection dies
+# before writing, so the fixture carries on unchanged.
 section "parent/track reject a cycle, a self-parent, and a missing branch"
 run parent feat-b1        # downstream of feat-b -> cycle
 run track feat-b1         # same cycle, reached through track
 run parent feat-b
 run parent no-such-branch
 
-# `cmd_up`'s ambiguous-children case is the file's only bare `exit 1` outside
-# `die`, and it runs straight after a `children.each` block -- the same
-# exit-after-a-block shape whose codegen the bug above proved can misfire. It is
-# the highest-risk exit path left, and CRuby coverage cannot speak for it.
+# `cmd_up`'s only bare `exit 1` outside `die`, straight after a block -- the
+# shape of the codegen bug above.
 section "up with multiple children exits non-zero"
 git_q checkout -q feat-a
 run up
@@ -190,14 +153,8 @@ run sync
 run tree
 show "feat-x-child parent" "config --get branch.feat-x-child.stackParent"
 
-# The fix-wave that split `children_of` into a menu path and `named_children_of`
-# (`up <name>`, issue #85 finding 1) only ever drove the appended-detached-root
-# array through `empty?` / `length` / `each` on the compiled binary above --
-# never `include?` (the named path's membership check) or `[0]` (the
-# single-child menu's auto-checkout). Both are ordinary Array methods CRuby
-# never misses, so only the shipped Spinel binary can show one choking on this
-# specific array (built at run time by `each`/`<<`, not a literal). A fresh
-# repo keeps this independent of the shared fixture above.
+# The other readers of that run-time list: `[0]` (a lone child is checked out
+# without a menu) and `include?` (`up <name>`).
 section "up <name> and a lone child both index the run-time-built list (issue #85)"
 new_repo
 gsq create base-a; commit a.txt a1
@@ -205,27 +162,19 @@ gsq create base-b; commit b.txt b1
 git_q checkout -q base-a
 gsq untrack
 git_q checkout -q main
-# main has no tracked child left (base-a untracked) and exactly one detached
-# root (base-b, appended by children_of) -- length 1, so `up` auto-checks it
-# out via children[0] rather than printing a menu.
+# main's only candidate is base-b, a detached root, so `up` takes children[0].
 run up
 show "HEAD after the lone child's [0] checkout" "branch --show-current"
 git_q checkout -q main
 gsq create trunk-child; commit tc.txt tc1
 git_q checkout -q main
-# Now main has two candidates (trunk-child, base-b) -- naming one exercises
-# include? on that same appended array before the checkout.
+# Two candidates now; naming one goes through include?.
 run up base-b
 show "HEAD after the named include? checkout" "branch --show-current"
 
-# Squash-merge recovery on the SHIPPED binary. `restack`'s `git rebase --onto
-# <parent> <stackBase>` is what makes this work; a plain rebase would re-apply
-# feature-a's two now-squashed commits and conflict. This is the one path that
-# exercises stackBase end-to-end on the compiled artifact, so it lives here too
-# and not only in the CRuby snapshot. A fresh repo keeps it independent of the
-# shared fixture above; feature-a gets TWO commits so the squash matches neither
-# original patch-id (a single-commit squash would be dropped even by a plain
-# rebase, hiding the bug).
+# stackBase end to end on the compiled binary: a plain rebase would re-apply
+# feature-a's squashed commits and conflict. Two commits, because a one-commit
+# squash matches its patch-id and a plain rebase would drop it too.
 section "sync recovers a branch whose parent was squash-merged and deleted"
 new_repo
 gsq create feature-a; commit a.txt a1
@@ -247,24 +196,14 @@ else
   printf 'feature-b stackBase == main tip: no\n'
 fi
 
-# Both scans that grow with the repository -- the local branch list and the
-# stack-config dump -- used to be truncated: a Spinel-compiled binary's backtick
-# kept only the first ~4 KB and dropped the rest with no error. Past that cut
-# every branch answered "does not exist": `tree` printed live parents as missing
-# AND duplicated their rows (a branch became an orphan root as well as a real
-# child), and `sync` -- which that very output tells the user to run -- then
-# reparented those healthy branches onto trunk, silently destroying the
-# recorded stack.
+# The two scans that grow with the repo, past 4 KB. A Spinel backtick once kept
+# only the first ~4 KB without error, so every branch past the cut read as
+# deleted: `tree` drew live parents as missing, and `sync` reparented healthy
+# branches onto trunk. CRuby never truncated, so only this test can catch a
+# compiler that brings the cap back.
 #
-# git-stack worked around it with a temp file until the Spinel pinned since
-# a3be2abd stopped truncating; `git_scan` is a plain backtick again. These two
-# sections are now what stands between a future compiler that brings the cap
-# back and a release that destroys stacks. They are invisible to
-# test/*_test.rb: CRuby's backticks never truncated, so only the compiled
-# binary can show it. The padding branches are long-named and
-# tracked so BOTH captures blow past 4 KB, and the stack under test is named
-# `zzz-` so it sorts entirely beyond the cut -- `for-each-ref` emits refnames in
-# sorted order, so truncation always drops the alphabetically last branches.
+# The padding is long-named and tracked so both scans overflow, and the stack
+# under test sorts last (`zzz-`), since truncation drops the tail.
 section "a stack past the 4 KB scan boundary renders and syncs intact"
 new_repo
 pad="aaa-padding-branch-with-a-deliberately-long-name-to-fill-the-scan-buffer"
@@ -279,8 +218,7 @@ git_q config branch.zzz-stack-bottom.stackParent main
 git_q branch zzz-stack-top
 git_q config branch.zzz-stack-top.stackParent zzz-stack-bottom
 
-# Assert the fixture is actually big enough to matter, without baking in an
-# exact byte count that a rename would invalidate.
+# Big enough to matter, without pinning a byte count a rename would break.
 over_cap() { # over_cap <label> <bytes>
   if [ "$2" -gt 4095 ]; then
     printf '%s exceeds the 4 KB backtick cap: yes\n' "$1"
@@ -293,27 +231,21 @@ over_cap "branch-list scan" \
 over_cap "stack-config scan" \
   "$(git -C "$repo" config --get-regexp '^branch\..*\.stackparent$' | wc -c | tr -d ' ')"
 
-# The stack must render nested under the trunk, with no "parent missing" and no
-# duplicated rows. The count is asserted separately: duplication was the loudest
-# symptom, and a grep transcript alone would not pin it down.
+# Nested under the trunk, no "parent missing", no duplicate rows. The count is
+# separate because a grep transcript alone would not pin the duplication down.
 run_grep zzz tree
 printf 'zzz rows in tree (expect 2): %s\n' \
   "$(cd "$repo" && NO_COLOR=1 "$GIT_STACK" tree 2>&1 | grep -c zzz)"
 
-# sync must leave the recorded shape alone. Under truncation it "healed"
-# zzz-stack-top onto main, discarding its real parent.
+# Under truncation, sync "healed" zzz-stack-top onto main.
 git_q checkout -q zzz-stack-top
 run sync
 show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
 show "zzz-stack-bottom parent after sync" "config --get branch.zzz-stack-bottom.stackParent"
 
-# The same cap, reached through the branch list ALONE. Above, the config dump
-# overflowed too, so the stack read as merely untracked and `sync` left it be.
-# Here the padding branches are NOT tracked: the config dump stays small and
-# accurate while the branch list still overflows, so the stack is read as
-# tracked-but-orphaned -- its live parent "does not exist". That is the
-# data-losing shape: `sync` heals the orphan onto trunk and the recorded parent
-# is gone for good.
+# Only the branch list overflows here; the config dump stays small and accurate.
+# The stack then reads as tracked but orphaned -- the shape where `sync`
+# destroys the recorded parent.
 section "an orphan-looking stack past the branch-list cap is not 'healed' away"
 new_repo
 i=0
@@ -339,15 +271,9 @@ git_q checkout -q zzz-stack-top
 run sync
 show "zzz-stack-top parent after sync" "config --get branch.zzz-stack-top.stackParent"
 
-# The trunk-list editors, on the SHIPPED binary, because both are the array
-# shape this file exists for: `plant` hands `set_trunks` a run-time
-# CONCATENATION (`configured_trunks + args`, neither one a literal), and `fell`
-# builds its remaining list with `reject` -- one of the poly-array methods
-# Spinel dispatches only on a concrete receiver, with an `include?` on a second
-# run-time array inside the block. Both compile clean and pass the CRuby
-# snapshot whatever the element type turns out to be; only the real binary can
-# show one choking. The last `fell` empties the list, so `set_trunks` is also
-# proven on the zero-element path that unsets the key.
+# `plant` hands `set_trunks` a run-time concatenation and `fell` a `reject`
+# result, array shapes only the shipped binary can prove. The last `fell`
+# empties the list, covering the path that unsets the key.
 section "plant and fell edit the trunk list on the compiled binary"
 new_repo
 git_q branch develop
@@ -355,8 +281,7 @@ git_q branch release
 run init main
 run plant develop
 run plant release
-# `show` strips newlines, so a multi-valued key reads as one run-on
-# string here -- the names, in config order, with nothing between them.
+# `show` strips newlines, so the names run together, in config order.
 show "stack.trunk (run together)" "config --get-all stack.trunk"
 run fell develop
 show "stack.trunk after fell (run together)" "config --get-all stack.trunk"

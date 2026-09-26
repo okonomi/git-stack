@@ -5,21 +5,15 @@
 
 require_relative "support/helper"
 
-# tree's agreement with up on which trunk a detached root belongs to is
-# covered in nav_test.rb's "tree and up agree on which trunk a detached root
-# belongs to" section, not here.
-
 section "tree renders the whole stack"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
 gsq("create feat-b"); commit("b.txt", "b1")
 run("tree")
 
-# `untrack` on a branch with children leaves a parent that exists but is
-# recorded nowhere: not a trunk's child, so the walk down from main never
-# reaches it, and not missing either, so the orphan rule did not catch it. The
-# whole subtree above it used to vanish from `tree` while the config below --
-# which `restack` still obeys -- stayed exactly as it was.
+# The untracked parent exists but is recorded nowhere: the trunk walk never
+# reaches it and it is not missing, so its subtree vanished from `tree` while
+# `restack` still followed it (#58).
 section "tree keeps the subtree of a branch that was untracked"
 new_repo
 gsq("create feat-a"); commit("a.txt", "a1")
@@ -34,10 +28,8 @@ show("feat-b stackParent (still recorded)", "git config --get branch.feat-b.stac
 gsq("track")
 run("tree")
 
-# The root of a detached stack is found by climbing to it, not by scanning for
-# it, so the branch names cannot decide the shape: here the child sorts BEFORE
-# the root it hangs off. Scanning would emit the child as a root of its own and
-# draw it twice -- once at root indent, once under zzz-top.
+# The child sorts before its root, so scanning for roots rather than climbing to
+# them would draw it twice.
 section "a detached stack is drawn once, from its top, whatever its branches are named"
 new_repo
 gsq("create feat-mid"); commit("m.txt", "m1")
@@ -47,10 +39,8 @@ setup("git checkout -q feat-mid")
 gsq("untrack")
 run("tree")
 
-# A parent cycle is impossible through `parent`/`track` (both refuse one), but a
-# hand-edited config can still hold one -- and a cycle is reachable from no
-# trunk, so it used to be drawn nowhere at all. The climb to the root breaks out
-# of it and the subtree walk renders each branch once.
+# `parent`/`track` refuse a cycle, but hand-edited config can hold one, and it
+# is reachable from no trunk.
 section "tree renders a hand-edited parent cycle instead of dropping it"
 new_repo
 setup("git branch feat-a main")
