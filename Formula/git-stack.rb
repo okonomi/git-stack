@@ -1,43 +1,31 @@
-# Homebrew formula for git-stack.
-#
-# This repo doubles as its own Homebrew tap. Because it is not named
-# `homebrew-git-stack`, tap it with an explicit URL:
+# Homebrew formula for git-stack. This repo is its own tap; it is not named
+# `homebrew-git-stack`, so tap it with an explicit URL:
 #
 #     brew tap okonomi/git-stack https://github.com/okonomi/git-stack
 #     brew install git-stack
 #
-# There are no tagged releases yet, so the formula is HEAD-only: it builds
-# straight from the tip of `main`. Once a release is cut, add `url`/`sha256`
-# stable stanzas alongside the `head` line below.
+# HEAD-only because there are no tagged releases yet; add `url`/`sha256` once
+# one is cut.
 #
-# The install compiles bin/git-stack.rb into a standalone native binary with
-# Spinel (Matz's ahead-of-time Ruby compiler), so the installed `git-stack`
-# carries no Ruby runtime dependency. Spinel isn't packaged, so it ships as a
-# sibling formula in this tap (Formula/spinel.rb) and is pulled in as a build
-# dependency below.
+# Compiled to a native binary with Spinel, so no Ruby runtime is needed. Spinel
+# is not packaged, hence the sibling formula (Formula/spinel.rb).
 class GitStack < Formula
   desc "Manage stacked branches with plain git"
   homepage "https://github.com/okonomi/git-stack"
   head "https://github.com/okonomi/git-stack.git", branch: "main"
   license "MIT"
 
-  # The compiled binary shells out to `git` at run time; that is its only
-  # runtime dependency. Spinel is only needed to build it.
+  # `git` at run time; Spinel only to build.
   depends_on "git"
   depends_on "okonomi/git-stack/spinel" => :build
 
   def install
-    # Stamp the exact Spinel revision compiling this binary into the source, so
-    # `git stack version` reports its real build toolchain. bin/git-stack.rb
-    # ships SPINEL_REF as an empty placeholder; fill it in here with the actual
-    # `spinel --version` before `spin build`. `spinel --version` prints
-    # "spinel <short-rev>"; take the revision token when present.
+    # A compiled binary cannot ask for its compiler's revision at run time, so
+    # `git stack version` reads SPINEL_REF, stamped here before `spin build`.
     rev = Utils.safe_popen_read("spinel", "--version").split[1]
     inreplace "bin/git-stack.rb", /^SPINEL_REF = ".*"$/, %Q(SPINEL_REF = "#{rev}") if rev
 
-    # Compile bin/git-stack.rb -> build/bin/git-stack with Spinel, then install
-    # that native binary. Naming it `git-stack` lets it work both directly and
-    # as the `git stack` subcommand (git picks up `git-*` executables on PATH).
+    # Named `git-stack` so git also runs it as `git stack`.
     system "spin", "build"
     bin.install "build/bin/git-stack"
   end
