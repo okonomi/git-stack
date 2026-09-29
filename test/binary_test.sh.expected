@@ -162,6 +162,17 @@ felled main, release, develop; no trunk left -- the next command will auto-detec
 [exit 0]
 stack.trunk (unset): 
 
+### restack rewrites a branch in another worktree and skips a dirty one
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a in worktree '<repo>-wt-b'
+warning: skipping 'feat-c': its worktree '<repo>-wt-c' has uncommitted changes
+error: restack skipped 1 branch(es): feat-c
+Deal with the worktrees warned about above, then re-run 'git stack restack'.
+[exit 1]
+feat-b behind feat-a: 0
+feat-c behind feat-a: 1
+
 ### a config lock released during the retries is waited out
 $ git stack create feat-a
 created feat-a on top of main

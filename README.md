@@ -310,6 +310,28 @@ git checkout <branch> && git rebase <parent>
 git stack restack               # continue restacking the rest
 ```
 
+## Worktrees
+
+Stack metadata lives in git config, which every worktree of a repository
+shares, so `tree`, `restack`, `sync` and `drop` see the same stacks from any of
+them.
+
+A branch that another worktree has checked out cannot be checked out here, so
+`restack`, `sync` and `drop` rebase it from inside that worktree instead
+(`git -C <worktree> rebase ...`). On a conflict the rebase there is aborted, and
+the message says `cd <worktree>` rather than `git checkout <branch>`.
+
+If that worktree has uncommitted changes to tracked files, a rebase or merge in
+progress, or no longer exists on disk, the branch is skipped together with every
+branch stacked on it, and the rest of the stack is still restacked. The command
+then lists what it skipped and exits non-zero instead of printing `done.`. A
+branch that is already up to date is never skipped.
+
+Two worktrees restacking at once can collide on git's config lock. git-stack
+retries a locked write for about a second; a lock that outlasts that was left
+behind by a killed git, and git-stack tells you where it is rather than
+removing it.
+
 ## Tests
 
 The suite lives in `test/`, split by topic (`init_test.rb`, `sync_test.rb`,

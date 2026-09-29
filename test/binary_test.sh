@@ -315,6 +315,25 @@ run plant develop
 run fell main release develop
 show "stack.trunk (unset)" "config --get-all stack.trunk"
 
+# The worktree map is a Hash built from `worktree list`, and the busy check a
+# `find` over IN_PROGRESS_MARKERS: run-time shapes the snapshot tests only see
+# under CRuby. feat-b is rebased inside its worktree, and feat-c, held by a
+# dirty one, is skipped.
+section "restack rewrites a branch in another worktree and skips a dirty one"
+new_repo
+gsq create feat-a; commit a.txt a1
+gsq create feat-b; commit b.txt b1
+git_q checkout -q feat-a
+gsq create feat-c; commit c.txt c1
+git_q checkout -q feat-a
+commit a2.txt a2
+git_q worktree add -q "$repo-wt-b" feat-b
+git_q worktree add -q "$repo-wt-c" feat-c
+printf 'dirty\n' > "$repo-wt-c/c.txt"
+run restack
+show "feat-b behind feat-a" "rev-list --count feat-b..feat-a"
+show "feat-c behind feat-a" "rev-list --count feat-c..feat-a"
+
 # `sleep` between config-lock retries, compiled.
 section "a config lock released during the retries is waited out"
 new_repo
