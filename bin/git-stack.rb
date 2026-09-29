@@ -147,6 +147,39 @@ def git_scan(subcmd, empty_ok)
   out.strip
 end
 
+# How often a config write retries a lock another git holds, and the pause
+# between tries. Not left to git: a held config lock fails at once, with no
+# timeout setting like refs' `core.filesRefLockTimeout`, so two worktrees
+# restacking together would fail whichever wrote second.
+CONFIG_LOCK_TRIES = 20
+CONFIG_LOCK_PAUSE = 0.05
+
+# Every config write goes through here; reads stay on `git_out`. False for any
+# failure but the lock -- an unset of an absent key is one, and callers ignore it.
+#
+# A lock still held after every try is a leftover from a killed git, which
+# waiting cannot fix. It is never removed here: it may yet belong to a live
+# write. Nor is `core.lockfilePid` asked for its owner: git writes no PID file
+# for the config lock.
+#
+# The failure is told apart by git's message, hence `LC_ALL=C`: the exit status
+# is only `$? == 0` under Spinel (see `git_ok`), and the message is translated.
+def git_config_write(args)
+  tries = 0
+  while tries < CONFIG_LOCK_TRIES
+    sleep(CONFIG_LOCK_PAUSE) if tries > 0
+    err = `LC_ALL=C git config #{args} 2>&1 >/dev/null`
+    return true if $? == 0
+    return false unless err.include?("could not lock config file")
+
+    tries += 1
+  end
+  lock = "#{git_out("rev-parse --path-format=absolute --git-common-dir")}/config.lock"
+  die("git config is locked by '#{lock}'.\n" \
+      "If no git command is running, a killed one left it behind; remove it and re-run.")
+  false
+end
+
 # A bare name, not `branch_ref`, which would detach HEAD (see there).
 def checkout!(branch)
   die("failed to check out '#{branch}'") unless git_run("checkout #{sh(branch)}")
@@ -262,9 +295,9 @@ end
 # Replace the trunk list with exactly `trunks`.
 def set_trunks(trunks)
   # Fails when the key is absent, which is fine.
-  git_ok("config --unset-all stack.trunk")
+  git_config_write("--unset-all stack.trunk")
   trunks.each do |trunk|
-    git_ok("config --add stack.trunk #{sh(trunk)}")
+    git_config_write("--add stack.trunk #{sh(trunk)}")
   end
 end
 
@@ -372,11 +405,11 @@ def get_parent(branch)
 end
 
 def set_parent(branch, parent)
-  git_ok("config branch.#{sh(branch)}.stackParent #{sh(parent)}")
+  git_config_write("branch.#{sh(branch)}.stackParent #{sh(parent)}")
 end
 
 def clear_parent(branch)
-  git_ok("config --unset branch.#{sh(branch)}.stackParent")
+  git_config_write("--unset branch.#{sh(branch)}.stackParent")
 end
 
 # The recorded stack base, or "" when none is (a branch predating stackBase, or
@@ -386,11 +419,11 @@ def get_base(branch)
 end
 
 def set_base(branch, sha)
-  git_ok("config branch.#{sh(branch)}.stackBase #{sh(sha)}")
+  git_config_write("branch.#{sh(branch)}.stackBase #{sh(sha)}")
 end
 
 def clear_base(branch)
-  git_ok("config --unset branch.#{sh(branch)}.stackBase")
+  git_config_write("--unset branch.#{sh(branch)}.stackBase")
 end
 
 # The base for reparenting an existing branch: the merge-base, not the parent's
@@ -417,6 +450,11 @@ end
 # parent replays the wrong range. `err` keeps each command's own wording.
 # `restack_subtree` does not come through here; it anchors on the tip after
 # rebasing.
+#
+# Parent first, everywhere: config has no multi-key transaction, and a run cut
+# off between the two writes leaves a missing base, which `resolve_stack_base`
+# recovers as a merge-base. The other order would leave a base beside the old
+# parent.
 def reparent!(branch, parent, err)
   die(err) unless set_parent(branch, parent)
   record_reparent_base(branch, parent)

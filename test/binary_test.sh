@@ -29,6 +29,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 GIT_STACK="${GIT_STACK:-$root/build/bin/git-stack}"
 
 repo=""
+# $repo as git reports it, symlinks resolved; `run` prints it as <repo>.
+real=""
 
 section() { printf '\n### %s\n' "$1"; }
 
@@ -38,7 +40,7 @@ run() {
   local out rc
   out="$(cd "$repo" && NO_COLOR=1 "$GIT_STACK" "$@" 2>&1)"
   rc=$?
-  [ -n "$out" ] && printf '%s\n' "$out"
+  [ -n "$out" ] && printf '%s\n' "$out" | sed "s|$real|<repo>|g"
   printf '[exit %d]\n' "$rc"
 }
 
@@ -73,6 +75,7 @@ commit() { # commit <file> <message>
 
 new_repo() {
   repo="$(mktemp -d)"
+  real="$(cd "$repo" && pwd -P)"
   git_q init -q -b main
   git_q config user.email test@example.com
   git_q config user.name Test
@@ -311,3 +314,13 @@ show "stack.trunk after fell (run together)" "config --get-all stack.trunk"
 run plant develop
 run fell main release develop
 show "stack.trunk (unset)" "config --get-all stack.trunk"
+
+# `sleep` between config-lock retries, compiled.
+section "a config lock released during the retries is waited out"
+new_repo
+gsq init
+: > "$repo/.git/config.lock"
+(sleep 0.3; rm -f "$repo/.git/config.lock") &
+run create feat-a
+wait
+show "feat-a parent" "config --get branch.feat-a.stackParent"

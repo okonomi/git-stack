@@ -1,0 +1,19 @@
+
+### a config lock left behind is reported, not removed
+$ git stack create feat-a
+error: git config is locked by '<repo>/.git/config.lock'.
+If no git command is running, a killed one left it behind; remove it and re-run.
+[exit 1]
+lock still there: yes
+
+### a config lock released during the retries is waited out
+$ git stack create feat-a
+created feat-a on top of main
+[exit 0]
+feat-a parent: main
+feat-a base == main: yes
+
+### a failed unset is not mistaken for the lock
+$ git stack untrack
+'feat-a' is no longer tracked in a stack
+[exit 0]

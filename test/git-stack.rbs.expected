@@ -26,6 +26,7 @@ class Object
   def git_out: (String) -> String
   def git_run: (String) -> bool
   def git_scan: (String, bool) -> String
+  def git_config_write: (String) -> bool
   def checkout!: (String) -> nil
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
@@ -111,12 +112,12 @@ class Object
   def __enum_all?__3068: (Array[untyped]) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
-  def __enum_find__3977: (Array[String]) -> String
-  def __enum_each_with_index__4893: (Array[String]) -> Array[String]
-  def __enum_find__6337: (Array[String]) -> String
-  def __enum_each_with_index__6910: (Array[String]) -> Array[String]
-  def __enum_find__8132: (Array[String]) -> String
-  def __enum_find__8381: (Array[String]) -> String
+  def __enum_find__4047: (Array[String]) -> String
+  def __enum_each_with_index__4963: (Array[String]) -> Array[String]
+  def __enum_find__6403: (Array[String]) -> String
+  def __enum_each_with_index__6976: (Array[String]) -> Array[String]
+  def __enum_find__8198: (Array[String]) -> String
+  def __enum_find__8447: (Array[String]) -> String
 end
 
 class OptionParser

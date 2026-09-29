@@ -161,3 +161,9 @@ $ git stack fell main release develop
 felled main, release, develop; no trunk left -- the next command will auto-detect main
 [exit 0]
 stack.trunk (unset): 
+
+### a config lock released during the retries is waited out
+$ git stack create feat-a
+created feat-a on top of main
+[exit 0]
+feat-a parent: main
