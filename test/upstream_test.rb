@@ -19,7 +19,7 @@ end
 
 # Give the repo an `origin` that main tracks.
 def add_origin
-  setup("git init -q --bare #{origin}")
+  setup("git init -q --bare -b main #{origin}")
   setup("git remote add origin #{origin}")
   setup("git push -q -u origin main")
 end

@@ -349,7 +349,7 @@ show "feat-a parent" "config --get branch.feat-a.stackParent"
 # only exercised under CRuby in the snapshot tests. `sync` fetches first.
 section "sync follows the trunk's upstream when stack.trunkUpstream is set"
 new_repo
-git init -q --bare "$repo-origin.git"
+git init -q --bare -b main "$repo-origin.git"
 git_q remote add origin "$repo-origin.git"
 git_q push -q -u origin main
 gsq create feat-a; commit a.txt a1
