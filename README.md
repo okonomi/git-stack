@@ -177,6 +177,36 @@ left, git-stack auto-detects one again (so renaming `master` to `main` just
 works) and asks you to run `git stack init <branch>` only when there is nothing
 to detect.
 
+### Restacking onto the trunk's upstream
+
+By default a branch whose parent is a trunk is restacked onto the **local**
+trunk, so following the latest `main` means `git checkout main && git pull`
+first. With worktrees that is often impossible: `main` stays checked out in
+another worktree, and git refuses to update it from here.
+
+```sh
+git config stack.trunkUpstream true
+```
+
+makes such branches restack onto, and `tree` measure them against, the trunk's
+upstream (`origin/main`) instead, and has `git stack sync` fetch that remote
+first. One `sync` from any worktree then follows the remote trunk. `restack`
+and `drop` use the upstream as it was last fetched and never fetch.
+
+- `stackParent` still names the trunk (`main`); only the ref it resolves to
+  changes. `git stack tree` shows it as `main (trunk, restacks onto
+  origin/main)`.
+- A trunk without an upstream (including every trunk in a repository with no
+  remote) keeps its local branch. So does one whose upstream has not been
+  fetched yet, with a warning.
+- If the fetch fails (offline, say), `sync` warns and uses the upstream as last
+  fetched.
+- Commits that exist only on the local trunk (not yet pushed) are no longer
+  under your stack's base.
+
+It is off by default because it changes what an existing setup restacks onto,
+and has `sync` touch the network.
+
 ## Commands
 
 | Command                 | Description                                                        |

@@ -44,6 +44,13 @@ class Object
   def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
   def containing_trunk: (String, Array[String]) -> String
+  def trunk_upstream_enabled?: () -> bool
+  def trunk_upstream_rows: (Array[String]) -> Array[String]
+  def tab_field: (String, Integer) -> String
+  def trunk_onto_refs: (Array[String]) -> Hash[String, String]
+  def fetch_trunk_remotes: (Array[String]) -> nil
+  def parent_ref: (String, Hash[String, String]) -> String
+  def ref_label: (String) -> String
   def other_worktree_checkouts: (String) -> Hash[String, String]
   def worktree_line_branch: (String, String) -> String
   def worktree_file: (String, String) -> String
@@ -104,7 +111,7 @@ class Object
   def worktree_at: (String) -> String
   def replay_onto!: (String, String, String, String) -> nil
   def fast_forward!: (String, String, String) -> nil
-  def restack_subtree: (String, Array[String], bool, String, StackTopology, Hash[String, String]) -> String
+  def restack_subtree: (String, Array[String], bool, String, StackTopology, Hash[String, String], Hash[String, String]) -> String
   def report_skipped!: (String, String) -> nil
   def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
@@ -124,12 +131,12 @@ class Object
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
-  def __enum_find__4643: (Array[String]) -> String
-  def __enum_each_with_index__5236: (Array[String]) -> Array[String]
-  def __enum_find__6676: (Array[String]) -> String
-  def __enum_each_with_index__7249: (Array[String]) -> Array[String]
-  def __enum_find__8774: (Array[String]) -> String
-  def __enum_find__9023: (Array[String]) -> String
+  def __enum_find__4933: (Array[String]) -> String
+  def __enum_each_with_index__5526: (Array[String]) -> Array[String]
+  def __enum_find__7008: (Array[String]) -> String
+  def __enum_each_with_index__7606: (Array[String]) -> Array[String]
+  def __enum_find__9167: (Array[String]) -> String
+  def __enum_find__9416: (Array[String]) -> String
 end
 
 class OptionParser
@@ -252,9 +259,12 @@ end
 
 class StackSnapshot
   @topology: StackTopology
+  @onto: Hash[String, String]
   @ab: Hash[String, String]
-  def initialize: (StackTopology) -> nil
+  def initialize: (StackTopology, Hash[String, String]) -> nil
   def topology: () -> StackTopology
+  def parent_ref_of: (String) -> String
+  def upstream_of: (String) -> String
   def ahead_behind_of: (String) -> Array[Integer]
   def scan_ahead_behind: () -> String
 end

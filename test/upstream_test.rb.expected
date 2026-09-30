@@ -1,0 +1,108 @@
+
+### without stack.trunkUpstream, restack stays on the local trunk
+$ git stack restack
+restacking stack rooted at feat-a
+done.
+[exit 0]
+feat-a behind origin/main: 1
+
+### with stack.trunkUpstream, restack replays a trunk child onto origin/main
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-a onto origin/main
+restacking feat-b onto feat-a
+done.
+[exit 0]
+feat-a behind origin/main: 0
+feat-b behind feat-a: 0
+feat-a base == origin/main: yes
+feat-a parent (still the trunk's name): main
+local main behind origin/main (untouched): 1
+
+### tree measures a trunk child against the upstream and says so on the trunk
+$ git stack tree
+  main (trunk, restacks onto origin/main)
+  * feat-a (needs restack: 1 behind)
+[exit 0]
+
+### a trunk child with no commits is fast-forwarded to the upstream
+$ git stack restack
+restacking stack rooted at feat-a
+fast-forwarding feat-a to origin/main
+done.
+[exit 0]
+feat-a == origin/main: yes
+
+### sync fetches the trunk's remote first
+$ git stack sync
+fetching origin
+syncing stack rooted at feat-a
+restacking feat-a onto origin/main
+done.
+[exit 0]
+feat-a contains o1: 1
+local main has o1 (untouched): 0
+
+### sync without stack.trunkUpstream does not fetch
+$ git stack sync
+syncing stack rooted at feat-a
+done.
+[exit 0]
+origin/main has o1: 0
+
+### restack does not fetch, even with stack.trunkUpstream
+$ git stack restack
+restacking stack rooted at feat-a
+done.
+[exit 0]
+origin/main has o1: 0
+
+### a failed fetch warns and restacks onto what was fetched last
+$ git stack sync
+fetching origin
+warning: fetching 'origin' failed; using what was fetched last
+syncing stack rooted at feat-a
+restacking feat-a onto origin/main
+done.
+[exit 0]
+feat-a behind origin/main: 0
+
+### a trunk with no upstream keeps the local branch
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+done.
+[exit 0]
+feat-a behind main: 0
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s))
+[exit 0]
+
+### an upstream that was never fetched falls back to the local branch
+$ git stack restack
+warning: trunk 'main' has no 'origin/not-fetched' yet; using the local branch
+restacking stack rooted at feat-a
+done.
+[exit 0]
+
+### drop reconnects children onto the trunk's upstream
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+restacking feat-b onto origin/main
+[exit 0]
+feat-b parent: main
+feat-b behind origin/main: 0
+
+### a trunk named like a tag still resolves its own upstream
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-a onto origin/main
+done.
+[exit 0]
+feat-a behind origin/main: 0
+
+### a value git cannot read as a boolean is refused
+$ git stack restack
+error: stack.trunkUpstream must be true or false, not 'maybe'
+[exit 1]
