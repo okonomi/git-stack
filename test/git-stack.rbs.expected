@@ -51,6 +51,16 @@ class Object
   def fetch_trunk_remotes: (Array[String]) -> nil
   def parent_ref: (String, Hash[String, String]) -> String
   def ref_label: (String) -> String
+  def configured_anchors: () -> Array[String]
+  def set_anchors: (Array[String]) -> Array[String]
+  def get_anchor: (String) -> String
+  def set_anchor: (String, String) -> bool
+  def mark_anchor_used: (String) -> bool
+  def anchor_memberships: () -> Hash[String, String]
+  def release_anchor: (String) -> nil
+  def live_anchors: () -> Array[String]
+  def anchor_used?: (String) -> bool
+  def refuse_anchor_parent!: (String) -> nil
   def other_worktree_checkouts: (String) -> Hash[String, String]
   def worktree_line_branch: (String, String) -> String
   def worktree_file: (String, String) -> String
@@ -99,8 +109,11 @@ class Object
   def cmd_init: (Array[String]) -> nil
   def cmd_plant: (Array[String]) -> nil
   def cmd_fell: (Array[String]) -> nil
+  def cmd_anchor: (Array[String]) -> nil
+  def cmd_unanchor: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
   def cmd_tree: (Array[String]) -> Array[String]
+  def print_anchor_row: (String, String, bool, String, StackSnapshot) -> nil
   def cmd_parent: (Array[String]) -> nil
   def cmd_track: (Array[String]) -> nil
   def cmd_untrack: (Array[String]) -> nil
@@ -131,12 +144,13 @@ class Object
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
-  def __enum_find__4933: (Array[String]) -> String
-  def __enum_each_with_index__5526: (Array[String]) -> Array[String]
-  def __enum_find__7008: (Array[String]) -> String
-  def __enum_each_with_index__7606: (Array[String]) -> Array[String]
-  def __enum_find__9167: (Array[String]) -> String
-  def __enum_find__9416: (Array[String]) -> String
+  def __enum_find__5180: (Array[String]) -> String
+  def __enum_each_with_index__5783: (Array[String]) -> Array[String]
+  def __enum_find__7265: (Array[String]) -> String
+  def __enum_each_with_index__8193: (Array[String]) -> Array[String]
+  def __enum_each_with_index__8279: (Array[String]) -> Array[String]
+  def __enum_find__9960: (Array[String]) -> String
+  def __enum_find__10214: (Array[String]) -> String
 end
 
 class OptionParser

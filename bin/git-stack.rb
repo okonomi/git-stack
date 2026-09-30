@@ -489,6 +489,90 @@ def ref_label(ref)
   ref.delete_prefix("refs/remotes/")
 end
 
+# --- anchors ----------------------------------------------------------------
+
+# An anchor is the branch a worktree tool makes for a worktree: it sits on a
+# trunk and carries no commits, and stacks grow on top of it. It is never a node
+# of the graph -- a stack created on it records the trunk as parent -- so it is
+# never restacked and never a PR base.
+#
+# `stackAnchor` goes on every branch of the stack, not only the root: deleting a
+# branch deletes its whole `branch.<name>` config section, and the root is the
+# branch deleted first, once it merges.
+
+# Every registered anchor, in config order. Shaped like `configured_trunks`.
+def configured_anchors
+  out = git_out("config --get-all stack.anchor")
+  out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }.uniq
+end
+
+def set_anchors(anchors)
+  # Fails when the key is absent, which is fine.
+  git_config_write("--unset-all stack.anchor")
+  anchors.each do |anchor|
+    git_config_write("--add stack.anchor #{sh(anchor)}")
+  end
+end
+
+# The anchor `branch`'s stack belongs to, or "".
+def get_anchor(branch)
+  git_out("config --get branch.#{sh(branch)}.stackAnchor")
+end
+
+def set_anchor(branch, anchor)
+  git_config_write("branch.#{sh(branch)}.stackAnchor #{sh(anchor)}")
+end
+
+# Kept on the anchor itself, so it tells "every stack here was deleted" from
+# "no stack yet", and goes with the anchor when that is deleted.
+def mark_anchor_used(anchor)
+  git_config_write("branch.#{sh(anchor)}.stackAnchorUsed true")
+end
+
+# branch -> the anchor it records, for every branch at once: `tree` would
+# otherwise spend a `git config` per row.
+def anchor_memberships
+  members = {}
+  scan = git_scan("config --get-regexp '^branch\\..*\\.stackanchor$'", true)
+  unpack_lines(scan).each do |line|
+    space = line.index(" ")
+    next if space.nil?
+
+    value = line[(space + 1)..-1].strip
+    next if value.empty?
+
+    members[line[0...space].sub(/^branch\./, "").sub(/\.stackanchor$/, "")] = value
+  end
+  members
+end
+
+# Unset `stackAnchor` on every branch that names `anchor`, for when the anchor
+# stops being one. Its stacks stay, as ordinary stacks on the trunk.
+def release_anchor(anchor)
+  anchor_memberships.each do |name, value|
+    git_config_write("--unset branch.#{sh(name)}.stackAnchor") if value == anchor
+  end
+  nil
+end
+
+# The registered anchors whose branch still exists.
+def live_anchors
+  configured_anchors.select { |anchor| branch_ref_exists?(anchor) }
+end
+
+# True once a stack was created on `anchor` (see `mark_anchor_used`).
+def anchor_used?(anchor)
+  git_out("config --type=bool --get branch.#{sh(anchor)}.stackAnchorUsed") == "true"
+end
+
+# Dies unless `candidate` may become a parent. An anchor is not a graph node.
+def refuse_anchor_parent!(candidate)
+  return nil unless configured_anchors.include?(candidate)
+
+  die("'#{candidate}' is an anchor, not a stack branch; check it out and run '#{PROG} create <name>' on it instead")
+  nil
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -651,10 +735,12 @@ def reparent!(branch, parent, err)
   nil
 end
 
-# Parent and base go together, so no base outlives the stack it pointed into.
+# Parent, base and anchor go together, so none outlives the stack it pointed into.
 def untrack!(branch)
   clear_parent(branch)
   clear_base(branch)
+  # Fails when the key is absent, which is fine.
+  git_config_write("--unset branch.#{sh(branch)}.stackAnchor")
   nil
 end
 
@@ -1485,17 +1571,71 @@ def cmd_fell(args)
   nil
 end
 
+# Register anchors alongside the existing ones; with no arguments, list them.
+# Shaped like `plant`.
+def cmd_anchor(args)
+  anchors = configured_anchors
+  if args.empty?
+    info(anchors.empty? ? "no anchor registered; run '#{PROG} anchor <branch>'" : "anchor(s): #{anchors.join(", ")}")
+    return nil
+  end
+
+  refs = existing_branches
+  trunks = trunk_branches
+  args.each do |name|
+    die("branch '#{name}' does not exist") unless refs.include?(name)
+    die("trunk '#{name}' cannot be an anchor") if is_trunk?(name, trunks)
+    die("'#{name}' is already an anchor") if anchors.include?(name)
+    # It would be a graph node and an anchor at once, restacked and skipped.
+    die("'#{name}' is stacked on '#{get_parent(name)}'; run '#{PROG} untrack' on it first") unless get_parent(name).empty?
+  end
+  die("duplicate anchor in '#{args.join(" ")}'") if args.uniq.length != args.length
+
+  added = anchors + args
+  set_anchors(added)
+  info "anchored #{green(args.join(", "))}; anchor(s): #{added.join(", ")}"
+  nil
+end
+
+# Unregister anchors. Their stacks stay, as ordinary stacks on the trunk.
+def cmd_unanchor(args)
+  anchors = configured_anchors
+  return cmd_anchor(args) if args.empty?
+
+  args.each do |name|
+    die("'#{name}' is not an anchor") unless anchors.include?(name)
+  end
+
+  left = anchors.reject { |name| args.include?(name) }
+  set_anchors(left)
+  args.each { |name| release_anchor(name) }
+  gone = green(args.join(", "))
+  info(left.empty? ? "unanchored #{gone}; no anchor left" : "unanchored #{gone}; anchor(s): #{left.join(", ")}")
+  nil
+end
+
 def cmd_create(args)
   name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
   die("branch '#{name}' already exists") if branch_name_taken?(name)
 
-  parent = current_branch
+  here = current_branch
+  # On an anchor the stack rests on the anchor's trunk; elsewhere the new branch
+  # joins whatever anchor its parent belongs to.
+  on_anchor = configured_anchors.include?(here)
+  parent = on_anchor ? containing_trunk(here, trunk_branches) : here
+  anchor = on_anchor ? here : get_anchor(here)
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
-  # A new branch has no commits yet, so its stack begins at the parent's tip.
-  record_tip_base(name, "refs/heads/#{parent}")
-  info "created #{green(name)} on top of #{cyan(parent)}"
+  # A new branch has no commits yet, so its stack begins at the tip it was cut
+  # from -- the anchor's, which may lag its trunk.
+  record_tip_base(name, "refs/heads/#{here}")
+  unless anchor.empty?
+    set_anchor(name, anchor)
+    mark_anchor_used(anchor) if on_anchor
+  end
+  where = on_anchor ? "#{cyan(parent)} (anchor #{cyan(here)})" : cyan(parent)
+  info "created #{green(name)} on top of #{where}"
 end
 
 def cmd_tree(_args)
@@ -1515,15 +1655,53 @@ def cmd_tree(_args)
   # has to draw it somewhere.
   roots = snapshot.topology.detached_roots
   homes = roots.map { |root| containing_trunk(root, trunks) }
+  # Anchors are drawn under the trunk their history rests on, as detached roots
+  # are, with the stacks that record them one level further in.
+  anchors = live_anchors
+  anchor_homes = anchors.map { |anchor| containing_trunk(anchor, trunks) }
+  members = anchor_memberships
   trunks.each do |trunk|
     up = snapshot.upstream_of(trunk)
     label = up.empty? ? "(trunk)" : "(trunk, restacks onto #{ref_label(up)})"
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim(label)}"
-    print_order(trunk, 0, true, cur, snapshot)
+    stacks = snapshot.topology.children_of(trunk)
+    anchors.each_with_index do |anchor, i|
+      next unless anchor_homes[i] == trunk
+
+      mine = stacks.select { |root| members[root] == anchor }
+      print_anchor_row(anchor, trunk, !mine.empty?, cur, snapshot)
+      mine.each { |root| print_order(root, 2, false, cur, snapshot) }
+    end
+    stacks.each do |root|
+      # A stack recording an anchor that is gone or unregistered is drawn as an
+      # ordinary one, rather than vanishing from `tree`.
+      anchor = members[root]
+      next if !anchor.nil? && anchors.include?(anchor)
+
+      print_order(root, 1, false, cur, snapshot)
+    end
     roots.each_with_index do |root, i|
       print_order(root, 1, false, cur, snapshot) if homes[i] == trunk
     end
   end
+end
+
+# An anchor's heading in `tree`. It is not a node, so it is measured against the
+# trunk ref its stacks restack onto, and says whether `sync` has work to do.
+#
+# "done" needs the used mark: without it, an anchor whose stacks were all
+# deleted looks exactly like one nobody has stacked on yet.
+def print_anchor_row(anchor, trunk, has_stacks, cur, snapshot)
+  up = snapshot.upstream_of(trunk)
+  behind, _ahead = ahead_behind(up.empty? ? "refs/heads/#{trunk}" : up, anchor)
+  label = dim("(anchor)")
+  if !has_stacks && anchor_used?(anchor)
+    label = green("(anchor, done)")
+  elsif behind > 0
+    label = yellow("(anchor, #{behind} behind; run `#{PROG} sync`)")
+  end
+  puts "  #{tree_marker(anchor, cur)} #{tree_name(anchor, cur, "")} #{label}"
+  nil
 end
 
 def cmd_parent(args)
@@ -1537,6 +1715,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
+  refuse_anchor_parent!(new_parent)
   StackRepository.load_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
@@ -1549,6 +1728,7 @@ def cmd_track(args)
   die("cannot track trunk '#{branch}'") if is_trunk?(branch, trunks)
   # The trunk its history rests on, not just the primary.
   parent = containing_trunk(branch, trunks) if parent.empty?
+  refuse_anchor_parent!(parent)
   StackRepository.load_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
@@ -1898,6 +2078,8 @@ def cmd_help(_args)
         init [branch...]      Set (or auto-detect) the trunk branch(es).
         plant [branch...]     Add branch(es) to the trunks, keeping the rest. (no args: list them)
         fell [branch...]      Remove branch(es) from the trunks; the branch itself is kept. (no args: list them)
+        anchor [branch...]    Register branch(es) a worktree tool made as anchors to stack on. (no args: list them)
+        unanchor [branch...]  Unregister anchor(s); their stacks stay on the trunk.
         create <name>         Create <name> stacked on the current branch. (aliases: b, branch)
         tree                  Show the stack as a tree. (aliases: ls, list)
         up [child]            Check out the branch stacked on the current one.
@@ -1956,6 +2138,7 @@ UNKNOWN_COMMAND = -2
 def max_operands(cmd)
   case cmd
   when "init", "plant", "fell" then -1
+  when "anchor", "unanchor" then -1
   when "create", "b", "branch" then 1
   when "tree", "ls", "list" then 0
   when "up", "next" then 1
@@ -2037,6 +2220,8 @@ def main(argv)
   when "init"                 then cmd_init(rest)
   when "plant"                then cmd_plant(rest)
   when "fell"                 then cmd_fell(rest)
+  when "anchor"               then cmd_anchor(rest)
+  when "unanchor"             then cmd_unanchor(rest)
   when "create", "b", "branch" then cmd_create(rest)
   when "tree", "ls", "list"   then cmd_tree(rest)
   when "up", "next"           then cmd_up(rest)

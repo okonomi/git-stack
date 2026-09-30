@@ -214,6 +214,8 @@ and has `sync` touch the network.
 | `git stack init [branch...]` | Set (or auto-detect) the trunk branch(es).                    |
 | `git stack plant [branch...]` | Add branch(es) to the trunks, keeping the rest. With no argument, list the trunks. |
 | `git stack fell [branch...]`  | Remove branch(es) from the trunks; the branch itself is kept. With no argument, list the trunks. |
+| `git stack anchor [branch...]` | Register branch(es) as anchors to stack on (see [Anchors](#anchors)). With no argument, list the anchors. |
+| `git stack unanchor [branch...]` | Unregister anchor(s); their stacks stay on the trunk. |
 | `git stack create <name>` | Create `<name>` stacked on the current branch. (aliases: `b`, `branch`) |
 | `git stack tree`          | Show the stack as a tree. (aliases: `ls`, `list`)               |
 | `git stack up [child]`    | Check out the branch stacked on the current one.                |
@@ -361,6 +363,49 @@ Two worktrees restacking at once can collide on git's config lock. git-stack
 retries a locked write for about a second; a lock that outlasts that was left
 behind by a killed git, and git-stack tells you where it is rather than
 removing it.
+
+### Anchors
+
+A worktree tool such as git-wt makes a branch for each worktree it creates.
+That branch sits on the trunk with no commits of its own, and your stacks grow
+on top of it. Register it as an **anchor** so git-stack knows what it is:
+
+```sh
+git stack anchor feature-x      # -> anchored feature-x; anchor(s): feature-x
+git stack anchor                # (no args) -> anchor(s): feature-x
+git stack unanchor feature-x    # -> unanchored feature-x; no anchor left
+```
+
+An anchor is not part of any stack. `git stack create` on an anchor records the
+anchor's **trunk** as the new branch's parent, so the stack is restacked onto
+the trunk, its first PR targets the trunk, and the anchor itself is never
+rebased. What the anchor adds is membership: every branch created on it, or on
+top of such a branch, records `branch.<name>.stackAnchor`. It is kept on every
+branch rather than on the stack's root, because deleting a merged root deletes
+its config with it.
+
+`git stack tree` draws each anchor as a heading under its trunk, with the
+stacks that belong to it one level further in:
+
+```
+  main (trunk)
+    feature-x (anchor)
+      feat-a (1 commit(s))
+      * feat-b (1 commit(s))
+      fix-c (2 commit(s))
+    other-branch (1 commit(s))
+```
+
+It looks like a parent, but it is not one: `feat-a` and `fix-c` are restacked
+onto `main`. The heading says ``(anchor, N behind; run `git stack sync`)`` when
+the trunk has moved on, and `(anchor, done)` once every branch created on it
+has been deleted — the worktree can then be removed with your worktree tool.
+git-stack never deletes an anchor or a worktree.
+
+A trunk cannot be an anchor, an anchor cannot be a parent (`track` and `parent`
+refuse it), and a branch already in a stack must be untracked before it can
+become one. `unanchor` keeps the stacks; they become ordinary stacks on the
+trunk.
 
 ## Tests
 

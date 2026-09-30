@@ -21,6 +21,8 @@ COMMANDS
     init [branch...]      Set (or auto-detect) the trunk branch(es).
     plant [branch...]     Add branch(es) to the trunks, keeping the rest. (no args: list them)
     fell [branch...]      Remove branch(es) from the trunks; the branch itself is kept. (no args: list them)
+    anchor [branch...]    Register branch(es) a worktree tool made as anchors to stack on. (no args: list them)
+    unanchor [branch...]  Unregister anchor(s); their stacks stay on the trunk.
     create <name>         Create <name> stacked on the current branch. (aliases: b, branch)
     tree                  Show the stack as a tree. (aliases: ls, list)
     up [child]            Check out the branch stacked on the current one.
