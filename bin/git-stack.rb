@@ -263,11 +263,11 @@ def branch_ref_exists?(name)
   unpack_lines(rows).include?("refs/heads/#{name}")
 end
 
-# [behind, ahead] of `branch` relative to `parent`. The per-branch form, for
-# `restack` and for `tree` on a git without the batched atom (see
-# scan_ahead_behind).
-def ahead_behind(parent, branch)
-  out = git_out("rev-list --left-right --count #{branch_ref(parent)}...#{branch_ref(branch)}")
+# [behind, ahead] of `branch` relative to `onto`, a full ref (see `parent_ref`).
+# The per-branch form, for `restack` and for `tree` on a git without the batched
+# atom (see scan_ahead_behind).
+def ahead_behind(onto, branch)
+  out = git_out("rev-list --left-right --count #{sh(onto)}...#{branch_ref(branch)}")
   parts = out.split("\t")
   return [0, 0] if parts.length != 2
 
@@ -396,6 +396,97 @@ def containing_trunk(branch, trunks)
     end
   end
   best
+end
+
+# --- trunk upstreams --------------------------------------------------------
+
+# With `stack.trunkUpstream`, a branch whose parent is a trunk is restacked onto
+# and measured against the trunk's upstream (`origin/main`), which `git fetch`
+# updates from any worktree -- unlike the local trunk, which is usually checked
+# out in another one and refuses both `pull` and `fetch origin main:main` there.
+# Off by default: it moves the base off a `main` the user just pulled, drops
+# unpushed trunk commits from it, and has `sync` touch the network.
+#
+# `stackParent` still names the trunk branch. The upstream is resolved per run,
+# per trunk, so a trunk without one keeps its local ref.
+
+# `stack.trunkUpstream` as a boolean. A value git cannot read as one dies rather
+# than reading as false, which would silently restack onto the stale local trunk.
+def trunk_upstream_enabled?
+  raw = git_out("config --get stack.trunkUpstream")
+  return false if raw.empty?
+
+  value = git_out("config --type=bool --get stack.trunkUpstream")
+  die("stack.trunkUpstream must be true or false, not '#{raw}'") if value.empty?
+  value == "true"
+end
+
+# "<trunk>\t<upstream ref>\t<remote>" for every trunk with an upstream, or none
+# unless `stack.trunkUpstream` is on.
+#
+# `for-each-ref`'s `%(upstream)`, not `<trunk>@{upstream}`: that is a rev, so a
+# tag named after the trunk makes it ambiguous (#96), and `refs/heads/main@{u}`
+# is not accepted either.
+def trunk_upstream_rows(trunks)
+  return [] unless trunk_upstream_enabled?
+
+  refs = trunks.map { |trunk| " #{branch_ref(trunk)}" }.join("")
+  out = git_out("for-each-ref --format='%(refname)%09%(upstream)%09%(upstream:remotename)'#{refs}")
+  # The pattern also matches a level down (`main` finds `main/x`), hence the
+  # exact-name test.
+  unpack_lines(out).map { |row| row.delete_prefix("refs/heads/") }.select do |row|
+    is_trunk?(tab_field(row, 0), trunks) && !tab_field(row, 1).empty?
+  end
+end
+
+# Field `index` of a tab-separated row, or "" past its end. One field at a time,
+# not `split` mapped over the rows: an array of arrays widens under Spinel.
+def tab_field(row, index)
+  fields = row.split("\t")
+  index < fields.length ? fields[index] : ""
+end
+
+# trunk -> the upstream ref its children restack onto. A trunk whose upstream
+# is not there (never fetched, or deleted on the remote) keeps its local ref,
+# and says so.
+def trunk_onto_refs(rows)
+  onto = {}
+  rows.each do |row|
+    trunk = tab_field(row, 0)
+    up = tab_field(row, 1)
+    if git_ok("rev-parse --verify --quiet #{sh(up)}")
+      onto[trunk] = up
+    else
+      info "warning: trunk '#{trunk}' has no '#{ref_label(up)}' yet; using the local branch"
+    end
+  end
+  onto
+end
+
+# `sync`'s fetch, of each remote a trunk's upstream lives on. A failed fetch
+# only warns: offline, the last fetched upstream is still a better base than
+# giving up. Remote "." is this repository, with nothing to fetch.
+def fetch_trunk_remotes(rows)
+  remotes = rows.map { |row| tab_field(row, 2) }
+  remotes.reject { |remote| remote.empty? || remote == "." }.uniq.each do |remote|
+    info "fetching #{cyan(remote)}"
+    info "warning: fetching '#{remote}' failed; using what was fetched last" unless git_ok("fetch --quiet #{sh(remote)}")
+  end
+  nil
+end
+
+# The full ref `parent` is restacked onto and measured against: the trunk's
+# upstream when `onto` has one, else the branch itself.
+def parent_ref(parent, onto)
+  up = onto[parent]
+  up.nil? ? "refs/heads/#{parent}" : up
+end
+
+# A full ref as the user would type it: `main`, `origin/main`.
+def ref_label(ref)
+  return ref.delete_prefix("refs/heads/") if ref.start_with?("refs/heads/")
+
+  ref.delete_prefix("refs/remotes/")
 end
 
 # --- worktrees --------------------------------------------------------------
@@ -537,10 +628,11 @@ def record_reparent_base(branch, parent)
   nil
 end
 
-# The base for a branch sitting exactly on `parent`'s tip (after `create` or a
-# replay).
-def record_tip_base(branch, parent)
-  set_base(branch, git_out("rev-parse #{branch_ref(parent)}"))
+# The base for a branch sitting exactly on `onto`'s tip (after `create` or a
+# replay). `onto` is a full ref: the upstream a trunk child was replayed onto,
+# not the trunk it names as parent.
+def record_tip_base(branch, onto)
+  set_base(branch, git_out("rev-parse #{sh(onto)}"))
   nil
 end
 
@@ -687,7 +779,7 @@ end
 # column for each parent in the batch, so the readback parses CHUNK^2 fields.
 AHEAD_BEHIND_CHUNK = 128
 
-# The distinct parents in `group`, packed, one per `%(ahead-behind:)` column.
+# The distinct parent refs in `group`, packed, one per `%(ahead-behind:)` column.
 # `uniq` keeps first-occurrence order, which `ahead_behind_columns` reads back as
 # column numbers.
 def ahead_behind_bases(group)
@@ -752,10 +844,10 @@ def ahead_behind_chunk(group)
   return "" if refs.empty?
 
   bases = ahead_behind_bases(group)
-  # `refs/heads/` spelled by hand rather than through `branch_ref`: the atom sits
-  # inside `fmt`, which is `sh`-quoted whole, so `branch_ref`'s quotes would nest
-  # and break it.
-  atoms = bases.split("\n").map { |b| "\t%(ahead-behind:refs/heads/#{b})" }
+  # Each base is already a full ref (see `parent_ref`), left unquoted: the atom
+  # sits inside `fmt`, which is `sh`-quoted whole, so inner quotes would nest and
+  # break it.
+  atoms = bases.split("\n").map { |b| "\t%(ahead-behind:#{b})" }
   fmt = "%(refname)#{atoms.join("")}"
 
   out = git_out("for-each-ref --format=#{sh(fmt)}#{refs}")
@@ -1091,7 +1183,7 @@ class StackRepository
   end
 
   def self.load_snapshot(trunks)
-    StackSnapshot.new(load_topology(trunks))
+    StackSnapshot.new(load_topology(trunks), trunk_onto_refs(trunk_upstream_rows(trunks)))
   end
 end
 
@@ -1101,14 +1193,28 @@ end
 # node, in the scan built to keep `tree` off per-node subprocesses. The rows that
 # once needed one are dropped by `load` (#73).
 class StackSnapshot
-  def initialize(topology)
+  # `onto` as in `restack_subtree`, so `tree` measures a trunk child against the
+  # same ref `restack` would replay it onto.
+  def initialize(topology, onto)
     @topology = topology
+    @onto = onto
     @ab = ahead_behind_index(scan_ahead_behind)
     nil
   end
 
   def topology
     @topology
+  end
+
+  # The full ref `branch` is measured against (see `parent_ref`).
+  def parent_ref_of(branch)
+    parent_ref(@topology.parent_of(branch), @onto)
+  end
+
+  # The upstream `trunk`'s children restack onto, or "" for the local branch.
+  def upstream_of(trunk)
+    up = @onto[trunk]
+    up.nil? ? "" : up
   end
 
   # [behind, ahead]; [-1, -1] tells the renderer to ask per branch instead (git
@@ -1131,7 +1237,7 @@ class StackSnapshot
       parent = @topology.parent_of(name)
       next unless @topology.branch?(parent)
 
-      pairs = "#{pairs}#{name}\t#{parent}\n"
+      pairs = "#{pairs}#{name}\t#{parent_ref(parent, @onto)}\n"
     end
 
     result = ""
@@ -1175,7 +1281,7 @@ def print_tree_row(branch, depth, cur, snapshot)
     behind, ahead = snapshot.ahead_behind_of(branch)
     # git without the batched atom: ask per branch.
     if behind < 0
-      behind, ahead = ahead_behind(parent, branch)
+      behind, ahead = ahead_behind(snapshot.parent_ref_of(branch), branch)
     end
     if behind > 0
       extra = yellow("(needs restack: #{behind} behind)")
@@ -1388,7 +1494,7 @@ def cmd_create(args)
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
   # A new branch has no commits yet, so its stack begins at the parent's tip.
-  record_tip_base(name, parent)
+  record_tip_base(name, "refs/heads/#{parent}")
   info "created #{green(name)} on top of #{cyan(parent)}"
 end
 
@@ -1410,7 +1516,9 @@ def cmd_tree(_args)
   roots = snapshot.topology.detached_roots
   homes = roots.map { |root| containing_trunk(root, trunks) }
   trunks.each do |trunk|
-    puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim("(trunk)")}"
+    up = snapshot.upstream_of(trunk)
+    label = up.empty? ? "(trunk)" : "(trunk, restacks onto #{ref_label(up)})"
+    puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim(label)}"
     print_order(trunk, 0, true, cur, snapshot)
     roots.each_with_index do |root, i|
       print_order(root, 1, false, cur, snapshot) if homes[i] == trunk
@@ -1506,18 +1614,20 @@ end
 # "" stands in for the merge-base, because `--onto <parent> <merge-base>` makes
 # the merge-base the upstream and turns off git's patch-id skip: the old copies
 # of a parent rebased outside git-stack are then re-applied and conflict.
-def resolve_stack_base(branch, parent)
+#
+# `onto` is the parent's full ref (see `parent_ref`).
+def resolve_stack_base(branch, onto)
   base = get_base(branch)
   if base.empty?
-    info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
+    info "'#{branch}': no recorded stack base; rebasing onto '#{ref_label(onto)}'"
     return ""
   end
   unless git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
          git_ok("merge-base --is-ancestor #{sh(base)} #{branch_ref(branch)}")
-    info "'#{branch}': stack base #{base} is not in its history; rebasing onto '#{parent}'"
+    info "'#{branch}': stack base #{base} is not in its history; rebasing onto '#{ref_label(onto)}'"
     return ""
   end
-  mb = parent.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
+  mb = onto.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{sh(onto)}")
   return "" if !mb.empty? && git_ok("merge-base --is-ancestor #{sh(base)} #{sh(mb)}")
   base
 end
@@ -1535,19 +1645,21 @@ end
 
 # Replay `branch`'s own commits onto `parent`, or die with the recovery command.
 # `verb` is the command to re-run after resolving a conflict. `wt` is the other
-# worktree holding `branch`, or "".
-def replay_onto!(branch, parent, verb, wt)
+# worktree holding `branch`, or "". `onto` is the parent's full ref (see
+# `parent_ref`).
+def replay_onto!(branch, onto, verb, wt)
+  parent = ref_label(onto)
   info "restacking #{cyan(branch)} onto #{cyan(parent)}#{worktree_suffix(wt)}"
-  base = resolve_stack_base(branch, parent)
+  base = resolve_stack_base(branch, onto)
   at = worktree_at(wt)
   # The rev is qualified; the trailing branch stays bare because git checks it out
   # (see `branch_ref`). In another worktree it is already checked out, and naming
   # it is what git refuses.
   target = wt.empty? ? " #{sh(branch)}" : ""
   if base.empty?
-    ok = git_ok("#{at}rebase #{branch_ref(parent)}#{target}")
+    ok = git_ok("#{at}rebase #{sh(onto)}#{target}")
   else
-    ok = git_ok("#{at}rebase --onto #{branch_ref(parent)} #{sh(base)}#{target}")
+    ok = git_ok("#{at}rebase --onto #{sh(onto)} #{sh(base)}#{target}")
   end
   return nil if ok
 
@@ -1562,10 +1674,11 @@ def replay_onto!(branch, parent, verb, wt)
 end
 
 # Move `branch`, which has no commits of its own, up to `parent`'s tip.
-def fast_forward!(branch, parent, wt)
+def fast_forward!(branch, onto, wt)
+  parent = ref_label(onto)
   info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}#{worktree_suffix(wt)}"
   # `checkout` names a branch, `merge` takes a rev (see `branch_ref`).
-  merge = "merge --ff-only #{branch_ref(parent)}"
+  merge = "merge --ff-only #{sh(onto)}"
   ok = wt.empty? ? git_ok("checkout #{sh(branch)}") && git_ok(merge) : git_ok("#{worktree_at(wt)}#{merge}")
   die("failed to fast-forward '#{branch}' to '#{parent}'#{worktree_suffix(wt)}") unless ok
   nil
@@ -1588,7 +1701,10 @@ end
 # skipped with all its descendants -- replaying them onto the stale parent would
 # only have to be undone -- and the skipped names are returned, packed, for the
 # caller to report. The rest of the forest is still restacked.
-def restack_subtree(root, trunks, heal_orphans, verb, topology, held)
+#
+# `onto` maps a trunk to the upstream its children restack onto (see
+# `trunk_onto_refs`); it is empty unless `stack.trunkUpstream` is on.
+def restack_subtree(root, trunks, heal_orphans, verb, topology, held, onto)
   skipped = ""
   # A Hash for `key?`, not a Set: see `climb_to_root`.
   blocked = {}
@@ -1611,7 +1727,8 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology, held)
     end
 
     if !parent.empty? && topology.branch?(parent)
-      behind, ahead = ahead_behind(parent, branch)
+      ref = parent_ref(parent, onto)
+      behind, ahead = ahead_behind(ref, branch)
       # `behind == 0` has nothing to move but is still re-anchored below, which
       # back-fills a missing base. Nothing moves either, so a busy worktree
       # holding it is no reason to skip.
@@ -1628,13 +1745,13 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology, held)
         if ahead == 0
           # No commits of its own: fast-forward, since `--onto` would re-apply the
           # parent's work and conflict.
-          fast_forward!(branch, parent, wt)
+          fast_forward!(branch, ref, wt)
         else
-          replay_onto!(branch, parent, verb, wt)
+          replay_onto!(branch, ref, verb, wt)
         end
       end
       # Every path above ends on the parent's tip, skips, or dies.
-      record_tip_base(branch, parent)
+      record_tip_base(branch, ref)
     end
   end
   skipped
@@ -1665,11 +1782,15 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   root = topology.stack_root(original)
   roots = heal_orphans ? topology.rebase_roots(root) : [root]
   held = other_worktree_checkouts(original)
+  # Only `sync` fetches: `restack` has never touched the network.
+  upstreams = trunk_upstream_rows(trunks)
+  fetch_trunk_remotes(upstreams) if heal_orphans
+  onto = trunk_onto_refs(upstreams)
 
   skipped = ""
   roots.each do |stack|
     info "#{gerund} stack rooted at #{cyan(stack)}"
-    skipped = "#{skipped}#{restack_subtree(stack, trunks, heal_orphans, verb, topology, held)}"
+    skipped = "#{skipped}#{restack_subtree(stack, trunks, heal_orphans, verb, topology, held, onto)}"
   end
 
   unless git_ok("checkout #{sh(original)}")
@@ -1731,10 +1852,11 @@ def cmd_drop(args)
 
   topology = StackRepository.load_topology(trunks)
   held = other_worktree_checkouts(original)
+  onto = trunk_onto_refs(trunk_upstream_rows(trunks))
   skipped = ""
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
-    skipped = "#{skipped}#{restack_subtree(child, trunks, false, "restack", topology, held)}"
+    skipped = "#{skipped}#{restack_subtree(child, trunks, false, "restack", topology, held, onto)}"
   end
 
   if delete
