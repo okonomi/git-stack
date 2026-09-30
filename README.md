@@ -402,6 +402,11 @@ the trunk has moved on, and `(anchor, done)` once every branch created on it
 has been deleted — the worktree can then be removed with your worktree tool.
 git-stack never deletes an anchor or a worktree.
 
+`git stack down` from a stack's root goes to its anchor rather than the trunk —
+the trunk is usually checked out in another worktree, and the anchor is where
+the next stack is created — and `git stack up` from an anchor goes to its stack,
+or lists them when there are several.
+
 A trunk cannot be an anchor, an anchor cannot be a parent (`track` and `parent`
 refuse it), and a branch already in a stack must be untracked before it can
 become one. `unanchor` keeps the stacks; they become ordinary stacks on the

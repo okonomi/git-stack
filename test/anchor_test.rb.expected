@@ -119,3 +119,42 @@ $ git stack tree
     wt-x (anchor, done)
     wt-y (anchor, 2 behind; run `git stack sync`)
 [exit 0]
+
+### down from a stack's root goes to its anchor, not the trunk
+$ git stack down
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+$ git stack down
+Switched to branch 'wt-x'
+[exit 0]
+HEAD: wt-x
+$ git stack down
+Switched to branch 'main'
+[exit 0]
+HEAD: main
+
+### up from an anchor goes to its only stack
+$ git stack up
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+
+### up from an anchor with several stacks lists them
+$ git stack up
+'wt-x' has multiple stacks; pick one:
+  git stack up feat-a
+  git stack up fix-c
+[exit 1]
+$ git stack up fix-c
+Switched to branch 'fix-c'
+[exit 0]
+HEAD: fix-c
+$ git stack up other
+error: 'other' is not stacked directly on 'wt-x'
+[exit 1]
+
+### up from an anchor with no stack says so
+$ git stack up
+error: no branch stacked on top of 'wt-x'
+[exit 1]

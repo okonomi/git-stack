@@ -144,3 +144,51 @@ setup("git checkout -q main")
 setup("git merge -q --no-ff -m merge-a feat-a")
 setup("git branch -D feat-a")
 run("tree")
+
+section "down from a stack's root goes to its anchor, not the trunk"
+new_repo
+setup("git branch wt-x")
+gsq("anchor wt-x")
+setup("git checkout -q wt-x")
+gsq("create feat-a"); commit("a.txt", "a1")
+gsq("create feat-b")
+run("down")
+show("HEAD", "git branch --show-current")
+run("down")
+show("HEAD", "git branch --show-current")
+run("down")
+show("HEAD", "git branch --show-current")
+
+section "up from an anchor goes to its only stack"
+new_repo
+setup("git branch wt-x")
+gsq("anchor wt-x")
+setup("git checkout -q wt-x")
+gsq("create feat-a")
+setup("git checkout -q wt-x")
+run("up")
+show("HEAD", "git branch --show-current")
+
+section "up from an anchor with several stacks lists them"
+new_repo
+setup("git branch wt-x")
+gsq("anchor wt-x")
+setup("git checkout -q main")
+gsq("create other")
+setup("git checkout -q wt-x")
+gsq("create feat-a")
+setup("git checkout -q wt-x")
+gsq("create fix-c")
+setup("git checkout -q wt-x")
+run("up")
+run("up fix-c")
+show("HEAD", "git branch --show-current")
+setup("git checkout -q wt-x")
+run("up other")
+
+section "up from an anchor with no stack says so"
+new_repo
+setup("git branch wt-x")
+gsq("anchor wt-x")
+setup("git checkout -q wt-x")
+run("up")

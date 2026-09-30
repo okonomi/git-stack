@@ -798,6 +798,16 @@ def named_children_of(parent, trunks)
   children.concat(topology.live_detached_roots)
 end
 
+# The roots of the stacks created on `anchor`, sorted: what `up` offers from it.
+# Live branches only, since `up` checks one out.
+def anchor_stacks(anchor, trunks)
+  topology = StackRepository.load_topology(trunks)
+  members = anchor_memberships
+  topology.tracked_branches.select do |name|
+    members[name] == anchor && topology.branch?(name) && is_trunk?(topology.parent_of(name), trunks)
+  end.sort
+end
+
 # The parent `parent`/`down` answer with: a trunk is its own (the bottom), a
 # recorded parent wins, and otherwise the trunk the branch's history rests on.
 # The only place that resolves a trunk for a parentless branch; a snapshot cannot
@@ -1744,6 +1754,13 @@ def cmd_down(_args)
   branch = current_branch
   trunks = trunk_branches
   parent = effective_parent(branch, trunks)
+  # A stack's root steps down to its anchor rather than the trunk: the trunk is
+  # usually checked out in another worktree, and the anchor is where the next
+  # stack is created.
+  if parent != branch && is_trunk?(parent, trunks)
+    anchor = get_anchor(branch)
+    parent = anchor if !anchor.empty? && branch_ref_exists?(anchor) && configured_anchors.include?(anchor)
+  end
   # Every trunk, and a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_ref_exists?(parent)
@@ -1757,9 +1774,11 @@ def cmd_up(args)
   branch = current_branch
   trunks = trunk_branches
   want = arg0(args)
+  # An anchor has no children in the graph; its stacks stand in for them.
+  anchored = configured_anchors.include?(branch)
 
   unless want.empty?
-    children = named_children_of(branch, trunks)
+    children = anchored ? anchor_stacks(branch, trunks) : named_children_of(branch, trunks)
     # The menu path's wording: "'x' is not stacked..." would imply some other name
     # would have worked.
     die("no branch stacked on top of '#{branch}'") if children.empty?
@@ -1768,7 +1787,7 @@ def cmd_up(args)
     return
   end
 
-  children = children_of(branch, trunks)
+  children = anchored ? anchor_stacks(branch, trunks) : children_of(branch, trunks)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   if children.length == 1
@@ -1776,7 +1795,7 @@ def cmd_up(args)
     return
   end
 
-  info "'#{branch}' has multiple children; pick one:"
+  info "'#{branch}' has multiple #{anchored ? "stacks" : "children"}; pick one:"
   children.each do |child|
     info "  #{PROG} up #{child}"
   end

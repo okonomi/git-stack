@@ -83,6 +83,7 @@ class Object
   def branch_names: () -> Array[String]
   def children_of: (String, Array[String]) -> Array[String]
   def named_children_of: (String, Array[String]) -> Array[String]
+  def anchor_stacks: (String, Array[String]) -> Array[String]
   def effective_parent: (String, Array[String]) -> String
   def tree_marker: (String, String) -> String
   def tree_name: (String, String, String) -> String
@@ -145,12 +146,12 @@ class Object
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
   def __enum_find__5180: (Array[String]) -> String
-  def __enum_each_with_index__5783: (Array[String]) -> Array[String]
-  def __enum_find__7265: (Array[String]) -> String
-  def __enum_each_with_index__8193: (Array[String]) -> Array[String]
-  def __enum_each_with_index__8279: (Array[String]) -> Array[String]
-  def __enum_find__9960: (Array[String]) -> String
-  def __enum_find__10214: (Array[String]) -> String
+  def __enum_each_with_index__5824: (Array[String]) -> Array[String]
+  def __enum_find__7306: (Array[String]) -> String
+  def __enum_each_with_index__8234: (Array[String]) -> Array[String]
+  def __enum_each_with_index__8320: (Array[String]) -> Array[String]
+  def __enum_find__10065: (Array[String]) -> String
+  def __enum_find__10319: (Array[String]) -> String
 end
 
 class OptionParser
