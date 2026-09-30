@@ -84,8 +84,11 @@ lets a stack survive a parent that was **squash-merged** into trunk and then
 deleted: a plain `git rebase` would re-apply the parent's already-merged commits
 (after squashing, their patch-ids no longer match, so git can't drop them) and
 conflict, while `--onto` replays only the commits above the recorded base. If a
-branch has no recorded base (e.g. it predates this feature), `restack` falls
-back to the live merge-base of the branch and its parent.
+branch has no usable base (it predates this feature, or the recorded commit is
+no longer in its history), or the base is at or below the merge-base of the
+branch and its parent, `restack` runs a plain `git rebase <parent>`. That way git
+still drops commits whose patches the parent already has, such as the old copies
+left under a branch after its parent was rebased outside git-stack.
 
 The bottom of every stack rests on a **trunk** (`main`/`master`), stored
 as `stack.trunk`. Because everything lives in git config, there is no extra

@@ -53,3 +53,33 @@ puts "feat-b contains a2: #{`cd #{$repo} && git log --oneline feat-b | grep -c '
 puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
 show("feat-b stackBase == feat-a tip (re-recorded)",
      'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse feat-a)" && echo yes || echo no')
+
+# feat-b sits on the old copies of a1 and a2, feat-a having been rebased onto main
+# outside git-stack. Re-applying the old a1 onto a2 is an add/add conflict on x.txt.
+def stack_on_rewritten_parent
+  new_repo
+  gsq("create feat-a"); commit("x.txt", "a1"); commit("x.txt", "a2")
+  gsq("create feat-b"); commit("b.txt", "b1")
+  setup("git checkout -q main"); commit("m.txt", "m2")
+  setup("git checkout -q feat-a && git rebase -q main")
+  setup("git checkout -q feat-b")
+end
+
+def show_replayed_on_rewritten_parent
+  show("feat-b behind feat-a", "git rev-list --count feat-b..feat-a")
+  show("feat-b commits above feat-a", "git rev-list --count feat-a..feat-b")
+  puts "feat-b contains b1: #{`cd #{$repo} && git log --oneline feat-b | grep -c ' b1$' || true`.strip}"
+end
+
+section "restack skips a rewritten parent's old copies when stackBase is not in the branch"
+stack_on_rewritten_parent
+# a base recorded by a restack that a later reset of feat-b undid
+setup("git config branch.feat-b.stackBase $(git rev-parse feat-a)")
+run("restack")
+show_replayed_on_rewritten_parent
+
+section "restack skips a rewritten parent's old copies when stackBase is unrecorded"
+stack_on_rewritten_parent
+setup("git config --unset branch.feat-b.stackBase")
+run("restack")
+show_replayed_on_rewritten_parent

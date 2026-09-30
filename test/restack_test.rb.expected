@@ -15,7 +15,7 @@ restacking stack rooted at feat-a
 restacking feat-b onto feat-a
 error: conflict while rebasing 'feat-b' onto 'feat-a'.
 Resolve it manually with:
-    git checkout feat-b && git rebase --onto feat-a 74bb18bafa0c345a53729c0ffced01a2dd511047
+    git checkout feat-b && git rebase feat-a
 then re-run 'git stack restack'.
 [exit 1]
 rebase in progress: 0
@@ -31,6 +31,7 @@ HEAD: feat-a
 $ git stack restack
 restacking stack rooted at feat-a
 restacking feat-b onto feat-a
+'feat-b': no recorded stack base; rebasing onto 'feat-a'
 done.
 [exit 0]
 feat-b behind feat-a: 0
@@ -38,3 +39,25 @@ feat-b commits above feat-a: 1
 feat-b contains a2: 1
 feat-b contains b1: 1
 feat-b stackBase == feat-a tip (re-recorded): yes
+
+### restack skips a rewritten parent's old copies when stackBase is not in the branch
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+'feat-b': stack base 3635e3f3668ac98adba4c7fd497e93020994995c is not in its history; rebasing onto 'feat-a'
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains b1: 1
+
+### restack skips a rewritten parent's old copies when stackBase is unrecorded
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a
+'feat-b': no recorded stack base; rebasing onto 'feat-a'
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-b commits above feat-a: 1
+feat-b contains b1: 1
