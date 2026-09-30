@@ -35,6 +35,8 @@ $gs = "ruby #{$root}/bin/git-stack.rb" if $gs.nil? || $gs == ""
 $gs = "NO_COLOR=1 #{$gs}"
 
 $repo = ""
+# `$repo` as git reports it, symlinks resolved (macOS's /var is /private/var).
+$real = ""
 
 # --- helpers ----------------------------------------------------------------
 
@@ -55,11 +57,13 @@ def gsq(args)
 end
 
 # Run git-stack and record its combined output and exit status in the snapshot.
+# The scenario's temp directory, which worktree and lock paths sit under, prints
+# as `<repo>`.
 def run(args)
   puts "$ git stack #{args}"
   out = `cd #{$repo} && #{$gs} #{args} 2>&1`
   rc = ($? == 0) ? "0" : "1"
-  print out
+  print out.gsub($real, "<repo>")
   puts "[exit #{rc}]"
 end
 
@@ -75,6 +79,7 @@ end
 # Create a fresh repo with a single commit on `main` and make it current.
 def new_repo
   $repo = `mktemp -d`.strip
+  $real = gval("pwd -P")
   setup("git init -q -b main")
   setup("git config user.email test@example.com")
   setup("git config user.name Test")

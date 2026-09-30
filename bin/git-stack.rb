@@ -147,6 +147,39 @@ def git_scan(subcmd, empty_ok)
   out.strip
 end
 
+# How often a config write retries a lock another git holds, and the pause
+# between tries. Not left to git: a held config lock fails at once, with no
+# timeout setting like refs' `core.filesRefLockTimeout`, so two worktrees
+# restacking together would fail whichever wrote second.
+CONFIG_LOCK_TRIES = 20
+CONFIG_LOCK_PAUSE = 0.05
+
+# Every config write goes through here; reads stay on `git_out`. False for any
+# failure but the lock -- an unset of an absent key is one, and callers ignore it.
+#
+# A lock still held after every try is a leftover from a killed git, which
+# waiting cannot fix. It is never removed here: it may yet belong to a live
+# write. Nor is `core.lockfilePid` asked for its owner: git writes no PID file
+# for the config lock.
+#
+# The failure is told apart by git's message, hence `LC_ALL=C`: the exit status
+# is only `$? == 0` under Spinel (see `git_ok`), and the message is translated.
+def git_config_write(args)
+  tries = 0
+  while tries < CONFIG_LOCK_TRIES
+    sleep(CONFIG_LOCK_PAUSE) if tries > 0
+    err = `LC_ALL=C git config #{args} 2>&1 >/dev/null`
+    return true if $? == 0
+    return false unless err.include?("could not lock config file")
+
+    tries += 1
+  end
+  lock = "#{git_out("rev-parse --path-format=absolute --git-common-dir")}/config.lock"
+  die("git config is locked by '#{lock}'.\n" \
+      "If no git command is running, a killed one left it behind; remove it and re-run.")
+  false
+end
+
 # A bare name, not `branch_ref`, which would detach HEAD (see there).
 def checkout!(branch)
   die("failed to check out '#{branch}'") unless git_run("checkout #{sh(branch)}")
@@ -262,9 +295,9 @@ end
 # Replace the trunk list with exactly `trunks`.
 def set_trunks(trunks)
   # Fails when the key is absent, which is fine.
-  git_ok("config --unset-all stack.trunk")
+  git_config_write("--unset-all stack.trunk")
   trunks.each do |trunk|
-    git_ok("config --add stack.trunk #{sh(trunk)}")
+    git_config_write("--add stack.trunk #{sh(trunk)}")
   end
 end
 
@@ -365,6 +398,104 @@ def containing_trunk(branch, trunks)
   best
 end
 
+# --- worktrees --------------------------------------------------------------
+
+# git refuses to check out, or to rebase by name, a branch another worktree
+# holds. Such a branch is rewritten from inside its worktree (`git -C <path>`),
+# which needs no checkout at all.
+
+# branch -> worktree path, for every branch another worktree holds. `here` is the
+# current worktree's branch, which the usual checkout-and-rebase handles.
+#
+# Not keyed by path: `worktree list` answers the resolved path, which need not
+# match the one this process was started in (a symlinked /tmp).
+def other_worktree_checkouts(here)
+  held = {}
+  path = ""
+  unpack_lines(git_out("worktree list --porcelain")).each do |line|
+    if line.start_with?("worktree ")
+      path = line.delete_prefix("worktree ")
+    else
+      name = worktree_line_branch(line, path)
+      held[name] = path unless name.empty? || name == here
+    end
+  end
+  held
+end
+
+# The branch a `worktree list --porcelain` line says `path` holds, or "".
+#
+# A worktree mid-rebase lists as `detached`, yet git still refuses the branch
+# being rebased, so that one is read from the rebase's own `head-name`.
+def worktree_line_branch(line, path)
+  return line.delete_prefix("branch refs/heads/") if line.start_with?("branch refs/heads/")
+  return "" unless line == "detached"
+
+  head = worktree_file(path, "rebase-merge/head-name")
+  head = worktree_file(path, "rebase-apply/head-name") if head.empty?
+  head.start_with?("refs/heads/") ? head.delete_prefix("refs/heads/") : ""
+end
+
+# The contents of `name` in `path`'s git dir, or "" when it is absent.
+#
+# `cat`, not `File.read`: Spinel's subset has no File.
+def worktree_file(path, name)
+  file = worktree_git_path(path, name)
+  return "" if file.empty?
+
+  `cat #{sh(file)} 2>/dev/null`.strip
+end
+
+# `name` resolved in `path`'s own git dir, where a linked worktree keeps its
+# rebase and merge state -- not under `<path>/.git`, which is a file there.
+def worktree_git_path(path, name)
+  git_out("-C #{sh(path)} rev-parse --path-format=absolute --git-path #{sh(name)}")
+end
+
+# The state files of an operation git leaves half-done in a worktree, as
+# "<file>\t<what to call it>".
+IN_PROGRESS_MARKERS = [
+  "rebase-merge\ta rebase",
+  "rebase-apply\ta rebase",
+  "MERGE_HEAD\ta merge",
+  "CHERRY_PICK_HEAD\ta cherry-pick",
+  "REVERT_HEAD\ta revert"
+].freeze
+
+def worktree_path_exists?(path, name)
+  file = worktree_git_path(path, name)
+  return false if file.empty?
+
+  system("test -e #{sh(file)}")
+  $? == 0
+end
+
+# Why the worktree at `path` cannot take a rebase now, or "" when it can.
+#
+# Only tracked changes count, as they do for git's own rebase: an untracked file
+# is carried across unless the rebase would overwrite it, and then it fails like
+# a conflict and is aborted.
+#
+# `--no-optional-locks`: a plain `status` refreshes that worktree's index, and
+# would race whatever the user is running there.
+def worktree_busy_reason(path)
+  return "is missing (see 'git worktree prune')" unless git_ok("-C #{sh(path)} rev-parse --git-dir")
+
+  marker = IN_PROGRESS_MARKERS.find { |row| worktree_path_exists?(path, tab_head(row)) }
+  return "has #{tab_tail(marker)} in progress" unless marker.nil?
+
+  dirty = git_out("--no-optional-locks -C #{sh(path)} status --porcelain --untracked-files=no")
+  return "has uncommitted changes" unless dirty.empty?
+
+  ""
+end
+
+# `held[branch]`, or "" when the branch is free to check out here.
+def worktree_of(held, branch)
+  path = held[branch]
+  path.nil? ? "" : path
+end
+
 # --- stack metadata ---------------------------------------------------------
 
 def get_parent(branch)
@@ -372,11 +503,11 @@ def get_parent(branch)
 end
 
 def set_parent(branch, parent)
-  git_ok("config branch.#{sh(branch)}.stackParent #{sh(parent)}")
+  git_config_write("branch.#{sh(branch)}.stackParent #{sh(parent)}")
 end
 
 def clear_parent(branch)
-  git_ok("config --unset branch.#{sh(branch)}.stackParent")
+  git_config_write("--unset branch.#{sh(branch)}.stackParent")
 end
 
 # The recorded stack base, or "" when none is (a branch predating stackBase, or
@@ -386,11 +517,11 @@ def get_base(branch)
 end
 
 def set_base(branch, sha)
-  git_ok("config branch.#{sh(branch)}.stackBase #{sh(sha)}")
+  git_config_write("branch.#{sh(branch)}.stackBase #{sh(sha)}")
 end
 
 def clear_base(branch)
-  git_ok("config --unset branch.#{sh(branch)}.stackBase")
+  git_config_write("--unset branch.#{sh(branch)}.stackBase")
 end
 
 # The base for reparenting an existing branch: the merge-base, not the parent's
@@ -417,6 +548,11 @@ end
 # parent replays the wrong range. `err` keeps each command's own wording.
 # `restack_subtree` does not come through here; it anchors on the tip after
 # rebasing.
+#
+# Parent first, everywhere: config has no multi-key transaction, and a run cut
+# off between the two writes leaves a missing base, which `resolve_stack_base`
+# recovers as a merge-base. The other order would leave a base beside the old
+# parent.
 def reparent!(branch, parent, err)
   die(err) unless set_parent(branch, parent)
   record_reparent_base(branch, parent)
@@ -1386,26 +1522,52 @@ def resolve_stack_base(branch, parent)
   base
 end
 
+# " in worktree '<path>'" for a branch another worktree holds, else "".
+def worktree_suffix(wt)
+  wt.empty? ? "" : " in worktree '#{wt}'"
+end
+
+# `git` options that run a command where `branch` is checked out: nothing here,
+# `-C <wt>` in another worktree.
+def worktree_at(wt)
+  wt.empty? ? "" : "-C #{sh(wt)} "
+end
+
 # Replay `branch`'s own commits onto `parent`, or die with the recovery command.
-# `verb` is the command to re-run after resolving a conflict.
-def replay_onto!(branch, parent, verb)
-  info "restacking #{cyan(branch)} onto #{cyan(parent)}"
+# `verb` is the command to re-run after resolving a conflict. `wt` is the other
+# worktree holding `branch`, or "".
+def replay_onto!(branch, parent, verb, wt)
+  info "restacking #{cyan(branch)} onto #{cyan(parent)}#{worktree_suffix(wt)}"
   base = resolve_stack_base(branch, parent)
+  at = worktree_at(wt)
   # The rev is qualified; the trailing branch stays bare because git checks it out
-  # (see `branch_ref`).
+  # (see `branch_ref`). In another worktree it is already checked out, and naming
+  # it is what git refuses.
+  target = wt.empty? ? " #{sh(branch)}" : ""
   if base.empty?
-    ok = git_ok("rebase #{branch_ref(parent)} #{sh(branch)}")
+    ok = git_ok("#{at}rebase #{branch_ref(parent)}#{target}")
   else
-    ok = git_ok("rebase --onto #{branch_ref(parent)} #{sh(base)} #{sh(branch)}")
+    ok = git_ok("#{at}rebase --onto #{branch_ref(parent)} #{sh(base)}#{target}")
   end
   return nil if ok
 
-  git_ok("rebase --abort")
+  git_ok("#{at}rebase --abort")
   recover = base.empty? ? "git rebase #{parent}" : "git rebase --onto #{parent} #{base}"
-  die("conflict while rebasing '#{branch}' onto '#{parent}'.\n" \
+  go = wt.empty? ? "git checkout #{branch}" : "cd #{sh(wt)}"
+  die("conflict while rebasing '#{branch}' onto '#{parent}'#{worktree_suffix(wt)}.\n" \
       "Resolve it manually with:\n" \
-      "    git checkout #{branch} && #{recover}\n" \
+      "    #{go} && #{recover}\n" \
       "then re-run '#{PROG} #{verb}'.")
+  nil
+end
+
+# Move `branch`, which has no commits of its own, up to `parent`'s tip.
+def fast_forward!(branch, parent, wt)
+  info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}#{worktree_suffix(wt)}"
+  # `checkout` names a branch, `merge` takes a rev (see `branch_ref`).
+  merge = "merge --ff-only #{branch_ref(parent)}"
+  ok = wt.empty? ? git_ok("checkout #{sh(branch)}") && git_ok(merge) : git_ok("#{worktree_at(wt)}#{merge}")
+  die("failed to fast-forward '#{branch}' to '#{parent}'#{worktree_suffix(wt)}") unless ok
   nil
 end
 
@@ -1420,7 +1582,16 @@ end
 # but must send the user to `restack`. `topology` stays valid for the whole walk,
 # as nothing here creates or deletes refs and a healed orphan roots its own
 # subtree.
-def restack_subtree(root, trunks, heal_orphans, verb, topology)
+#
+# A branch another worktree holds is rewritten there (`held`, see
+# `other_worktree_checkouts`). When that worktree cannot take it, the branch is
+# skipped with all its descendants -- replaying them onto the stale parent would
+# only have to be undone -- and the skipped names are returned, packed, for the
+# caller to report. The rest of the forest is still restacked.
+def restack_subtree(root, trunks, heal_orphans, verb, topology, held)
+  skipped = ""
+  # A Hash for `key?`, not a Set: see `climb_to_root`.
+  blocked = {}
   topology.order_branches(root).each do |branch|
     parent = topology.parent_of(branch)
 
@@ -1431,26 +1602,52 @@ def restack_subtree(root, trunks, heal_orphans, verb, topology)
       parent = trunk
     end
 
+    # Pre-order, so a parent's verdict is in before its children are reached.
+    if blocked.key?(parent)
+      info "warning: skipping '#{branch}': its parent '#{parent}' was skipped"
+      blocked[branch] = true
+      skipped = "#{skipped}#{branch}\n"
+      next
+    end
+
     if !parent.empty? && topology.branch?(parent)
       behind, ahead = ahead_behind(parent, branch)
       # `behind == 0` has nothing to move but is still re-anchored below, which
-      # back-fills a missing base.
+      # back-fills a missing base. Nothing moves either, so a busy worktree
+      # holding it is no reason to skip.
       if behind > 0
+        wt = worktree_of(held, branch)
+        busy = wt.empty? ? "" : worktree_busy_reason(wt)
+        unless busy.empty?
+          info "warning: skipping '#{branch}': its worktree '#{wt}' #{busy}"
+          blocked[branch] = true
+          skipped = "#{skipped}#{branch}\n"
+          next
+        end
+
         if ahead == 0
           # No commits of its own: fast-forward, since `--onto` would re-apply the
           # parent's work and conflict.
-          info "fast-forwarding #{cyan(branch)} to #{cyan(parent)}"
-          # `checkout` names a branch, `merge` takes a rev (see `branch_ref`).
-          ok = git_ok("checkout #{sh(branch)}") && git_ok("merge --ff-only #{branch_ref(parent)}")
-          die("failed to fast-forward '#{branch}' to '#{parent}'") unless ok
+          fast_forward!(branch, parent, wt)
         else
-          replay_onto!(branch, parent, verb)
+          replay_onto!(branch, parent, verb, wt)
         end
       end
-      # Every path above ends on the parent's tip or dies.
+      # Every path above ends on the parent's tip, skips, or dies.
       record_tip_base(branch, parent)
     end
   end
+  skipped
+end
+
+# Dies listing the branches `restack_subtree` skipped, if any, in place of
+# `done.`: a partial restack must not read as success to a script.
+def report_skipped!(skipped, verb)
+  names = unpack_lines(skipped)
+  return nil if names.empty?
+
+  die("#{verb} skipped #{names.length} branch(es): #{names.join(", ")}\n" \
+      "Deal with the worktrees warned about above, then re-run '#{PROG} #{verb}'.")
   nil
 end
 
@@ -1467,16 +1664,19 @@ def run_stack_rebase(heal_orphans, verb, gerund)
   topology = StackRepository.load_topology(trunks)
   root = topology.stack_root(original)
   roots = heal_orphans ? topology.rebase_roots(root) : [root]
+  held = other_worktree_checkouts(original)
 
+  skipped = ""
   roots.each do |stack|
     info "#{gerund} stack rooted at #{cyan(stack)}"
-    restack_subtree(stack, trunks, heal_orphans, verb, topology)
+    skipped = "#{skipped}#{restack_subtree(stack, trunks, heal_orphans, verb, topology, held)}"
   end
 
   unless git_ok("checkout #{sh(original)}")
     die("#{verb} completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
+  report_skipped!(skipped, verb)
   info green("done.")
   nil
 end
@@ -1530,9 +1730,11 @@ def cmd_drop(args)
   info "dropped #{green(branch)}; reparented children onto #{cyan(parent)}"
 
   topology = StackRepository.load_topology(trunks)
+  held = other_worktree_checkouts(original)
+  skipped = ""
   moved.each do |child|
     # "restack", not "drop", on conflict: the splice is already in config.
-    restack_subtree(child, trunks, false, "restack", topology)
+    skipped = "#{skipped}#{restack_subtree(child, trunks, false, "restack", topology, held)}"
   end
 
   if delete
@@ -1548,6 +1750,8 @@ def cmd_drop(args)
   if !original.empty? && original != current_branch_or_empty && branch_ref_exists?(original)
     git_ok("checkout #{sh(original)}")
   end
+  # Last, so the splice, the delete and the return to `original` still happen.
+  report_skipped!(skipped, "restack")
   nil
 end
 
