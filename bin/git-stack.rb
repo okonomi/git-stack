@@ -1359,26 +1359,31 @@ def cmd_up(args)
   exit 1
 end
 
-# The base for `git rebase --onto <parent> <base> <branch>`: where the branch's
-# own work begins.
+# The base for `git rebase --onto <parent> <base> <branch>`, or "" to plain-rebase
+# onto `parent`.
 #
-# The recorded stackBase, while it is still a commit and an ancestor of `branch`;
-# otherwise the merge-base. A valid base below the merge-base is clamped up to
-# it: after a manual rebase or pull, the commits in between are already in
-# `parent` and would conflict. A base above it is kept -- that is the
-# squash-merged-parent case `--onto` exists for.
+# The recorded stackBase is kept only while it is a commit in `branch`'s history
+# above the merge-base -- the squash-merged-parent case `--onto` exists for. A
+# base below the merge-base is not used: after a manual rebase or pull, the
+# commits in between are already in `parent` and would conflict.
 #
-# "" when even the merge-base is unavailable; the caller then plain-rebases.
+# "" stands in for the merge-base, because `--onto <parent> <merge-base>` makes
+# the merge-base the upstream and turns off git's patch-id skip: the old copies
+# of a parent rebased outside git-stack are then re-applied and conflict.
 def resolve_stack_base(branch, parent)
   base = get_base(branch)
-  mb = parent.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
-  if !base.empty? &&
-     git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
-     git_ok("merge-base --is-ancestor #{sh(base)} #{branch_ref(branch)}")
-    return mb if !mb.empty? && git_ok("merge-base --is-ancestor #{sh(base)} #{sh(mb)}")
-    return base
+  if base.empty?
+    info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
+    return ""
   end
-  mb
+  unless git_ok("rev-parse --verify --quiet #{sh(base)}^{commit}") &&
+         git_ok("merge-base --is-ancestor #{sh(base)} #{branch_ref(branch)}")
+    info "'#{branch}': stack base #{base} is not in its history; rebasing onto '#{parent}'"
+    return ""
+  end
+  mb = parent.empty? ? "" : git_out("merge-base #{branch_ref(branch)} #{branch_ref(parent)}")
+  return "" if !mb.empty? && git_ok("merge-base --is-ancestor #{sh(base)} #{sh(mb)}")
+  base
 end
 
 # Replay `branch`'s own commits onto `parent`, or die with the recovery command.
@@ -1389,7 +1394,6 @@ def replay_onto!(branch, parent, verb)
   # The rev is qualified; the trailing branch stays bare because git checks it out
   # (see `branch_ref`).
   if base.empty?
-    info "'#{branch}': no recorded stack base; rebasing onto '#{parent}'"
     ok = git_ok("rebase #{branch_ref(parent)} #{sh(branch)}")
   else
     ok = git_ok("rebase --onto #{branch_ref(parent)} #{sh(base)} #{sh(branch)}")
