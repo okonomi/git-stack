@@ -215,3 +215,20 @@ done.
 [exit 0]
 wt-x behind main: 0
 fix-c behind main: 0
+
+### submit pushes the stack, then refuses a lease someone else broke
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+done.
+[exit 0]
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
+pushing feat-b to origin
+error: submit failed for 1 branch(es): feat-a
+Deal with the branches warned about above, then re-run 'git stack submit'.
+[exit 1]
+feat-b behind origin/feat-b: 0

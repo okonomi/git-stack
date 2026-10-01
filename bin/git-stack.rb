@@ -592,6 +592,61 @@ def refuse_anchor_parent!(candidate)
   nil
 end
 
+# --- push -------------------------------------------------------------------
+
+# The remote `branch` is pushed to, in the order git itself picks one for a
+# plain `git push`, then `origin`, then a repository's only remote; "" when none
+# fits. Resolved here rather than left to `git push`, because the lease and the
+# refspec below name the remote explicitly.
+def push_remote_for(branch)
+  remote = git_out("config --get branch.#{sh(branch)}.pushRemote")
+  remote = git_out("config --get remote.pushDefault") if remote.empty?
+  remote = git_out("config --get branch.#{sh(branch)}.remote") if remote.empty?
+  # "." is this repository, which a push cannot mean.
+  remote = "" if remote == "."
+  return remote unless remote.empty?
+
+  remotes = git_out("remote").split("\n").map { |line| line.strip }.reject { |name| name.empty? }
+  return "origin" if remotes.include?("origin")
+
+  remotes.length == 1 ? remotes[0] : ""
+end
+
+# The SHA git-stack last pushed `branch` at, or "".
+def get_pushed(branch)
+  git_out("config --get branch.#{sh(branch)}.stackPushed")
+end
+
+# Push `branch` to the same name on `remote`, never with a bare `--force`.
+# Returns "" on success, else why not.
+#
+# The lease expects the SHA git-stack last pushed. A branch it never pushed is
+# leased against the remote-tracking ref instead, with `--force-if-includes`, so
+# a push made outside git-stack does not leave the lease failing forever -- and
+# a ref merely refreshed by a background fetch does not count as seen.
+#
+# `LC_ALL=C` because the lease failure is told apart by git's message: the exit
+# status is only `$? == 0` under Spinel (see `git_ok`).
+def push_branch(branch, remote)
+  dst = "refs/heads/#{branch}"
+  pushed = get_pushed(branch)
+  lease = pushed.empty? ? "--force-with-lease=#{sh(dst)} --force-if-includes" : "--force-with-lease=#{sh("#{dst}:#{pushed}")}"
+  # Only when there is none: an upstream the user chose stays theirs.
+  upstream = git_out("config --get branch.#{sh(branch)}.merge").empty? ? " --set-upstream" : ""
+  info "pushing #{cyan(branch)} to #{cyan(remote)}"
+  out = `LC_ALL=C git push --quiet#{upstream} #{lease} #{sh(remote)} #{sh("#{dst}:#{dst}")} 2>&1`
+  if $? == 0
+    git_config_write("branch.#{sh(branch)}.stackPushed #{sh(git_out("rev-parse #{branch_ref(branch)}"))}")
+    return ""
+  end
+  if out.include?("stale info") || out.include?("remote ref updated since checkout")
+    return "'#{remote}/#{branch}' has commits this branch does not include; fetch them and bring them in (or check they can go) first"
+  end
+
+  lines = unpack_lines(out)
+  lines.empty? ? "git push failed" : lines[lines.length - 1].strip
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -2098,6 +2153,48 @@ def follow_anchor(anchor, ref, here, held)
   nil
 end
 
+# Push every branch of the current stack, parents first, to its remote. No PR is
+# opened: that needs a host's API, which local mode leaves to the user.
+#
+# A branch that cannot be pushed is warned about and the rest still go, as
+# `restack` does with a skipped worktree: each push is a separate ref, and a
+# half-pushed stack is still better than none. The command then fails, naming
+# them. Every remote is resolved before the first push, so a missing one stops
+# the command with nothing pushed.
+def cmd_submit(_args)
+  branch = current_branch
+  trunks = trunk_branches
+  if is_trunk?(branch, trunks) || configured_anchors.include?(branch)
+    die("'#{branch}' is not in a stack; check out a branch of the stack to submit")
+  end
+  topology = StackRepository.load_topology(trunks)
+  die("'#{branch}' is not in a stack; check out a branch of the stack to submit") unless topology.tracked?(branch)
+
+  root = topology.stack_root(branch)
+  branches = topology.order_branches(root).select { |name| topology.branch?(name) }
+  remotes = branches.map { |name| push_remote_for(name) }
+  branches.each_with_index do |name, i|
+    die("no remote to push '#{name}' to; add one with 'git remote add <name> <url>'") if remotes[i].empty?
+  end
+
+  info "submitting stack rooted at #{cyan(root)}"
+  failed = ""
+  branches.each_with_index do |name, i|
+    why = push_branch(name, remotes[i])
+    next if why.empty?
+
+    info "warning: not pushing '#{name}': #{why}"
+    failed = "#{failed}#{name}\n"
+  end
+  names = unpack_lines(failed)
+  unless names.empty?
+    die("submit failed for #{names.length} branch(es): #{names.join(", ")}\n" \
+        "Deal with the branches warned about above, then re-run '#{PROG} submit'.")
+  end
+  info green("done.")
+  nil
+end
+
 def cmd_restack(_args)
   run_stack_rebase(false, "restack", "restacking", false)
 end
@@ -2206,6 +2303,7 @@ def cmd_help(_args)
         drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
         restack               Rebase the whole stack so each branch sits on its parent.
         sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
+        submit                Push every branch of the current stack, parents first, with --force-with-lease.
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
@@ -2262,7 +2360,7 @@ def max_operands(cmd)
   when "parent", "track" then 1
   when "untrack" then 0
   when "drop" then 1
-  when "restack", "sync", "version", "help" then 0
+  when "restack", "sync", "submit", "version", "help" then 0
   else UNKNOWN_COMMAND
   end
 end
@@ -2351,6 +2449,7 @@ def main(argv)
   when "drop"                 then cmd_drop(rest)
   when "restack"              then cmd_restack(rest)
   when "sync"                 then cmd_sync(rest)
+  when "submit"               then cmd_submit(rest)
   when "version"              then cmd_version(rest)
   when "help"                 then cmd_help(rest)
   else
