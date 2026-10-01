@@ -232,3 +232,16 @@ error: submit failed for 1 branch(es): feat-a
 Deal with the branches warned about above, then re-run 'git stack submit'.
 [exit 1]
 feat-b behind origin/feat-b: 0
+
+### mode github on a linear stack, and tree tagging its root
+$ git stack mode github
+stack rooted at feat-a is now github
+[exit 0]
+$ git stack mode
+github
+[exit 0]
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s)) [github]
+    * feat-b (1 commit(s))
+[exit 0]

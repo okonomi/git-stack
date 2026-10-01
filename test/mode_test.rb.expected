@@ -1,0 +1,90 @@
+
+### mode with no argument shows the current stack's mode
+$ git stack mode
+local
+[exit 0]
+$ git stack mode
+github
+[exit 0]
+$ git stack mode
+local
+[exit 0]
+
+### mode github records the mode on every branch of the stack
+$ git stack mode github
+stack rooted at feat-a is now github
+[exit 0]
+feat-a stackSync: github
+feat-b stackSync: github
+other stackSync (other stack): none
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s)) [github]
+      feat-b (1 commit(s))
+    other (1 commit(s))
+[exit 0]
+
+### mode local switches back
+$ git stack mode local
+stack rooted at feat-a is now local
+[exit 0]
+feat-a stackSync: local
+$ git stack tree
+  main (trunk)
+    feat-a (1 commit(s))
+    * feat-b (1 commit(s))
+[exit 0]
+
+### create inherits the mode
+$ git stack create feat-c
+created feat-c on top of feat-b
+[exit 0]
+feat-c stackSync: github
+
+### a branching stack cannot be github
+$ git stack mode github
+error: 'feat-a' has feat-b, feat-x on it; a github stack must be linear
+[exit 1]
+feat-a stackSync: none
+
+### a github stack refuses a branch
+$ git stack create feat-x
+error: 'feat-a' is in a github stack and already has 'feat-b' on it; a github stack must stay linear
+[exit 1]
+$ git stack track feat-a
+error: 'feat-a' is in a github stack and already has 'feat-b' on it; a github stack must stay linear
+[exit 1]
+$ git stack parent feat-a
+error: 'feat-a' is in a github stack and already has 'feat-b' on it; a github stack must stay linear
+[exit 1]
+$ git stack create feat-c
+created feat-c on top of feat-b
+[exit 0]
+
+### github needs a remote
+$ git stack mode github
+error: no remote to push 'feat-a' to; add one with 'git remote add <name> <url>'
+[exit 1]
+
+### github needs gh
+$ git stack mode github
+error: github mode needs the GitHub CLI; install gh (https://cli.github.com) and run 'gh auth login'
+[exit 1]
+
+### mode runs from a branch of a stack, and takes local or github
+$ git stack mode
+error: 'main' is not in a stack; check out a branch of a stack to see or set its mode
+[exit 1]
+$ git stack mode gitlab
+error: mode must be local or github, not 'gitlab'
+[exit 1]
+$ git stack mode
+error: branch.feat-a.stackSync must be local or github, not 'gitlab'
+[exit 1]
+
+### a branch that leaves its stack leaves its mode
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a stackSync: none
+feat-b stackSync: github
