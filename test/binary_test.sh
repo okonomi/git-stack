@@ -382,3 +382,22 @@ run tree
 run sync
 show "wt-x behind main" "rev-list --count wt-x..main"
 show "fix-c behind main" "rev-list --count fix-c..main"
+
+# `submit`: the push's exit status and message read back from a backtick, and
+# the per-branch remotes held in a parallel array -- reached only under CRuby in
+# the snapshot tests.
+section "submit pushes the stack, then refuses a lease someone else broke"
+new_repo
+git init -q --bare -b main "$repo-origin.git"
+git_q remote add origin "$repo-origin.git"
+git_q push -q -u origin main
+gsq create feat-a; commit a.txt a1
+gsq create feat-b; commit b.txt b1
+run submit
+git clone -q "$repo-origin.git" "$repo-other"
+(cd "$repo-other" && git config user.email o@example.com && git config user.name Other &&
+  git checkout -q feat-a && printf 't\n' > t.txt && git add t.txt && git commit -qm theirs &&
+  git push -q origin feat-a) >/dev/null 2>&1
+git_q checkout -q feat-b; commit b2.txt b2
+run submit
+show "feat-b behind origin/feat-b" "rev-list --count feat-b..origin/feat-b"
