@@ -59,6 +59,12 @@ show("feat-b upstream", "git rev-parse --abbrev-ref feat-b@{upstream}")
 show("feat-a stackPushed == tip", 'test "$(git config --get branch.feat-a.stackPushed)" = "$(git rev-parse feat-a)" && echo yes || echo no')
 show("HEAD", "git branch --show-current")
 
+section "submit says which branches were up to date and which it pushed"
+stack_repo
+gsq("submit")
+setup("git checkout -q feat-b"); commit("b2.txt", "b2")
+run("submit")
+
 section "submit force-pushes over its own last push"
 stack_repo
 gsq("submit")
