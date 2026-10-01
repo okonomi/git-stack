@@ -802,6 +802,150 @@ def github_stack!(numbers)
   nil
 end
 
+# `branch`'s newest pull request of any state, as "<number>\t<state>\t<merged_at>"
+# (merged_at "" unless merged), or "".
+def gh_last_pr(owner, branch)
+  out = gh_api("-X GET #{GH_REPO}/pulls -f #{sh("head=#{owner}:#{branch}")} -f state=all " \
+               "--jq #{sh(".[] | \"\\(.number)\\t\\(.state)\\t\\(.merged_at // \"\")\"")}")
+  lines = unpack_lines(out)
+  lines.empty? ? "" : lines[0]
+end
+
+# Move `branch` from `old` to `sha`, where it is checked out if it is, and
+# return "" or why it could not. `reset --keep` there, not `--hard`: it refuses
+# rather than discards a local change the move would touch.
+def move_branch!(branch, sha, old, here, held)
+  wt = branch == here ? git_out("rev-parse --show-toplevel") : worktree_of(held, branch)
+  if wt.empty?
+    return "" if git_ok("update-ref #{sh("refs/heads/#{branch}")} #{sh(sha)} #{sh(old)}")
+
+    return "its ref moved while this ran"
+  end
+  busy = worktree_busy_reason(wt)
+  return "its worktree '#{wt}' #{busy}" unless busy.empty?
+  return "" if git_ok("#{worktree_at(wt)}reset --quiet --keep #{sh(sha)}")
+
+  "resetting it in '#{wt}' failed"
+end
+
+# `sync` for a github stack: take in what GitHub did instead of restacking
+# (ADR 0001 D5), since GitHub rebases the stack itself when its bottom merges,
+# and a local restack on top would only fight it.
+#
+# A branch whose pull request merged is dropped as `drop` would -- its children
+# reconnect to its parent -- but its ref is kept. Every other branch is moved to
+# its remote tip, unless that would lose local commits: then it is skipped with
+# the branches above it, as `restack` skips a busy worktree. The base and the
+# pushed SHA are re-recorded on the remote tip, or the next restack would replay
+# from a base GitHub's rebase left behind.
+#
+# Returns the skipped branches, packed, for `report_skipped!`.
+def github_take_in!(root, trunks, topology, here, held, onto)
+  remote = push_remote_for(root)
+  unless !remote.empty? && git_ok("fetch --quiet #{sh(remote)}")
+    info "warning: skipping github stack '#{root}': fetching its remote failed"
+    return pack_lines(topology.order_branches(root))
+  end
+  owner = gh_api("#{GH_REPO} --jq .owner.login")
+  skipped = ""
+  # A Hash for `key?`, not a Set: see `climb_to_root`.
+  blocked = {}
+  # A dropped branch -> the parent its children now have.
+  moved_to = {}
+  topology.order_branches(root).each do |branch|
+    next unless topology.branch?(branch)
+
+    parent = topology.parent_of(branch)
+    parent = containing_trunk(branch, trunks) if !topology.trunk?(parent) && !topology.branch?(parent)
+    parent = moved_to[parent] while moved_to.key?(parent)
+    if blocked.key?(parent)
+      info "warning: skipping '#{branch}': its parent '#{parent}' was skipped"
+      blocked[branch] = true
+      skipped = "#{skipped}#{branch}\n"
+      next
+    end
+    set_parent(branch, parent) if parent != topology.parent_of(branch)
+
+    pr = gh_last_pr(owner, branch)
+    unless tab_field(pr, 2).empty?
+      untrack!(branch)
+      moved_to[branch] = parent
+      topology.children_of(branch).each { |child| set_parent(child, parent) }
+      info "'#{branch}': ##{tab_head(pr)} merged; dropped it from the stack (the branch is kept; 'git branch -D #{branch}' removes it)"
+      next
+    end
+
+    tip = git_out("rev-parse --verify --quiet #{sh("refs/remotes/#{remote}/#{branch}")}")
+    if tip.empty?
+      info "warning: '#{remote}/#{branch}' does not exist; leaving '#{branch}' as it is"
+      next
+    end
+    local = git_out("rev-parse #{branch_ref(branch)}")
+    if local != tip
+      # Safe to move only when nothing local would be lost: what git-stack last
+      # pushed, or something the remote tip already contains.
+      unless local == get_pushed(branch) || git_ok("merge-base --is-ancestor #{sh(local)} #{sh(tip)}")
+        info "warning: skipping '#{branch}': it has commits not on '#{remote}/#{branch}'; " \
+             "run '#{PROG} submit' to push them, or reset it to '#{remote}/#{branch}'"
+        blocked[branch] = true
+        skipped = "#{skipped}#{branch}\n"
+        next
+      end
+      why = move_branch!(branch, tip, local, here, held)
+      unless why.empty?
+        info "warning: skipping '#{branch}': #{why}"
+        blocked[branch] = true
+        skipped = "#{skipped}#{branch}\n"
+        next
+      end
+      info "'#{branch}': took in #{cyan("#{remote}/#{branch}")} as GitHub left it"
+    end
+    git_config_write("branch.#{sh(branch)}.stackPushed #{sh(tip)}")
+    ref = parent_ref(parent, onto)
+    on_parent = git_ok("merge-base --is-ancestor #{sh(ref)} #{sh(tip)}")
+    set_base(branch, on_parent ? git_out("rev-parse #{sh(ref)}") : git_out("merge-base #{sh(ref)} #{sh(tip)}"))
+  end
+  skipped
+end
+
+# Ask GitHub to merge the current branch's pull request -- and, as GitHub merges
+# a stack, every one below it -- then return at once (ADR 0001 D5). The merge
+# runs on GitHub's side; `sync` takes in the result.
+#
+# Every branch up to here must be exactly what git-stack pushed, and the head
+# SHA is passed along, so GitHub merges what was reviewed and not a push made
+# since.
+def cmd_merge(_args)
+  branch = current_branch
+  topology = StackRepository.load_topology(trunk_branches)
+  die("'#{branch}' is not in a stack; check out a branch of a github stack to merge") unless topology.tracked?(branch)
+  root = topology.stack_root(branch)
+  unless sync_mode_of(root) == "github"
+    die("'#{PROG} merge' needs a github stack; merge on your hosting service, then run '#{PROG} sync'")
+  end
+  die("github mode needs the GitHub CLI; install gh (https://cli.github.com) and run 'gh auth login'") unless gh_available?
+
+  path = topology.order_branches(root)
+  path = path[0..path.index(branch).to_i]
+  path.each do |name|
+    tip = git_out("rev-parse #{branch_ref(name)}")
+    die("'#{name}' has commits git-stack has not pushed; run '#{PROG} submit' first") unless tip == get_pushed(name)
+  end
+
+  pr = gh_open_pr(gh_api("#{GH_REPO} --jq .owner.login"), branch)
+  die("'#{branch}' has no open pull request; run '#{PROG} submit' first") if pr.empty?
+  number = tab_head(pr)
+  out = gh_api("-X PUT #{GH_REPO}/pulls/#{number}/merge-async -f #{sh("sha=#{get_pushed(branch)}")} " \
+               "--jq #{sh(".status + \"\\t\" + (.details.message // \"\")")}")
+  status = tab_field(out, 0)
+  die("GitHub refused to merge ##{number}: #{tab_field(out, 1)}") if status == "failed"
+
+  below = path.length > 1 ? " with the #{path.length - 1} below it" : ""
+  info "asked GitHub to merge ##{number} (#{cyan(branch)})#{below}: #{status}"
+  info "it merges in the background; run '#{PROG} sync' to take in the result"
+  nil
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -2266,7 +2410,7 @@ def report_skipped!(skipped, verb)
   return nil if names.empty?
 
   die("#{verb} skipped #{names.length} branch(es): #{names.join(", ")}\n" \
-      "Deal with the worktrees warned about above, then re-run '#{PROG} #{verb}'.")
+      "Deal with the branches warned about above, then re-run '#{PROG} #{verb}'.")
   nil
 end
 
@@ -2309,6 +2453,12 @@ def run_stack_rebase(heal_orphans, verb, gerund, all)
   skipped = ""
   roots.each do |stack|
     info "#{gerund} stack rooted at #{cyan(stack)}"
+    # `restack` still replays a github stack: asked for by name, it is the user's
+    # call, and `submit` then pushes the result.
+    if heal_orphans && sync_mode_of(stack) == "github"
+      skipped = "#{skipped}#{github_take_in!(stack, trunks, topology, original, held, onto)}"
+      next
+    end
     skipped = "#{skipped}#{restack_subtree(stack, trunks, heal_orphans, verb, topology, held, onto)}"
   end
 
@@ -2549,6 +2699,7 @@ def cmd_help(_args)
         sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
         mode [local|github]   Show or set the current stack's sync-mode (default: stack.defaultSync, else local).
         submit                Push every branch of the current stack, parents first, with --force-with-lease.
+        merge                 Ask GitHub to merge the current branch's PR and those below it (github mode); sync takes in the result.
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
@@ -2606,7 +2757,7 @@ def max_operands(cmd)
   when "parent", "track" then 1
   when "untrack" then 0
   when "drop" then 1
-  when "restack", "sync", "submit", "version", "help" then 0
+  when "restack", "sync", "submit", "merge", "version", "help" then 0
   else UNKNOWN_COMMAND
   end
 end
@@ -2697,6 +2848,7 @@ def main(argv)
   when "sync"                 then cmd_sync(rest)
   when "submit"               then cmd_submit(rest)
   when "mode"                 then cmd_mode(rest)
+  when "merge"                then cmd_merge(rest)
   when "version"              then cmd_version(rest)
   when "help"                 then cmd_help(rest)
   else
