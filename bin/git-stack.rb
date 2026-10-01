@@ -489,6 +489,109 @@ def ref_label(ref)
   ref.delete_prefix("refs/remotes/")
 end
 
+# --- anchors ----------------------------------------------------------------
+
+# An anchor is the branch a worktree tool makes for a worktree: it sits on a
+# trunk and carries no commits, and stacks grow on top of it. It is never a node
+# of the graph -- a stack created on it records the trunk as parent -- so it is
+# never restacked and never a PR base.
+#
+# `stackAnchor` goes on every branch of the stack, not only the root: deleting a
+# branch deletes its whole `branch.<name>` config section, and the root is the
+# branch deleted first, once it merges.
+
+# Every registered anchor, in config order. Shaped like `configured_trunks`.
+def configured_anchors
+  out = git_out("config --get-all stack.anchor")
+  out.split("\n").map { |line| line.strip }.reject { |name| name.empty? }.uniq
+end
+
+def set_anchors(anchors)
+  # Fails when the key is absent, which is fine.
+  git_config_write("--unset-all stack.anchor")
+  anchors.each do |anchor|
+    git_config_write("--add stack.anchor #{sh(anchor)}")
+  end
+end
+
+# The anchor `branch`'s stack belongs to, or "".
+def get_anchor(branch)
+  git_out("config --get branch.#{sh(branch)}.stackAnchor")
+end
+
+def set_anchor(branch, anchor)
+  git_config_write("branch.#{sh(branch)}.stackAnchor #{sh(anchor)}")
+end
+
+# Kept on the anchor itself, so it tells "every stack here was deleted" from
+# "no stack yet", and goes with the anchor when that is deleted.
+def mark_anchor_used(anchor)
+  git_config_write("branch.#{sh(anchor)}.stackAnchorUsed true")
+end
+
+# branch -> the anchor it records, for every branch at once: `tree` would
+# otherwise spend a `git config` per row.
+def anchor_memberships
+  members = {}
+  scan = git_scan("config --get-regexp '^branch\\..*\\.stackanchor$'", true)
+  unpack_lines(scan).each do |line|
+    space = line.index(" ")
+    next if space.nil?
+
+    value = line[(space + 1)..-1].strip
+    next if value.empty?
+
+    members[line[0...space].sub(/^branch\./, "").sub(/\.stackanchor$/, "")] = value
+  end
+  members
+end
+
+# Unset `stackAnchor` on every branch that names `anchor`, for when the anchor
+# stops being one. Its stacks stay, as ordinary stacks on the trunk.
+def release_anchor(anchor)
+  anchor_memberships.each do |name, value|
+    git_config_write("--unset branch.#{sh(name)}.stackAnchor") if value == anchor
+  end
+  nil
+end
+
+# Unregister every anchor whose branch is gone and release its stacks, saying
+# so. Checked on every command, as `trunk_branches` checks the trunks: the
+# worktree tool deletes the anchor without telling git-stack, and a stack left
+# naming it would be scoped and drawn under nothing.
+def prune_vanished_anchors
+  anchors = configured_anchors
+  return nil if anchors.empty?
+
+  live = anchors.select { |anchor| branch_ref_exists?(anchor) }
+  return nil if live.length == anchors.length
+
+  set_anchors(live)
+  anchors.reject { |anchor| live.include?(anchor) }.each do |gone|
+    release_anchor(gone)
+    info "anchor '#{gone}' no longer exists; unregistered it (its stacks stay on the trunk)"
+  end
+  nil
+end
+
+# The registered anchors whose branch still exists.
+def live_anchors
+  configured_anchors.select { |anchor| branch_ref_exists?(anchor) }
+end
+
+# True once a stack was created on `anchor` (see `mark_anchor_used`).
+def anchor_used?(anchor)
+  git_out("config --type=bool --get branch.#{sh(anchor)}.stackAnchorUsed") == "true"
+end
+
+# Dies unless `candidate` may become a parent. An anchor is not a graph node.
+def refuse_anchor_parent!(candidate)
+  return nil unless configured_anchors.include?(candidate)
+
+  die("'#{candidate}' is an anchor, not a stack branch; check it out and run '#{PROG} create <name>' on it instead")
+  nil
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -651,10 +754,12 @@ def reparent!(branch, parent, err)
   nil
 end
 
-# Parent and base go together, so no base outlives the stack it pointed into.
+# Parent, base and anchor go together, so none outlives the stack it pointed into.
 def untrack!(branch)
   clear_parent(branch)
   clear_base(branch)
+  # Fails when the key is absent, which is fine.
+  git_config_write("--unset branch.#{sh(branch)}.stackAnchor")
   nil
 end
 
@@ -710,6 +815,15 @@ def named_children_of(parent, trunks)
   return children unless is_trunk?(parent, trunks)
 
   children.concat(topology.live_detached_roots)
+end
+
+# The roots of the stacks created on `anchor`, sorted: what `up` offers from it,
+# and what `sync` takes in its scope. Live branches only, since `up` checks one
+# out. `members` is `anchor_memberships`.
+def anchor_stacks(topology, members, anchor, trunks)
+  topology.tracked_branches.select do |name|
+    members[name] == anchor && topology.branch?(name) && is_trunk?(topology.parent_of(name), trunks)
+  end.sort
 end
 
 # The parent `parent`/`down` answer with: a trunk is its own (the bottom), a
@@ -1069,15 +1183,21 @@ class StackTopology
     orphans = orphan_roots
     return [root] if orphans.empty?
 
-    roots = [root]
-    covered = Set.new(order_branches(root))
-    orphans.each do |orphan|
-      next if covered.include?(orphan)
+    with_roots([root], orphans)
+  end
 
-      roots << orphan
-      covered.merge(order_branches(orphan))
+  # `roots` followed by each of `extra` not already inside an earlier subtree.
+  def with_roots(roots, extra)
+    acc = roots.map { |root| root }
+    covered = Set.new
+    roots.each { |root| covered.merge(order_branches(root)) }
+    extra.each do |name|
+      next if covered.include?(name)
+
+      acc << name
+      covered.merge(order_branches(name))
     end
-    roots
+    acc
   end
 
   # The root `tree` draws for `branch`'s stack. Unlike `stack_root`, it climbs past
@@ -1485,17 +1605,71 @@ def cmd_fell(args)
   nil
 end
 
+# Register anchors alongside the existing ones; with no arguments, list them.
+# Shaped like `plant`.
+def cmd_anchor(args)
+  anchors = configured_anchors
+  if args.empty?
+    info(anchors.empty? ? "no anchor registered; run '#{PROG} anchor <branch>'" : "anchor(s): #{anchors.join(", ")}")
+    return nil
+  end
+
+  refs = existing_branches
+  trunks = trunk_branches
+  args.each do |name|
+    die("branch '#{name}' does not exist") unless refs.include?(name)
+    die("trunk '#{name}' cannot be an anchor") if is_trunk?(name, trunks)
+    die("'#{name}' is already an anchor") if anchors.include?(name)
+    # It would be a graph node and an anchor at once, restacked and skipped.
+    die("'#{name}' is stacked on '#{get_parent(name)}'; run '#{PROG} untrack' on it first") unless get_parent(name).empty?
+  end
+  die("duplicate anchor in '#{args.join(" ")}'") if args.uniq.length != args.length
+
+  added = anchors + args
+  set_anchors(added)
+  info "anchored #{green(args.join(", "))}; anchor(s): #{added.join(", ")}"
+  nil
+end
+
+# Unregister anchors. Their stacks stay, as ordinary stacks on the trunk.
+def cmd_unanchor(args)
+  anchors = configured_anchors
+  return cmd_anchor(args) if args.empty?
+
+  args.each do |name|
+    die("'#{name}' is not an anchor") unless anchors.include?(name)
+  end
+
+  left = anchors.reject { |name| args.include?(name) }
+  set_anchors(left)
+  args.each { |name| release_anchor(name) }
+  gone = green(args.join(", "))
+  info(left.empty? ? "unanchored #{gone}; no anchor left" : "unanchored #{gone}; anchor(s): #{left.join(", ")}")
+  nil
+end
+
 def cmd_create(args)
   name = arg0(args)
   die("usage: #{PROG} create <branch-name>") if name.empty?
   die("branch '#{name}' already exists") if branch_name_taken?(name)
 
-  parent = current_branch
+  here = current_branch
+  # On an anchor the stack rests on the anchor's trunk; elsewhere the new branch
+  # joins whatever anchor its parent belongs to.
+  on_anchor = configured_anchors.include?(here)
+  parent = on_anchor ? containing_trunk(here, trunk_branches) : here
+  anchor = on_anchor ? here : get_anchor(here)
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
-  # A new branch has no commits yet, so its stack begins at the parent's tip.
-  record_tip_base(name, "refs/heads/#{parent}")
-  info "created #{green(name)} on top of #{cyan(parent)}"
+  # A new branch has no commits yet, so its stack begins at the tip it was cut
+  # from -- the anchor's, which may lag its trunk.
+  record_tip_base(name, "refs/heads/#{here}")
+  unless anchor.empty?
+    set_anchor(name, anchor)
+    mark_anchor_used(anchor) if on_anchor
+  end
+  where = on_anchor ? "#{cyan(parent)} (anchor #{cyan(here)})" : cyan(parent)
+  info "created #{green(name)} on top of #{where}"
 end
 
 def cmd_tree(_args)
@@ -1515,15 +1689,53 @@ def cmd_tree(_args)
   # has to draw it somewhere.
   roots = snapshot.topology.detached_roots
   homes = roots.map { |root| containing_trunk(root, trunks) }
+  # Anchors are drawn under the trunk their history rests on, as detached roots
+  # are, with the stacks that record them one level further in.
+  anchors = live_anchors
+  anchor_homes = anchors.map { |anchor| containing_trunk(anchor, trunks) }
+  members = anchor_memberships
   trunks.each do |trunk|
     up = snapshot.upstream_of(trunk)
     label = up.empty? ? "(trunk)" : "(trunk, restacks onto #{ref_label(up)})"
     puts "#{tree_marker(trunk, cur)} #{tree_name(trunk, cur, "36")} #{dim(label)}"
-    print_order(trunk, 0, true, cur, snapshot)
+    stacks = snapshot.topology.children_of(trunk)
+    anchors.each_with_index do |anchor, i|
+      next unless anchor_homes[i] == trunk
+
+      mine = stacks.select { |root| members[root] == anchor }
+      print_anchor_row(anchor, trunk, !mine.empty?, cur, snapshot)
+      mine.each { |root| print_order(root, 2, false, cur, snapshot) }
+    end
+    stacks.each do |root|
+      # A stack recording an anchor that is gone or unregistered is drawn as an
+      # ordinary one, rather than vanishing from `tree`.
+      anchor = members[root]
+      next if !anchor.nil? && anchors.include?(anchor)
+
+      print_order(root, 1, false, cur, snapshot)
+    end
     roots.each_with_index do |root, i|
       print_order(root, 1, false, cur, snapshot) if homes[i] == trunk
     end
   end
+end
+
+# An anchor's heading in `tree`. It is not a node, so it is measured against the
+# trunk ref its stacks restack onto, and says whether `sync` has work to do.
+#
+# "done" needs the used mark: without it, an anchor whose stacks were all
+# deleted looks exactly like one nobody has stacked on yet.
+def print_anchor_row(anchor, trunk, has_stacks, cur, snapshot)
+  up = snapshot.upstream_of(trunk)
+  behind, _ahead = ahead_behind(up.empty? ? "refs/heads/#{trunk}" : up, anchor)
+  label = dim("(anchor)")
+  if !has_stacks && anchor_used?(anchor)
+    label = green("(anchor, done)")
+  elsif behind > 0
+    label = yellow("(anchor, #{behind} behind; run `#{PROG} sync`)")
+  end
+  puts "  #{tree_marker(anchor, cur)} #{tree_name(anchor, cur, "")} #{label}"
+  nil
 end
 
 def cmd_parent(args)
@@ -1537,6 +1749,7 @@ def cmd_parent(args)
     return
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
+  refuse_anchor_parent!(new_parent)
   StackRepository.load_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
@@ -1549,6 +1762,7 @@ def cmd_track(args)
   die("cannot track trunk '#{branch}'") if is_trunk?(branch, trunks)
   # The trunk its history rests on, not just the primary.
   parent = containing_trunk(branch, trunks) if parent.empty?
+  refuse_anchor_parent!(parent)
   StackRepository.load_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
@@ -1564,6 +1778,13 @@ def cmd_down(_args)
   branch = current_branch
   trunks = trunk_branches
   parent = effective_parent(branch, trunks)
+  # A stack's root steps down to its anchor rather than the trunk: the trunk is
+  # usually checked out in another worktree, and the anchor is where the next
+  # stack is created.
+  if parent != branch && is_trunk?(parent, trunks)
+    anchor = get_anchor(branch)
+    parent = anchor if !anchor.empty? && branch_ref_exists?(anchor) && configured_anchors.include?(anchor)
+  end
   # Every trunk, and a branch hand-configured as its own parent.
   die("already at the bottom of the stack") if parent == branch
   die("parent branch '#{parent}' no longer exists") unless branch_ref_exists?(parent)
@@ -1577,9 +1798,11 @@ def cmd_up(args)
   branch = current_branch
   trunks = trunk_branches
   want = arg0(args)
+  # An anchor has no children in the graph; its stacks stand in for them.
+  anchored = configured_anchors.include?(branch)
 
   unless want.empty?
-    children = named_children_of(branch, trunks)
+    children = anchored ? anchor_stacks(StackRepository.load_topology(trunks), anchor_memberships, branch, trunks) : named_children_of(branch, trunks)
     # The menu path's wording: "'x' is not stacked..." would imply some other name
     # would have worked.
     die("no branch stacked on top of '#{branch}'") if children.empty?
@@ -1588,7 +1811,7 @@ def cmd_up(args)
     return
   end
 
-  children = children_of(branch, trunks)
+  children = anchored ? anchor_stacks(StackRepository.load_topology(trunks), anchor_memberships, branch, trunks) : children_of(branch, trunks)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   if children.length == 1
@@ -1596,7 +1819,7 @@ def cmd_up(args)
     return
   end
 
-  info "'#{branch}' has multiple children; pick one:"
+  info "'#{branch}' has multiple #{anchored ? "stacks" : "children"}; pick one:"
   children.each do |child|
     info "  #{PROG} up #{child}"
   end
@@ -1774,13 +1997,30 @@ end
 # the user never named. `sync` also takes every orphaned stack, because `tree`
 # prints "run sync" beside an orphan wherever it is run (#55). An untracked but
 # live parent is not broken, so it never widens the scope.
-def run_stack_rebase(heal_orphans, verb, gerund)
+#
+# Run from an anchor or a stack on one, `sync` takes that anchor's stacks and
+# only its own orphans, then moves the anchor up to its trunk. The orphans of
+# other worktrees are left to them, unless `all`: their stacks may be mid-edit
+# there, and healing them rebases branches this worktree never touched.
+def run_stack_rebase(heal_orphans, verb, gerund, all)
   original = current_branch
   trunks = trunk_branches
   # Planned from one pre-heal snapshot; the heal rewrites config only.
   topology = StackRepository.load_topology(trunks)
-  root = topology.stack_root(original)
-  roots = heal_orphans ? topology.rebase_roots(root) : [root]
+  anchor = heal_orphans ? scope_anchor(original, live_anchors) : ""
+  outside = 0
+  if anchor.empty?
+    root = topology.stack_root(original)
+    roots = heal_orphans ? topology.rebase_roots(root) : [root]
+  else
+    # Assigned here, not beside `anchor` with a `{}` fallback: that literal widens
+    # `anchor_stacks` to untyped under Spinel.
+    members = anchor_memberships
+    orphans = topology.orphan_roots
+    mine = orphans.select { |name| all || members[name] == anchor }
+    outside = orphans.length - mine.length
+    roots = topology.with_roots(anchor_stacks(topology, members, anchor, trunks), mine)
+  end
   held = other_worktree_checkouts(original)
   # Only `sync` fetches: `restack` has never touched the network.
   upstreams = trunk_upstream_rows(trunks)
@@ -1797,17 +2037,73 @@ def run_stack_rebase(heal_orphans, verb, gerund)
     die("#{verb} completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
+  unless anchor.empty?
+    follow_anchor(anchor, parent_ref(containing_trunk(anchor, trunks), onto), original, held)
+    if outside > 0
+      info "note: left #{outside} orphaned stack(s) outside anchor '#{anchor}' alone; run '#{PROG} sync --all' to heal them too"
+    end
+  end
   report_skipped!(skipped, verb)
   info green("done.")
   nil
 end
 
-def cmd_restack(_args)
-  run_stack_rebase(false, "restack", "restacking")
+# The anchor whose scope `sync` runs in from `branch`: the anchor itself, or the
+# one `branch`'s stack records. "" outside any. `anchors` is `live_anchors`, so
+# a stack still naming an unregistered anchor is not scoped by it.
+def scope_anchor(branch, anchors)
+  return branch if anchors.include?(branch)
+
+  anchor = get_anchor(branch)
+  anchors.include?(anchor) ? anchor : ""
 end
 
-def cmd_sync(_args)
-  run_stack_rebase(true, "sync", "syncing")
+# Fast-forward `anchor` to `ref`, the trunk ref its stacks were restacked onto,
+# so a stack created on it next starts from there.
+#
+# Only ever a fast-forward, and a warning rather than a failure when that is not
+# possible: the anchor is not a stack branch, so nothing of the user's is
+# replayed onto it, and commits on it are theirs to keep.
+#
+# Checked out -- here (`here` is the current branch) or in another worktree --
+# it is merged there, since git refuses to move a branch under a worktree.
+# Otherwise `update-ref` with the old value, which fails rather than clobbers a
+# concurrent move.
+def follow_anchor(anchor, ref, here, held)
+  behind, ahead = ahead_behind(ref, anchor)
+  return nil if behind == 0
+
+  target = ref_label(ref)
+  if ahead > 0
+    info "warning: leaving anchor '#{anchor}' where it is: it has #{ahead} commit(s) of its own, so it cannot fast-forward to '#{target}'"
+    return nil
+  end
+
+  wt = anchor == here ? git_out("rev-parse --show-toplevel") : worktree_of(held, anchor)
+  if wt.empty?
+    info "fast-forwarding anchor #{cyan(anchor)} to #{cyan(target)}"
+    old = git_out("rev-parse #{branch_ref(anchor)}")
+    ok = git_ok("update-ref #{sh("refs/heads/#{anchor}")} #{sh(git_out("rev-parse #{sh(ref)}"))} #{sh(old)}")
+  else
+    busy = worktree_busy_reason(wt)
+    unless busy.empty?
+      info "warning: leaving anchor '#{anchor}' where it is: its worktree '#{wt}' #{busy}"
+      return nil
+    end
+    shown = anchor == here ? "" : worktree_suffix(wt)
+    info "fast-forwarding anchor #{cyan(anchor)} to #{cyan(target)}#{shown}"
+    ok = git_ok("#{worktree_at(wt)}merge --ff-only --quiet #{sh(ref)}")
+  end
+  info "warning: failed to fast-forward anchor '#{anchor}' to '#{target}'" unless ok
+  nil
+end
+
+def cmd_restack(_args)
+  run_stack_rebase(false, "restack", "restacking", false)
+end
+
+def cmd_sync(args)
+  run_stack_rebase(true, "sync", "syncing", has_flag?(args, "--all"))
 end
 
 # Splice `branch` out: reconnect its children to its parent, untrack it, and
@@ -1898,6 +2194,8 @@ def cmd_help(_args)
         init [branch...]      Set (or auto-detect) the trunk branch(es).
         plant [branch...]     Add branch(es) to the trunks, keeping the rest. (no args: list them)
         fell [branch...]      Remove branch(es) from the trunks; the branch itself is kept. (no args: list them)
+        anchor [branch...]    Register branch(es) a worktree tool made as anchors to stack on. (no args: list them)
+        unanchor [branch...]  Unregister anchor(s); their stacks stay on the trunk.
         create <name>         Create <name> stacked on the current branch. (aliases: b, branch)
         tree                  Show the stack as a tree. (aliases: ls, list)
         up [child]            Check out the branch stacked on the current one.
@@ -1907,7 +2205,7 @@ def cmd_help(_args)
         untrack               Stop tracking the current branch in a stack.
         drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
         restack               Rebase the whole stack so each branch sits on its parent.
-        sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
+        sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
@@ -1931,7 +2229,7 @@ end
 # Command-level flags, as "<flag>\t<the one command that accepts it>". Listed, so
 # a typo like `--delet` is still rejected. The owner lives in the row because
 # these flags are lifted out of argv before the command is known.
-COMMAND_FLAGS = ["--delete\tdrop"].freeze
+COMMAND_FLAGS = ["--delete\tdrop", "--all\tsync"].freeze
 
 # The command that accepts `flag`, or "".
 def flag_owner(flag)
@@ -1956,6 +2254,7 @@ UNKNOWN_COMMAND = -2
 def max_operands(cmd)
   case cmd
   when "init", "plant", "fell" then -1
+  when "anchor", "unanchor" then -1
   when "create", "b", "branch" then 1
   when "tree", "ls", "list" then 0
   when "up", "next" then 1
@@ -2031,12 +2330,17 @@ def main(argv)
   validate_args!(cmd, rest)
 
   repo_optional = cmd == "version" || cmd == "help"
-  require_repo unless repo_optional
+  unless repo_optional
+    require_repo
+    prune_vanished_anchors
+  end
 
   case cmd
   when "init"                 then cmd_init(rest)
   when "plant"                then cmd_plant(rest)
   when "fell"                 then cmd_fell(rest)
+  when "anchor"               then cmd_anchor(rest)
+  when "unanchor"             then cmd_unanchor(rest)
   when "create", "b", "branch" then cmd_create(rest)
   when "tree", "ls", "list"   then cmd_tree(rest)
   when "up", "next"           then cmd_up(rest)

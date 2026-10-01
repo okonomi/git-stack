@@ -1,0 +1,111 @@
+
+### sync from an anchored stack takes every stack on the anchor, and the anchor
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+fast-forwarding anchor wt-x to main
+done.
+[exit 0]
+feat-a behind main: 0
+fix-c behind main: 0
+other behind main (out of scope): 1
+wt-x == main: yes
+HEAD: feat-a
+
+### sync from the anchor itself fast-forwards it here
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+fast-forwarding anchor wt-x to main
+done.
+[exit 0]
+wt-x == main: yes
+HEAD: wt-x
+file m.txt: m2
+
+### sync fast-forwards an anchor checked out in another worktree, from there
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+fast-forwarding anchor wt-x to main in worktree '<repo>-wt'
+done.
+[exit 0]
+wt-x == main: yes
+worktree file m.txt: m2
+
+### sync leaves an anchor whose worktree is dirty, and says so
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+warning: leaving anchor 'wt-x' where it is: its worktree '<repo>-wt' has uncommitted changes
+done.
+[exit 0]
+wt-x behind main: 1
+feat-a behind main: 0
+
+### sync leaves an anchor that has commits of its own
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+warning: leaving anchor 'wt-x' where it is: it has 1 commit(s) of its own, so it cannot fast-forward to 'main'
+done.
+[exit 0]
+wt-x behind main: 1
+
+### sync in an anchor heals only its own orphans, and --all heals the rest
+$ git stack sync
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main
+fast-forwarding anchor wt-x to main
+note: left 1 orphaned stack(s) outside anchor 'wt-x' alone; run 'git stack sync --all' to heal them too
+done.
+[exit 0]
+feat-b parent: main
+feat-b anchor: wt-x
+top-q parent (left alone): base-p
+$ git stack sync --all
+syncing stack rooted at feat-b
+syncing stack rooted at top-q
+'top-q': parent 'base-p' no longer exists; reparenting onto trunk 'main'
+restacking top-q onto main
+done.
+[exit 0]
+top-q parent: main
+
+### sync outside any anchor still heals every orphan
+$ git stack sync
+syncing stack rooted at main
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main
+done.
+[exit 0]
+feat-b parent: main
+
+### --all belongs to sync
+$ git stack restack --all
+error: invalid option: --all
+[exit 1]
+
+### with stack.trunkUpstream, sync moves the anchor to the fetched upstream
+$ git stack sync
+fetching origin
+syncing stack rooted at feat-a
+restacking feat-a onto origin/main
+fast-forwarding anchor wt-x to origin/main
+done.
+[exit 0]
+wt-x == origin/main: yes
+feat-a behind origin/main: 0
+local main behind origin/main (untouched): 1

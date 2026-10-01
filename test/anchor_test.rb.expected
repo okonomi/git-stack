@@ -1,0 +1,182 @@
+
+### anchor with no arguments lists the anchors
+$ git stack anchor
+no anchor registered; run 'git stack anchor <branch>'
+[exit 0]
+$ git stack anchor
+anchor(s): wt-x
+[exit 0]
+
+### anchor registers branches alongside the existing ones
+$ git stack anchor wt-x
+anchored wt-x; anchor(s): wt-x
+[exit 0]
+$ git stack anchor wt-y
+anchored wt-y; anchor(s): wt-x, wt-y
+[exit 0]
+stack.anchor: wt-x wt-y
+
+### anchor refuses a missing branch, a trunk, a repeat and a stacked branch
+$ git stack anchor nope
+error: branch 'nope' does not exist
+[exit 1]
+$ git stack anchor main
+error: trunk 'main' cannot be an anchor
+[exit 1]
+$ git stack anchor wt-x
+error: 'wt-x' is already an anchor
+[exit 1]
+$ git stack anchor feat-a
+error: 'feat-a' is stacked on 'main'; run 'git stack untrack' on it first
+[exit 1]
+$ git stack anchor wt-y wt-y
+error: duplicate anchor in 'wt-y wt-y'
+[exit 1]
+
+### unanchor removes an anchor and keeps the branch
+$ git stack unanchor wt-x
+unanchored wt-x; anchor(s): wt-y
+[exit 0]
+$ git stack unanchor wt-y
+unanchored wt-y; no anchor left
+[exit 0]
+$ git stack unanchor wt-y
+error: 'wt-y' is not an anchor
+[exit 1]
+wt-x still a branch: yes
+
+### create on an anchor stacks on the trunk and records the anchor
+$ git stack create feat-a
+created feat-a on top of main (anchor wt-x)
+[exit 0]
+feat-a parent: main
+feat-a base == wt-x: yes
+feat-a anchor: wt-x
+wt-x used: true
+wt-x parent (none): none
+
+### create on a stacked branch inherits its anchor
+$ git stack create feat-b
+created feat-b on top of feat-a
+[exit 0]
+feat-b parent: feat-a
+feat-b anchor: wt-x
+
+### create elsewhere records no anchor
+$ git stack create feat-a
+created feat-a on top of main
+[exit 0]
+feat-a anchor: none
+
+### an anchor is never a parent
+$ git stack track wt-x
+error: 'wt-x' is an anchor, not a stack branch; check it out and run 'git stack create <name>' on it instead
+[exit 1]
+$ git stack parent wt-x
+error: 'wt-x' is an anchor, not a stack branch; check it out and run 'git stack create <name>' on it instead
+[exit 1]
+feat-a parent: main
+
+### unanchor clears the anchor from its stacks
+$ git stack unanchor wt-x
+unanchored wt-x; no anchor left
+[exit 0]
+feat-a anchor: none
+feat-a parent: main
+
+### a branch that leaves its stack leaves its anchor
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+[exit 0]
+feat-a anchor: none
+feat-b anchor: wt-x
+$ git stack untrack
+'feat-c' is no longer tracked in a stack
+[exit 0]
+feat-c anchor: none
+
+### tree draws an anchor as a heading over its stacks
+$ git stack tree
+  main (trunk)
+    wt-x (anchor)
+      feat-a (1 commit(s))
+      * feat-b (1 commit(s))
+      fix-c (1 commit(s))
+    wt-y (anchor)
+    other (1 commit(s))
+[exit 0]
+
+### tree says when an anchor has fallen behind its trunk
+$ git stack tree
+* main (trunk)
+    wt-x (anchor, 1 behind; run `git stack sync`)
+      feat-a (needs restack: 1 behind)
+[exit 0]
+
+### tree marks an anchor done once every branch on it is deleted
+$ git stack tree
+* main (trunk)
+    wt-x (anchor, done)
+    wt-y (anchor, 2 behind; run `git stack sync`)
+[exit 0]
+
+### down from a stack's root goes to its anchor, not the trunk
+$ git stack down
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+$ git stack down
+Switched to branch 'wt-x'
+[exit 0]
+HEAD: wt-x
+$ git stack down
+Switched to branch 'main'
+[exit 0]
+HEAD: main
+
+### up from an anchor goes to its only stack
+$ git stack up
+Switched to branch 'feat-a'
+[exit 0]
+HEAD: feat-a
+
+### up from an anchor with several stacks lists them
+$ git stack up
+'wt-x' has multiple stacks; pick one:
+  git stack up feat-a
+  git stack up fix-c
+[exit 1]
+$ git stack up fix-c
+Switched to branch 'fix-c'
+[exit 0]
+HEAD: fix-c
+$ git stack up other
+error: 'other' is not stacked directly on 'wt-x'
+[exit 1]
+
+### up from an anchor with no stack says so
+$ git stack up
+error: no branch stacked on top of 'wt-x'
+[exit 1]
+
+### a deleted anchor is unregistered, and its stacks released, by the next command
+$ git stack tree
+anchor 'wt-x' no longer exists; unregistered it (its stacks stay on the trunk)
+* main (trunk)
+    wt-y (anchor)
+    feat-a (1 commit(s))
+[exit 0]
+stack.anchor: wt-y
+feat-a anchor: none
+feat-a parent: main
+$ git stack tree
+* main (trunk)
+    wt-y (anchor)
+    feat-a (1 commit(s))
+[exit 0]
+
+### a finished anchor removed by the worktree tool is unregistered by the next command
+$ git stack anchor
+anchor 'wt-x' no longer exists; unregistered it (its stacks stay on the trunk)
+no anchor registered; run 'git stack anchor <branch>'
+[exit 0]
