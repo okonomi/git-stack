@@ -62,6 +62,9 @@ class Object
   def live_anchors: () -> Array[String]
   def anchor_used?: (String) -> bool
   def refuse_anchor_parent!: (String) -> nil
+  def push_remote_for: (String) -> String
+  def get_pushed: (String) -> String
+  def push_branch: (String, String) -> String
   def other_worktree_checkouts: (String) -> Hash[String, String]
   def worktree_line_branch: (String, String) -> String
   def worktree_file: (String, String) -> String
@@ -131,6 +134,7 @@ class Object
   def run_stack_rebase: (bool, String, String, bool) -> nil
   def scope_anchor: (String, Array[String]) -> String
   def follow_anchor: (String, String, String, Hash[String, String]) -> nil
+  def cmd_submit: (Array[String]) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_drop: (Array[String]) -> nil
@@ -148,13 +152,15 @@ class Object
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
-  def __enum_find__5245: (Array[String]) -> String
-  def __enum_each_with_index__5884: (Array[String]) -> Array[String]
-  def __enum_find__7391: (Array[String]) -> String
-  def __enum_each_with_index__8319: (Array[String]) -> Array[String]
-  def __enum_each_with_index__8405: (Array[String]) -> Array[String]
-  def __enum_find__10513: (Array[String]) -> String
-  def __enum_find__10767: (Array[String]) -> String
+  def __enum_find__5540: (Array[String]) -> String
+  def __enum_each_with_index__6179: (Array[String]) -> Array[String]
+  def __enum_find__7686: (Array[String]) -> String
+  def __enum_each_with_index__8614: (Array[String]) -> Array[String]
+  def __enum_each_with_index__8700: (Array[String]) -> Array[String]
+  def __enum_each_with_index__10461: (Array[String]) -> Array[String]
+  def __enum_each_with_index__10495: (Array[String]) -> Array[String]
+  def __enum_find__10998: (Array[String]) -> String
+  def __enum_find__11253: (Array[String]) -> String
 end
 
 class OptionParser
