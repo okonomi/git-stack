@@ -13,6 +13,7 @@ local
 ### mode github records the mode on every branch of the stack
 $ git stack mode github
 stack rooted at feat-a is now github
+2 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]
 feat-a stackSync: github
 feat-b stackSync: github

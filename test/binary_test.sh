@@ -415,3 +415,22 @@ run mode github
 run mode
 run tree
 unset GIT_STACK_GH
+
+# github `submit` and `mode`'s registration: `gh api`'s output read back from a
+# backtick, the pull request numbers built by `map` over calls that shell out,
+# and `index` on the registration's run -- reached only under CRuby in the
+# snapshot tests. test/support/fake-gh stands in for gh.
+section "github mode: submit opens and stacks pull requests, mode registers them"
+new_repo
+git init -q --bare -b main "$repo-origin.git"
+git_q remote add origin "$repo-origin.git"
+git_q push -q -u origin main
+export GIT_STACK_GH="$root/test/support/fake-gh" FAKE_GH="$(mktemp -d)"
+gsq create feat-a; commit a.txt a1
+gsq create feat-b; commit b.txt b1
+"$GIT_STACK_GH" --fake pr feat-a main >/dev/null
+run mode github
+gsq create feat-c; commit c.txt c1
+run submit
+"$GIT_STACK_GH" --fake state
+unset GIT_STACK_GH FAKE_GH

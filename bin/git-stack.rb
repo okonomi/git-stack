@@ -700,6 +700,108 @@ def refuse_github_fork!(topology, parent, moving)
   nil
 end
 
+# --- GitHub -----------------------------------------------------------------
+
+# github mode talks to GitHub through `gh api`, never over HTTP itself: gh
+# brings TLS, auth and the repository's owner/name (`{owner}/{repo}`), and
+# `--jq` hands back the one value needed, so no JSON is parsed here.
+
+# `gh api <args>`'s trimmed stdout. Dies with gh's last line when it fails: a
+# half-made GitHub stack is reported, not papered over.
+def gh_api(args)
+  out = `#{sh(gh_command)} api #{args} 2>&1`
+  return out.strip if $? == 0
+
+  lines = unpack_lines(out)
+  die("gh api failed: #{lines.empty? ? args : lines[lines.length - 1].strip}")
+  ""
+end
+
+GH_REPO = "repos/{owner}/{repo}"
+
+# The open pull request whose head is `branch`, as "<number>\t<base>", or "".
+def gh_open_pr(owner, branch)
+  out = gh_api("-X GET #{GH_REPO}/pulls -f #{sh("head=#{owner}:#{branch}")} -f state=open " \
+               "--jq #{sh(".[] | \"\\(.number)\\t\\(.base.ref)\"")}")
+  lines = unpack_lines(out)
+  lines.empty? ? "" : lines[0]
+end
+
+# A new pull request's title and body, by `gh pr create --fill`'s rule: one
+# commit gives its subject and body, several give the branch name and their
+# subjects. `range` is "<parent>..<branch>" as revs.
+def pr_fill_title(branch, range)
+  subjects = unpack_lines(git_out("log --reverse --format=%s #{range}"))
+  subjects.length == 1 ? subjects[0] : branch
+end
+
+def pr_fill_body(range)
+  subjects = unpack_lines(git_out("log --reverse --format=%s #{range}"))
+  return git_out("log -1 --format=%b #{range}") if subjects.length == 1
+
+  subjects.map { |subject| "- #{subject}" }.join("\n")
+end
+
+# The number of `branch`'s open pull request, opening one onto `parent` when
+# there is none and retargeting one based elsewhere: a GitHub stack needs each
+# pull request based on the head of the one below. `range` is as in
+# `pr_fill_title`.
+def github_pr!(owner, branch, parent, range)
+  found = gh_open_pr(owner, branch)
+  if found.empty?
+    number = gh_api("-X POST #{GH_REPO}/pulls -f #{sh("head=#{branch}")} -f #{sh("base=#{parent}")} " \
+                    "-f #{sh("title=#{pr_fill_title(branch, range)}")} -f #{sh("body=#{pr_fill_body(range)}")} --jq .number")
+    info "opened ##{number} for #{cyan(branch)} onto #{cyan(parent)}"
+    return number
+  end
+
+  number = tab_head(found)
+  if tab_tail(found) != parent
+    gh_api("-X PATCH #{GH_REPO}/pulls/#{number} -f #{sh("base=#{parent}")} --jq .number")
+    info "retargeted ##{number} (#{cyan(branch)}) onto #{cyan(parent)}"
+  end
+  number
+end
+
+def pr_list(numbers)
+  numbers.map { |number| "##{number}" }.join(", ")
+end
+
+# Make `numbers` -- this stack's pull requests, bottom first -- one GitHub
+# stack: create it, or extend the one the bottom pull request is in.
+#
+# A GitHub stack that is not a prefix of this one (a pull request added or
+# removed on github.com) is warned about and left alone: the local stack is
+# the source of truth, but rewriting GitHub's would undo someone's change
+# there. A single pull request needs no stack.
+def github_stack!(numbers)
+  stack = gh_api("#{GH_REPO}/pulls/#{numbers[0]} --jq #{sh(".stack.number // empty")}")
+  if stack.empty?
+    return nil if numbers.length < 2
+
+    fields = numbers.map { |number| " -F #{sh("pull_requests[]=#{number}")}" }.join("")
+    stack = gh_api("-X POST #{GH_REPO}/stacks#{fields} --jq .number")
+    info "created GitHub stack ##{stack}: #{pr_list(numbers)}"
+    return nil
+  end
+
+  have = unpack_lines(gh_api("#{GH_REPO}/stacks/#{stack} " \
+                             "--jq #{sh(".pull_requests[] | select(.state == \"open\") | .number")}"))
+  return nil if have == numbers
+
+  if have.length < numbers.length && numbers[0...have.length] == have
+    rest = numbers[have.length..-1]
+    fields = rest.map { |number| " -F #{sh("pull_requests[]=#{number}")}" }.join("")
+    gh_api("-X POST #{GH_REPO}/stacks/#{stack}/add#{fields} --jq .number")
+    info "added #{pr_list(rest)} to GitHub stack ##{stack}"
+    return nil
+  end
+
+  info "warning: GitHub stack ##{stack} holds #{pr_list(have)}, but this stack is #{pr_list(numbers)}; " \
+       "leaving it as it is -- fix it on github.com, or run '#{PROG} mode local'"
+  nil
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -1789,6 +1891,28 @@ def cmd_create(args)
   info "created #{green(name)} on top of #{where}"
 end
 
+# On switching a stack to github, gather the pull requests it already has into
+# one GitHub stack (ADR 0001 D4). Only the run from the bottom that has them
+# counts: a GitHub stack cannot skip a layer, and `submit` opens the rest.
+def github_register!(topology, members)
+  owner = gh_api("#{GH_REPO} --jq .owner.login")
+  found = members.map { |name| gh_open_pr(owner, name) }
+  count = found.index { |row| row.empty? }
+  count = found.length if count.nil?
+  numbers = found[0...count].map { |row| tab_head(row) }
+  numbers.each_with_index do |number, i|
+    parent = topology.parent_of(members[i])
+    next if tab_tail(found[i]) == parent
+
+    gh_api("-X PATCH #{GH_REPO}/pulls/#{number} -f #{sh("base=#{parent}")} --jq .number")
+    info "retargeted ##{number} (#{cyan(members[i])}) onto #{cyan(parent)}"
+  end
+  github_stack!(numbers) unless numbers.empty?
+  left = members.length - count
+  info "#{left} branch(es) have no pull request yet; '#{PROG} submit' opens them" if left > 0
+  nil
+end
+
 # Show the current stack's sync-mode, or set it on every branch of the stack.
 #
 # github is refused where it could not work: on a stack that forks (GitHub's
@@ -1816,8 +1940,10 @@ def cmd_mode(args)
     die("no remote to push '#{root}' to; add one with 'git remote add <name> <url>'") if push_remote_for(root).empty?
     die("github mode needs the GitHub CLI; install gh (https://cli.github.com) and run 'gh auth login'") unless gh_available?
   end
+  was = sync_mode_of(branch)
   members.each { |name| set_sync_mode(name, want) }
   info "stack rooted at #{cyan(root)} is now #{green(want)}"
+  github_register!(topology, members) if want == "github" && was != "github"
   nil
 end
 
@@ -2274,6 +2400,15 @@ def cmd_submit(_args)
   branches.each_with_index do |name, i|
     die("no remote to push '#{name}' to; add one with 'git remote add <name> <url>'") if remotes[i].empty?
   end
+  github = sync_mode_of(root) == "github"
+  onto = trunk_onto_refs(trunk_upstream_rows(trunks))
+  if github
+    die("github mode needs the GitHub CLI; install gh (https://cli.github.com) and run 'gh auth login'") unless gh_available?
+    # Checked before anything is pushed: GitHub refuses a pull request with no
+    # commits, and the stack above it could not chain past the gap.
+    empty = branches.find { |name| git_out("rev-list --count #{own_range(topology, onto, name)}") == "0" }
+    die("'#{empty}' has no commits of its own; GitHub cannot open a pull request for it") unless empty.nil?
+  end
 
   info "submitting stack rooted at #{cyan(root)}"
   failed = ""
@@ -2289,8 +2424,19 @@ def cmd_submit(_args)
     die("submit failed for #{names.length} branch(es): #{names.join(", ")}\n" \
         "Deal with the branches warned about above, then re-run '#{PROG} submit'.")
   end
+  if github
+    owner = gh_api("#{GH_REPO} --jq .owner.login")
+    numbers = branches.map { |name| github_pr!(owner, name, topology.parent_of(name), own_range(topology, onto, name)) }
+    github_stack!(numbers)
+  end
   info green("done.")
   nil
+end
+
+# "<parent>..<branch>" as quoted revs: the commits `branch` adds over the parent
+# it is restacked onto (see `parent_ref`).
+def own_range(topology, onto, branch)
+  "#{sh(parent_ref(topology.parent_of(branch), onto))}..#{branch_ref(branch)}"
 end
 
 def cmd_restack(_args)
