@@ -101,3 +101,14 @@ gsq("mode github")
 run("drop feat-a")
 show("feat-a stackSync", "git config --get branch.feat-a.stackSync || echo none")
 show("feat-b stackSync", "git config --get branch.feat-b.stackSync")
+
+section "mode github turns stack.trunkUpstream on when it is unset"
+linear_repo
+run("mode github")
+show("stack.trunkUpstream", "git config --get stack.trunkUpstream")
+
+section "mode github leaves stack.trunkUpstream false when set so, and warns"
+linear_repo
+setup("git config stack.trunkUpstream false")
+run("mode github")
+show("stack.trunkUpstream", "git config --get stack.trunkUpstream")

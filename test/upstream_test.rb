@@ -167,3 +167,12 @@ new_repo
 gsq("create feat-a")
 setup("git config stack.trunkUpstream maybe")
 run("restack")
+
+section "stack.defaultSync github reads an unset stack.trunkUpstream as true"
+new_repo
+add_origin
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git config stack.defaultSync github")
+run("tree")
+setup("git config stack.trunkUpstream false")
+run("tree")

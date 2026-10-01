@@ -205,7 +205,12 @@ and `drop` use the upstream as it was last fetched and never fetch.
   under your stack's base.
 
 It is off by default because it changes what an existing setup restacks onto,
-and has `sync` touch the network.
+and has `sync` touch the network. A github stack (see [Sync-mode](#sync-mode))
+is the exception: it is merged into the trunk as GitHub sees it, so
+`git stack mode github` sets `stack.trunkUpstream` to `true` when it is unset —
+for the whole repository, as the setting is — and leaves an explicit `false`
+alone with a warning. With `stack.defaultSync = github`, an unset
+`stack.trunkUpstream` reads as `true`.
 
 ## Commands
 
@@ -386,7 +391,9 @@ keeps the rest in the same mode. `tree` tags the root of a github stack with
 A github stack must be linear, as GitHub's are: `mode github` refuses a stack
 that forks, and `create`, `track` and `parent` refuse to fork one. It also
 needs a remote to push to and the [GitHub CLI](https://cli.github.com) (`gh`).
-`mode local` changes only the local mode.
+`mode local` changes only the local mode. `mode github` also turns on
+[`stack.trunkUpstream`](#restacking-onto-the-trunks-upstream) when it is unset,
+so the stack follows `origin/main` rather than a local `main` nobody pulled.
 
 ### github mode
 

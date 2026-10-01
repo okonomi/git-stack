@@ -106,3 +106,13 @@ feat-a behind origin/main: 0
 $ git stack restack
 error: stack.trunkUpstream must be true or false, not 'maybe'
 [exit 1]
+
+### stack.defaultSync github reads an unset stack.trunkUpstream as true
+$ git stack tree
+  main (trunk, restacks onto origin/main)
+  * feat-a (1 commit(s)) [github]
+[exit 0]
+$ git stack tree
+  main (trunk)
+  * feat-a (1 commit(s)) [github]
+[exit 0]
