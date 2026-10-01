@@ -1,0 +1,127 @@
+
+### submit opens a pull request per branch, bottom first, and stacks them
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+opened #1 for feat-a onto main
+opened #2 for feat-b onto feat-a
+created GitHub stack #3: #1, #2
+done.
+[exit 0]
+PR #1 feat-a -> main (open) a1
+PR #2 feat-b -> feat-a (open) feat-b
+    | - b1
+    | - b2
+stack #3: #1 #2
+
+### a second submit finds the pull requests and the stack
+GET repos/{owner}/{repo}
+GET repos/{owner}/{repo}/pulls head=octo:feat-a state=open
+GET repos/{owner}/{repo}/pulls head=octo:feat-b state=open
+GET repos/{owner}/{repo}
+GET repos/{owner}/{repo}/pulls head=octo:feat-a state=open
+POST repos/{owner}/{repo}/pulls head=feat-a base=main title=a1 body=
+GET repos/{owner}/{repo}/pulls head=octo:feat-b state=open
+POST repos/{owner}/{repo}/pulls head=feat-b base=feat-a title=feat-b body=- b1
+- b2
+GET repos/{owner}/{repo}/pulls/1
+POST repos/{owner}/{repo}/stacks pull_requests[]=1 pull_requests[]=2
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+done.
+[exit 0]
+GET repos/{owner}/{repo}
+GET repos/{owner}/{repo}/pulls head=octo:feat-a state=open
+GET repos/{owner}/{repo}/pulls head=octo:feat-b state=open
+GET repos/{owner}/{repo}/pulls/1
+GET repos/{owner}/{repo}/stacks/3
+PR #1 feat-a -> main (open) a1
+PR #2 feat-b -> feat-a (open) feat-b
+    | - b1
+    | - b2
+stack #3: #1 #2
+
+### submit extends the stack with a new branch on top
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+pushing feat-c to origin
+opened #4 for feat-c onto feat-b
+added #4 to GitHub stack #3
+done.
+[exit 0]
+PR #1 feat-a -> main (open) a1
+PR #2 feat-b -> feat-a (open) feat-b
+    | - b1
+    | - b2
+PR #4 feat-c -> feat-b (open) c1
+stack #3: #1 #2 #4
+
+### submit retargets a pull request whose base is not its parent
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+opened #2 for feat-a onto main
+retargeted #1 (feat-b) onto feat-a
+created GitHub stack #3: #2, #1
+done.
+[exit 0]
+PR #1 feat-b -> feat-a (open) feat-b
+PR #2 feat-a -> main (open) a1
+stack #3: #2 #1
+
+### submit leaves a GitHub stack that does not match, and says so
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+warning: GitHub stack #4 holds #1, #3, but this stack is #1, #2; leaving it as it is -- fix it on github.com, or run 'git stack mode local'
+done.
+[exit 0]
+PR #1 feat-a -> main (open) feat-a
+PR #2 feat-b -> feat-a (open) feat-b
+PR #3 feat-x -> feat-a (open) feat-x
+stack #4: #1 #3
+
+### a branch with no commits cannot become a pull request
+$ git stack submit
+error: 'feat-a' has no commits of its own; GitHub cannot open a pull request for it
+[exit 1]
+feat-a on origin: none
+
+### a failing gh call stops submit with gh's message
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+opened #1 for feat-a onto main
+opened #2 for feat-b onto feat-a
+error: gh api failed: gh: injected failure for 'POST repos/{owner}/{repo}/stacks pull_requests[]=1 pull_requests[]=2' (HTTP 422)
+[exit 1]
+PR #1 feat-a -> main (open) a1
+PR #2 feat-b -> feat-a (open) feat-b
+    | - b1
+    | - b2
+
+### local mode submit never calls gh
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+done.
+[exit 0]
+
+
+### mode github stacks the pull requests that already exist
+$ git stack mode github
+stack rooted at feat-a is now github
+created GitHub stack #3: #1, #2
+1 branch(es) have no pull request yet; 'git stack submit' opens them
+[exit 0]
+PR #1 feat-a -> main (open) feat-a
+PR #2 feat-b -> feat-a (open) feat-b
+stack #3: #1 #2

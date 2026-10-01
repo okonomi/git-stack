@@ -387,6 +387,39 @@ that forks, and `create`, `track` and `parent` refuse to fork one. It also
 needs a remote to push to and the [GitHub CLI](https://cli.github.com) (`gh`).
 `mode local` changes only the local mode.
 
+### github mode
+
+In a github stack, `git stack submit` also keeps the stack's pull requests on
+GitHub, through `gh api`:
+
+1. It pushes the branches first, as in local mode. Nothing on GitHub is touched
+   unless every push succeeded.
+2. For each branch, bottom first, it finds the open pull request whose head is
+   that branch. If there is none, it opens one onto the branch below — the
+   trunk for the bottom one. The title and body follow `gh pr create --fill`:
+   with one commit, its subject and body; with several, the branch name and
+   the list of their subjects. A pull request based elsewhere is retargeted.
+3. It creates a GitHub stack of those pull requests, or extends the one the
+   bottom pull request is already in.
+
+```sh
+git stack mode github
+git stack submit
+# pushing feature-a to origin
+# pushing feature-b to origin
+# opened #12 for feature-a onto main
+# opened #13 for feature-b onto feature-a
+# created GitHub stack #14: #12, #13
+```
+
+Switching a stack to github collects the pull requests it already has, from
+the bottom up, into a GitHub stack; `submit` opens the rest. If the GitHub
+stack has been changed on github.com (a pull request added or removed),
+`submit` warns and leaves it alone rather than undoing the change. A branch
+with no commits of its own stops `submit` before anything is pushed: GitHub
+cannot open a pull request for it.
+
+
 ## Restack conflicts
 
 If a rebase hits a conflict, `git stack restack` aborts cleanly and leaves
