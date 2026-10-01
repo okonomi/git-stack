@@ -72,6 +72,17 @@ fake("pr feat-b main")
 run("submit")
 gh_state
 
+section "a pull request's body leaves out the commit's trailers"
+github_repo
+gsq("create feat-a")
+setup("printf 'Add a.txt\n\nWhy it is needed.\n\nCo-Authored-By: Someone <someone@example.com>\nSigned-off-by: Test <test@example.com>\n' > .git/msg && " \
+      "echo a1 > a.txt && git add a.txt && git commit -q -F .git/msg")
+gsq("create feat-b")
+setup("echo b1 > b.txt && git add b.txt && git commit -q -m 'Add b.txt' -m 'Refs: not a trailer block' -m 'Closing words.'")
+gsq("mode github")
+run("submit")
+gh_state
+
 section "submit leaves a GitHub stack that does not match, and says so"
 github_stack
 fake("pr feat-a main")
