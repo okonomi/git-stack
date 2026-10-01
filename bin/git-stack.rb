@@ -633,10 +633,18 @@ def push_branch(branch, remote)
   lease = pushed.empty? ? "--force-with-lease=#{sh(dst)} --force-if-includes" : "--force-with-lease=#{sh("#{dst}:#{pushed}")}"
   # Only when there is none: an upstream the user chose stays theirs.
   upstream = git_out("config --get branch.#{sh(branch)}.merge").empty? ? " --set-upstream" : ""
-  info "pushing #{cyan(branch)} to #{cyan(remote)}"
-  out = `LC_ALL=C git push --quiet#{upstream} #{lease} #{sh(remote)} #{sh("#{dst}:#{dst}")} 2>&1`
+  # `--porcelain`, not `--quiet`, which also drops the status line that tells an
+  # up-to-date ref ("=") from a pushed one.
+  out = `LC_ALL=C git push --porcelain#{upstream} #{lease} #{sh(remote)} #{sh("#{dst}:#{dst}")} 2>&1`
   if $? == 0
     git_config_write("branch.#{sh(branch)}.stackPushed #{sh(git_out("rev-parse #{branch_ref(branch)}"))}")
+    status = unpack_lines(out).find { |line| line.include?("\t#{dst}:#{dst}\t") }
+    flag = status.nil? ? "" : status[0, 1]
+    if flag == "="
+      info dim("#{branch} is up to date on #{remote}")
+    else
+      info "pushed #{cyan(branch)} to #{cyan(remote)}#{flag == "*" ? " (new branch)" : ""}"
+    end
     return ""
   end
   if out.include?("stale info") || out.include?("remote ref updated since checkout")

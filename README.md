@@ -343,8 +343,8 @@ with `gh` or on the web, each based on the branch below it.
 ```sh
 git stack submit
 # submitting stack rooted at feature-a
-# pushing feature-a to origin
-# pushing feature-b to origin
+# pushed feature-a to origin (new branch)
+# pushed feature-b to origin (new branch)
 # done.
 ```
 
@@ -406,8 +406,8 @@ GitHub, through `gh api`:
 ```sh
 git stack mode github
 git stack submit
-# pushing feature-a to origin
-# pushing feature-b to origin
+# pushed feature-a to origin (new branch)
+# pushed feature-b to origin (new branch)
 # opened #12 for feature-a onto main
 # opened #13 for feature-b onto feature-a
 # created GitHub stack #14: #12, #13

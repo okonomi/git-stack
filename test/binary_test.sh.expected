@@ -219,15 +219,14 @@ fix-c behind main: 0
 ### submit pushes the stack, then refuses a lease someone else broke
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
-pushing feat-b to origin
+pushed feat-a to origin (new branch)
+pushed feat-b to origin (new branch)
 done.
 [exit 0]
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
 warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
-pushing feat-b to origin
+pushed feat-b to origin
 error: submit failed for 1 branch(es): feat-a
 Deal with the branches warned about above, then re-run 'git stack submit'.
 [exit 1]
@@ -254,9 +253,9 @@ stack rooted at feat-a is now github
 [exit 0]
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
-pushing feat-b to origin
-pushing feat-c to origin
+pushed feat-a to origin (new branch)
+pushed feat-b to origin (new branch)
+pushed feat-c to origin (new branch)
 opened #2 for feat-b onto feat-a
 opened #3 for feat-c onto feat-b
 created GitHub stack #4: #1, #2, #3
