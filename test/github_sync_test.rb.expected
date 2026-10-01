@@ -1,0 +1,73 @@
+
+### merge asks GitHub to merge the current branch's pull request, and returns
+$ git stack merge
+asked GitHub to merge #2 (feat-b) with the 1 below it: pending
+it merges in the background; run 'git stack sync' to take in the result
+[exit 0]
+GET repos/{owner}/{repo}
+GET repos/{owner}/{repo}/pulls head=octo:feat-b state=open
+PUT repos/{owner}/{repo}/pulls/2/merge-async sha=57c79b009bfdeb9790497f3ee09e4ed3a2562a61
+
+### merge refuses while a branch up to here has unpushed commits
+$ git stack merge
+error: 'feat-a' has commits git-stack has not pushed; run 'git stack submit' first
+[exit 1]
+
+### merge reports GitHub refusing it
+$ git stack merge
+error: GitHub refused to merge #2: Required status check "ci" is failing
+[exit 1]
+
+### merge needs a github stack and a pull request
+$ git stack merge
+error: 'git stack merge' needs a github stack; merge on your hosting service, then run 'git stack sync'
+[exit 1]
+$ git stack merge
+error: 'feat-c' has commits git-stack has not pushed; run 'git stack submit' first
+[exit 1]
+
+### sync takes in a merge: drops the merged branch, follows GitHub's rebase
+$ git stack sync
+syncing stack rooted at feat-a
+'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
+'feat-b': took in origin/feat-b as GitHub left it
+done.
+[exit 0]
+feat-a parent (dropped): none
+feat-a still a branch: yes
+feat-b parent: main
+feat-b == origin/feat-b: yes
+feat-b stackPushed == tip: yes
+feat-b base == main: yes
+$ git stack tree
+  main (trunk)
+  * feat-b (2 commit(s)) [github]
+[exit 0]
+
+### sync leaves a branch with unpushed commits, and the branches above it
+$ git stack sync
+syncing stack rooted at feat-a
+'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
+warning: skipping 'feat-b': it has commits not on 'origin/feat-b'; run 'git stack submit' to push them, or reset it to 'origin/feat-b'
+warning: skipping 'feat-c': its parent 'feat-b' was skipped
+error: sync skipped 2 branch(es): feat-b, feat-c
+Deal with the branches warned about above, then re-run 'git stack sync'.
+[exit 1]
+feat-b behind origin/feat-b: 2
+feat-c parent: feat-b
+
+### sync moves a branch checked out in another worktree from there
+$ git stack sync
+syncing stack rooted at feat-a
+'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
+'feat-b': took in origin/feat-b as GitHub left it
+done.
+[exit 0]
+worktree HEAD == origin/feat-b: yes
+
+### sync does not restack a github stack onto a trunk that moved
+$ git stack sync
+syncing stack rooted at feat-a
+done.
+[exit 0]
+feat-a behind main: 1

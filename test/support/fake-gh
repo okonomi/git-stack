@@ -15,6 +15,7 @@
 #   fake-gh --fake merge <number>             mark a pull request merged
 #   fake-gh --fake state                      print every pull request and stack
 #   fake-gh --fake fail <pattern>             fail the next call matching it
+#   fake-gh --fake merge-status <s> [msg]     what the next merge-async answers
 #
 # Pull requests and stacks share one number sequence, as on GitHub.
 
@@ -54,8 +55,16 @@ if [ "${1:-}" = "--fake" ]; then
   case "$2" in
     pr) open_pr "$3" "$4" "${5:-$3}" "" ;;
     merge)
-      echo merged > "$dir/pr/$3/state" ;;
+      # As GitHub does: the pull request above is retargeted onto the merged
+      # one's base.
+      echo merged > "$dir/pr/$3/state"
+      for p in $(ls "$dir/pr"); do
+        if [ "$(cat "$dir/pr/$p/base")" = "$(cat "$dir/pr/$3/head")" ] && [ "$(cat "$dir/pr/$p/state")" = open ]; then
+          cp "$dir/pr/$3/base" "$dir/pr/$p/base"
+        fi
+      done ;;
     fail) printf '%s' "$3" > "$dir/fail" ;;
+    merge-status) printf '%s\t%s' "$3" "${4:-}" > "$dir/merge-status" ;;
     state)
       for p in $(ls "$dir/pr" | sort -n); do
         printf 'PR #%s %s -> %s (%s) %s\n' "$p" "$(cat "$dir/pr/$p/head")" "$(cat "$dir/pr/$p/base")" \
@@ -121,12 +130,24 @@ r="repos/{owner}/{repo}"
 case "$method $endpoint" in
   "GET $r") echo octo ;;
   "GET $r/pulls")
+    # state=open answers "<number>\t<base>"; state=all answers
+    # "<number>\t<state>\t<merged_at>", newest first.
     head=$(field head); head=${head#octo:}
-    for p in $(ls "$dir/pr" | sort -n); do
-      if [ "$(cat "$dir/pr/$p/head")" = "$head" ] && [ "$(cat "$dir/pr/$p/state")" = open ]; then
+    for p in $(ls "$dir/pr" | sort -rn); do
+      [ "$(cat "$dir/pr/$p/head")" = "$head" ] || continue
+      st=$(cat "$dir/pr/$p/state")
+      if [ "$(field state)" = all ]; then
+        case "$st" in
+          merged) printf '%s\tclosed\t2001-02-03T04:05:06Z\n' "$p" ;;
+          *) printf '%s\t%s\t\n' "$p" "$st" ;;
+        esac
+      elif [ "$st" = open ]; then
         printf '%s\t%s\n' "$p" "$(cat "$dir/pr/$p/base")"
       fi
     done ;;
+  "PUT $r/pulls/"*/merge-async)
+    if [ -f "$dir/merge-status" ]; then cat "$dir/merge-status"; echo; rm -f "$dir/merge-status"
+    else printf 'pending\t\n'; fi ;;
   "POST $r/pulls") open_pr "$(field head)" "$(field base)" "$(field title)" "$(field body)" ;;
   "PATCH $r/pulls/"*)
     n=${endpoint##*/}

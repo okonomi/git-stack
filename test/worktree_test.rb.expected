@@ -28,7 +28,7 @@ warning: skipping 'feat-b': its worktree '<repo>-wt' has uncommitted changes
 warning: skipping 'feat-c': its parent 'feat-b' was skipped
 restacking feat-x onto feat-a
 error: restack skipped 2 branch(es): feat-b, feat-c
-Deal with the worktrees warned about above, then re-run 'git stack restack'.
+Deal with the branches warned about above, then re-run 'git stack restack'.
 [exit 1]
 feat-b behind feat-a: 1
 feat-c behind feat-a: 1
@@ -56,7 +56,7 @@ $ git stack restack
 restacking stack rooted at feat-a
 warning: skipping 'feat-b': its worktree '<repo>-wt' has a rebase in progress
 error: restack skipped 1 branch(es): feat-b
-Deal with the worktrees warned about above, then re-run 'git stack restack'.
+Deal with the branches warned about above, then re-run 'git stack restack'.
 [exit 1]
 worktree still rebasing: 1
 
@@ -65,7 +65,7 @@ $ git stack restack
 restacking stack rooted at feat-a
 warning: skipping 'feat-b': its worktree '<repo>-wt' is missing (see 'git worktree prune')
 error: restack skipped 1 branch(es): feat-b
-Deal with the worktrees warned about above, then re-run 'git stack restack'.
+Deal with the branches warned about above, then re-run 'git stack restack'.
 [exit 1]
 
 ### a conflict in another worktree is aborted there, with a cd to resolve it
@@ -108,7 +108,7 @@ dropped feat-a; reparented children onto main
 warning: skipping 'feat-b': its worktree '<repo>-wt' has uncommitted changes
 deleted branch feat-a
 error: restack skipped 1 branch(es): feat-b
-Deal with the worktrees warned about above, then re-run 'git stack restack'.
+Deal with the branches warned about above, then re-run 'git stack restack'.
 [exit 1]
 feat-b parent: main
 feat-a exists: no
