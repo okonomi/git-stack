@@ -798,11 +798,10 @@ def named_children_of(parent, trunks)
   children.concat(topology.live_detached_roots)
 end
 
-# The roots of the stacks created on `anchor`, sorted: what `up` offers from it.
-# Live branches only, since `up` checks one out.
-def anchor_stacks(anchor, trunks)
-  topology = StackRepository.load_topology(trunks)
-  members = anchor_memberships
+# The roots of the stacks created on `anchor`, sorted: what `up` offers from it,
+# and what `sync` takes in its scope. Live branches only, since `up` checks one
+# out. `members` is `anchor_memberships`.
+def anchor_stacks(topology, members, anchor, trunks)
   topology.tracked_branches.select do |name|
     members[name] == anchor && topology.branch?(name) && is_trunk?(topology.parent_of(name), trunks)
   end.sort
@@ -1165,15 +1164,21 @@ class StackTopology
     orphans = orphan_roots
     return [root] if orphans.empty?
 
-    roots = [root]
-    covered = Set.new(order_branches(root))
-    orphans.each do |orphan|
-      next if covered.include?(orphan)
+    with_roots([root], orphans)
+  end
 
-      roots << orphan
-      covered.merge(order_branches(orphan))
+  # `roots` followed by each of `extra` not already inside an earlier subtree.
+  def with_roots(roots, extra)
+    acc = roots.map { |root| root }
+    covered = Set.new
+    roots.each { |root| covered.merge(order_branches(root)) }
+    extra.each do |name|
+      next if covered.include?(name)
+
+      acc << name
+      covered.merge(order_branches(name))
     end
-    roots
+    acc
   end
 
   # The root `tree` draws for `branch`'s stack. Unlike `stack_root`, it climbs past
@@ -1778,7 +1783,7 @@ def cmd_up(args)
   anchored = configured_anchors.include?(branch)
 
   unless want.empty?
-    children = anchored ? anchor_stacks(branch, trunks) : named_children_of(branch, trunks)
+    children = anchored ? anchor_stacks(StackRepository.load_topology(trunks), anchor_memberships, branch, trunks) : named_children_of(branch, trunks)
     # The menu path's wording: "'x' is not stacked..." would imply some other name
     # would have worked.
     die("no branch stacked on top of '#{branch}'") if children.empty?
@@ -1787,7 +1792,7 @@ def cmd_up(args)
     return
   end
 
-  children = anchored ? anchor_stacks(branch, trunks) : children_of(branch, trunks)
+  children = anchored ? anchor_stacks(StackRepository.load_topology(trunks), anchor_memberships, branch, trunks) : children_of(branch, trunks)
   die("no branch stacked on top of '#{branch}'") if children.empty?
 
   if children.length == 1
@@ -1973,13 +1978,30 @@ end
 # the user never named. `sync` also takes every orphaned stack, because `tree`
 # prints "run sync" beside an orphan wherever it is run (#55). An untracked but
 # live parent is not broken, so it never widens the scope.
-def run_stack_rebase(heal_orphans, verb, gerund)
+#
+# Run from an anchor or a stack on one, `sync` takes that anchor's stacks and
+# only its own orphans, then moves the anchor up to its trunk. The orphans of
+# other worktrees are left to them, unless `all`: their stacks may be mid-edit
+# there, and healing them rebases branches this worktree never touched.
+def run_stack_rebase(heal_orphans, verb, gerund, all)
   original = current_branch
   trunks = trunk_branches
   # Planned from one pre-heal snapshot; the heal rewrites config only.
   topology = StackRepository.load_topology(trunks)
-  root = topology.stack_root(original)
-  roots = heal_orphans ? topology.rebase_roots(root) : [root]
+  anchor = heal_orphans ? scope_anchor(original, live_anchors) : ""
+  outside = 0
+  if anchor.empty?
+    root = topology.stack_root(original)
+    roots = heal_orphans ? topology.rebase_roots(root) : [root]
+  else
+    # Assigned here, not beside `anchor` with a `{}` fallback: that literal widens
+    # `anchor_stacks` to untyped under Spinel.
+    members = anchor_memberships
+    orphans = topology.orphan_roots
+    mine = orphans.select { |name| all || members[name] == anchor }
+    outside = orphans.length - mine.length
+    roots = topology.with_roots(anchor_stacks(topology, members, anchor, trunks), mine)
+  end
   held = other_worktree_checkouts(original)
   # Only `sync` fetches: `restack` has never touched the network.
   upstreams = trunk_upstream_rows(trunks)
@@ -1996,17 +2018,73 @@ def run_stack_rebase(heal_orphans, verb, gerund)
     die("#{verb} completed, but returning to '#{original}' failed;\n" \
         "you are now on '#{current_branch_or_empty}'. Check out '#{original}' manually.")
   end
+  unless anchor.empty?
+    follow_anchor(anchor, parent_ref(containing_trunk(anchor, trunks), onto), original, held)
+    if outside > 0
+      info "note: left #{outside} orphaned stack(s) outside anchor '#{anchor}' alone; run '#{PROG} sync --all' to heal them too"
+    end
+  end
   report_skipped!(skipped, verb)
   info green("done.")
   nil
 end
 
-def cmd_restack(_args)
-  run_stack_rebase(false, "restack", "restacking")
+# The anchor whose scope `sync` runs in from `branch`: the anchor itself, or the
+# one `branch`'s stack records. "" outside any. `anchors` is `live_anchors`, so
+# a stack still naming an unregistered anchor is not scoped by it.
+def scope_anchor(branch, anchors)
+  return branch if anchors.include?(branch)
+
+  anchor = get_anchor(branch)
+  anchors.include?(anchor) ? anchor : ""
 end
 
-def cmd_sync(_args)
-  run_stack_rebase(true, "sync", "syncing")
+# Fast-forward `anchor` to `ref`, the trunk ref its stacks were restacked onto,
+# so a stack created on it next starts from there.
+#
+# Only ever a fast-forward, and a warning rather than a failure when that is not
+# possible: the anchor is not a stack branch, so nothing of the user's is
+# replayed onto it, and commits on it are theirs to keep.
+#
+# Checked out -- here (`here` is the current branch) or in another worktree --
+# it is merged there, since git refuses to move a branch under a worktree.
+# Otherwise `update-ref` with the old value, which fails rather than clobbers a
+# concurrent move.
+def follow_anchor(anchor, ref, here, held)
+  behind, ahead = ahead_behind(ref, anchor)
+  return nil if behind == 0
+
+  target = ref_label(ref)
+  if ahead > 0
+    info "warning: leaving anchor '#{anchor}' where it is: it has #{ahead} commit(s) of its own, so it cannot fast-forward to '#{target}'"
+    return nil
+  end
+
+  wt = anchor == here ? git_out("rev-parse --show-toplevel") : worktree_of(held, anchor)
+  if wt.empty?
+    info "fast-forwarding anchor #{cyan(anchor)} to #{cyan(target)}"
+    old = git_out("rev-parse #{branch_ref(anchor)}")
+    ok = git_ok("update-ref #{sh("refs/heads/#{anchor}")} #{sh(git_out("rev-parse #{sh(ref)}"))} #{sh(old)}")
+  else
+    busy = worktree_busy_reason(wt)
+    unless busy.empty?
+      info "warning: leaving anchor '#{anchor}' where it is: its worktree '#{wt}' #{busy}"
+      return nil
+    end
+    shown = anchor == here ? "" : worktree_suffix(wt)
+    info "fast-forwarding anchor #{cyan(anchor)} to #{cyan(target)}#{shown}"
+    ok = git_ok("#{worktree_at(wt)}merge --ff-only --quiet #{sh(ref)}")
+  end
+  info "warning: failed to fast-forward anchor '#{anchor}' to '#{target}'" unless ok
+  nil
+end
+
+def cmd_restack(_args)
+  run_stack_rebase(false, "restack", "restacking", false)
+end
+
+def cmd_sync(args)
+  run_stack_rebase(true, "sync", "syncing", has_flag?(args, "--all"))
 end
 
 # Splice `branch` out: reconnect its children to its parent, untrack it, and
@@ -2108,7 +2186,7 @@ def cmd_help(_args)
         untrack               Stop tracking the current branch in a stack.
         drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
         restack               Rebase the whole stack so each branch sits on its parent.
-        sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
+        sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
 
@@ -2132,7 +2210,7 @@ end
 # Command-level flags, as "<flag>\t<the one command that accepts it>". Listed, so
 # a typo like `--delet` is still rejected. The owner lives in the row because
 # these flags are lifted out of argv before the command is known.
-COMMAND_FLAGS = ["--delete\tdrop"].freeze
+COMMAND_FLAGS = ["--delete\tdrop", "--all\tsync"].freeze
 
 # The command that accepts `flag`, or "".
 def flag_owner(flag)

@@ -32,7 +32,7 @@ COMMANDS
     untrack               Stop tracking the current branch in a stack.
     drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
     restack               Rebase the whole stack so each branch sits on its parent.
-    sync                  Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack.
+    sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
     version               Show the git-stack version and the Spinel build revision.
     help                  Show this help.
 
