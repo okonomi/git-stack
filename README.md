@@ -400,7 +400,9 @@ It looks like a parent, but it is not one: `feat-a` and `fix-c` are restacked
 onto `main`. The heading says ``(anchor, N behind; run `git stack sync`)`` when
 the trunk has moved on, and `(anchor, done)` once every branch created on it
 has been deleted — the worktree can then be removed with your worktree tool.
-git-stack never deletes an anchor or a worktree.
+git-stack never deletes an anchor or a worktree. When your worktree tool deletes
+the anchor branch, the next git-stack command unregisters it and says so; any
+stacks still on it stay, as ordinary stacks on the trunk.
 
 `git stack down` from a stack's root goes to its anchor rather than the trunk —
 the trunk is usually checked out in another worktree, and the anchor is where

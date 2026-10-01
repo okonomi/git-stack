@@ -158,3 +158,25 @@ error: 'other' is not stacked directly on 'wt-x'
 $ git stack up
 error: no branch stacked on top of 'wt-x'
 [exit 1]
+
+### a deleted anchor is unregistered, and its stacks released, by the next command
+$ git stack tree
+anchor 'wt-x' no longer exists; unregistered it (its stacks stay on the trunk)
+* main (trunk)
+    wt-y (anchor)
+    feat-a (1 commit(s))
+[exit 0]
+stack.anchor: wt-y
+feat-a anchor: none
+feat-a parent: main
+$ git stack tree
+* main (trunk)
+    wt-y (anchor)
+    feat-a (1 commit(s))
+[exit 0]
+
+### a finished anchor removed by the worktree tool is unregistered by the next command
+$ git stack anchor
+anchor 'wt-x' no longer exists; unregistered it (its stacks stay on the trunk)
+no anchor registered; run 'git stack anchor <branch>'
+[exit 0]

@@ -192,3 +192,29 @@ setup("git branch wt-x")
 gsq("anchor wt-x")
 setup("git checkout -q wt-x")
 run("up")
+
+section "a deleted anchor is unregistered, and its stacks released, by the next command"
+new_repo
+setup("git branch wt-x")
+setup("git branch wt-y")
+gsq("anchor wt-x wt-y")
+setup("git checkout -q wt-x")
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q main")
+setup("git branch -D wt-x")
+run("tree")
+show("stack.anchor", "git config --get-all stack.anchor | tr '\\n' ' '")
+show("feat-a anchor", "git config --get branch.feat-a.stackAnchor || echo none")
+show("feat-a parent", "git config --get branch.feat-a.stackParent")
+run("tree")
+
+section "a finished anchor removed by the worktree tool is unregistered by the next command"
+new_repo
+setup("git branch wt-x")
+gsq("anchor wt-x")
+setup("git checkout -q wt-x")
+gsq("create feat-a"); commit("a.txt", "a1")
+setup("git checkout -q main")
+setup("git merge -q --no-ff -m merge-a feat-a")
+setup("git branch -D feat-a wt-x")
+run("anchor")

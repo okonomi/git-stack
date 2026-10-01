@@ -555,6 +555,25 @@ def release_anchor(anchor)
   nil
 end
 
+# Unregister every anchor whose branch is gone and release its stacks, saying
+# so. Checked on every command, as `trunk_branches` checks the trunks: the
+# worktree tool deletes the anchor without telling git-stack, and a stack left
+# naming it would be scoped and drawn under nothing.
+def prune_vanished_anchors
+  anchors = configured_anchors
+  return nil if anchors.empty?
+
+  live = anchors.select { |anchor| branch_ref_exists?(anchor) }
+  return nil if live.length == anchors.length
+
+  set_anchors(live)
+  anchors.reject { |anchor| live.include?(anchor) }.each do |gone|
+    release_anchor(gone)
+    info "anchor '#{gone}' no longer exists; unregistered it (its stacks stay on the trunk)"
+  end
+  nil
+end
+
 # The registered anchors whose branch still exists.
 def live_anchors
   configured_anchors.select { |anchor| branch_ref_exists?(anchor) }
@@ -2311,7 +2330,10 @@ def main(argv)
   validate_args!(cmd, rest)
 
   repo_optional = cmd == "version" || cmd == "help"
-  require_repo unless repo_optional
+  unless repo_optional
+    require_repo
+    prune_vanished_anchors
+  end
 
   case cmd
   when "init"                 then cmd_init(rest)
