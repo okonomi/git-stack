@@ -16,7 +16,14 @@ class Spinel < Formula
   url "https://github.com/matz/spinel.git", revision: REVISION
   version "0.0.0-#{REVISION[0, 7]}"
   license "MIT"
-  head "https://github.com/matz/spinel.git", branch: "master"
+  head do
+    url "https://github.com/matz/spinel.git", branch: "master"
+
+    # `make` generates a header with a script that requires the prism gem, and
+    # the ruby on the build PATH is otherwise macOS's 2.6, which lacks it. The
+    # pinned revision predates that step.
+    depends_on "ruby" => :build
+  end
 
   # `make deps` curls these gems for their C sources, but Homebrew builds without
   # network, so they are vendored as resources.
