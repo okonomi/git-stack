@@ -92,9 +92,9 @@ show("feat-a still a branch", "git rev-parse --verify --quiet refs/heads/feat-a 
 show("feat-b parent", "git config --get branch.feat-b.stackParent")
 show("feat-b == origin/feat-b", 'test "$(git rev-parse feat-b)" = "$(git rev-parse origin/feat-b)" && echo yes || echo no')
 show("feat-b stackPushed == tip", 'test "$(git config --get branch.feat-b.stackPushed)" = "$(git rev-parse feat-b)" && echo yes || echo no')
-# Without stack.trunkUpstream the stack restacks onto the local main, so the
-# base is recorded there.
-show("feat-b base == main", 'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse main)" && echo yes || echo no')
+# `mode github` turned stack.trunkUpstream on, so the stack restacks onto, and
+# its base is recorded at, the trunk GitHub merged into -- not the stale local main.
+show("feat-b base == origin/main", 'test "$(git config --get branch.feat-b.stackBase)" = "$(git rev-parse origin/main)" && echo yes || echo no')
 run("tree")
 
 section "sync leaves a branch with unpushed commits, and the branches above it"

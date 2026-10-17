@@ -28,6 +28,7 @@ error: 'feat-c' has commits git-stack has not pushed; run 'git stack submit' fir
 
 ### sync takes in a merge: drops the merged branch, follows GitHub's rebase
 $ git stack sync
+fetching origin
 syncing stack rooted at feat-a
 'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
 'feat-b': took in origin/feat-b as GitHub left it
@@ -38,14 +39,15 @@ feat-a still a branch: yes
 feat-b parent: main
 feat-b == origin/feat-b: yes
 feat-b stackPushed == tip: yes
-feat-b base == main: yes
+feat-b base == origin/main: yes
 $ git stack tree
-  main (trunk)
-  * feat-b (2 commit(s)) [github]
+  main (trunk, restacks onto origin/main)
+  * feat-b (1 commit(s)) [github]
 [exit 0]
 
 ### sync leaves a branch with unpushed commits, and the branches above it
 $ git stack sync
+fetching origin
 syncing stack rooted at feat-a
 'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
 warning: skipping 'feat-b': it has commits not on 'origin/feat-b'; run 'git stack submit' to push them, or reset it to 'origin/feat-b'
@@ -58,6 +60,7 @@ feat-c parent: feat-b
 
 ### sync moves a branch checked out in another worktree from there
 $ git stack sync
+fetching origin
 syncing stack rooted at feat-a
 'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
 'feat-b': took in origin/feat-b as GitHub left it
@@ -67,6 +70,7 @@ worktree HEAD == origin/feat-b: yes
 
 ### sync does not restack a github stack onto a trunk that moved
 $ git stack sync
+fetching origin
 syncing stack rooted at feat-a
 done.
 [exit 0]

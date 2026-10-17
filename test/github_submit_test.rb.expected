@@ -119,6 +119,7 @@ done.
 ### mode github stacks the pull requests that already exist
 $ git stack mode github
 stack rooted at feat-a is now github
+set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into (this applies to every stack in the repository)
 created GitHub stack #3: #1, #2
 1 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]

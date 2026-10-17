@@ -13,6 +13,7 @@ local
 ### mode github records the mode on every branch of the stack
 $ git stack mode github
 stack rooted at feat-a is now github
+set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into (this applies to every stack in the repository)
 2 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]
 feat-a stackSync: github
@@ -89,3 +90,19 @@ dropped feat-a; reparented children onto main
 [exit 0]
 feat-a stackSync: none
 feat-b stackSync: github
+
+### mode github turns stack.trunkUpstream on when it is unset
+$ git stack mode github
+stack rooted at feat-a is now github
+set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into (this applies to every stack in the repository)
+2 branch(es) have no pull request yet; 'git stack submit' opens them
+[exit 0]
+stack.trunkUpstream: true
+
+### mode github leaves stack.trunkUpstream false when set so, and warns
+$ git stack mode github
+stack rooted at feat-a is now github
+warning: stack.trunkUpstream is false, so this stack restacks onto the local trunk, not the one GitHub merges into; unset it to follow the remote
+2 branch(es) have no pull request yet; 'git stack submit' opens them
+[exit 0]
+stack.trunkUpstream: false

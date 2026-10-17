@@ -235,6 +235,7 @@ feat-b behind origin/feat-b: 0
 ### mode github on a linear stack, and tree tagging its root
 $ git stack mode github
 stack rooted at feat-a is now github
+set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into (this applies to every stack in the repository)
 2 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]
 $ git stack mode
@@ -249,6 +250,7 @@ $ git stack tree
 ### github mode: submit opens and stacks pull requests, mode registers them
 $ git stack mode github
 stack rooted at feat-a is now github
+set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into (this applies to every stack in the repository)
 1 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]
 $ git stack submit
@@ -272,6 +274,7 @@ asked GitHub to merge #2 (feat-b) with the 1 below it: pending
 it merges in the background; run 'git stack sync' to take in the result
 [exit 0]
 $ git stack sync
+fetching origin
 syncing stack rooted at feat-a
 'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
 'feat-b': took in origin/feat-b as GitHub left it

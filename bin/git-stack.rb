@@ -412,9 +412,13 @@ end
 
 # `stack.trunkUpstream` as a boolean. A value git cannot read as one dies rather
 # than reading as false, which would silently restack onto the stale local trunk.
+#
+# Unset, it follows `stack.defaultSync`: a github stack is merged into the trunk
+# as GitHub sees it, and the stale local trunk would count GitHub's own merges
+# as the stack's commits. `mode github` writes it outright (see `cmd_mode`).
 def trunk_upstream_enabled?
   raw = git_out("config --get stack.trunkUpstream")
-  return false if raw.empty?
+  return git_out("config --get stack.defaultSync") == "github" if raw.empty?
 
   value = git_out("config --type=bool --get stack.trunkUpstream")
   die("stack.trunkUpstream must be true or false, not '#{raw}'") if value.empty?
@@ -2043,6 +2047,23 @@ def cmd_create(args)
   info "created #{green(name)} on top of #{where}"
 end
 
+# Turn `stack.trunkUpstream` on for a stack just made github, so it follows the
+# trunk GitHub merges into rather than a local one nobody pulled. Written, not
+# implied, so it shows in `git config`; and repo-wide, as the setting is, which
+# the notice says. An explicit false is the user's choice and is only warned
+# about.
+def follow_trunk_upstream_for_github
+  if git_out("config --get stack.trunkUpstream").empty?
+    git_config_write("stack.trunkUpstream true")
+    info "set stack.trunkUpstream to true, so github stacks follow the trunk GitHub merges into " \
+         "(this applies to every stack in the repository)"
+  elsif !trunk_upstream_enabled?
+    info "warning: stack.trunkUpstream is false, so this stack restacks onto the local trunk, " \
+         "not the one GitHub merges into; unset it to follow the remote"
+  end
+  nil
+end
+
 # On switching a stack to github, gather the pull requests it already has into
 # one GitHub stack (ADR 0001 D4). Only the run from the bottom that has them
 # counts: a GitHub stack cannot skip a layer, and `submit` opens the rest.
@@ -2095,6 +2116,7 @@ def cmd_mode(args)
   was = sync_mode_of(branch)
   members.each { |name| set_sync_mode(name, want) }
   info "stack rooted at #{cyan(root)} is now #{green(want)}"
+  follow_trunk_upstream_for_github if want == "github"
   github_register!(topology, members) if want == "github" && was != "github"
   nil
 end
