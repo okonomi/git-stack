@@ -1,0 +1,114 @@
+
+### restack rebases a branch checked out in another worktree, from there
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a in worktree '<repo>-wt'
+restacking feat-c onto feat-b
+done.
+[exit 0]
+feat-b behind feat-a: 0
+feat-c behind feat-b: 0
+worktree HEAD: feat-b
+worktree status: 0
+HEAD: feat-a
+
+### restack fast-forwards a branch with no commits in another worktree
+$ git stack restack
+restacking stack rooted at feat-a
+fast-forwarding feat-b to feat-a in worktree '<repo>-wt'
+done.
+[exit 0]
+feat-b == feat-a: yes
+worktree file a2.txt: a2
+
+### restack skips a branch whose worktree is dirty, with its descendants
+$ git stack restack
+restacking stack rooted at feat-a
+warning: skipping 'feat-b': its worktree '<repo>-wt' has uncommitted changes
+warning: skipping 'feat-c': its parent 'feat-b' was skipped
+restacking feat-x onto feat-a
+error: restack skipped 2 branch(es): feat-b, feat-c
+Deal with the worktrees warned about above, then re-run 'git stack restack'.
+[exit 1]
+feat-b behind feat-a: 1
+feat-c behind feat-a: 1
+feat-x behind feat-a: 0
+worktree change kept: dirty
+HEAD: feat-a
+
+### an untracked file does not make a worktree dirty
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a in worktree '<repo>-wt'
+done.
+[exit 0]
+feat-b behind feat-a: 0
+
+### a dirty worktree is no reason to skip a branch with nothing to move
+$ git stack restack
+restacking stack rooted at feat-a
+done.
+[exit 0]
+
+### restack skips a branch whose worktree is mid-rebase (listed as detached)
+worktree listed as: 1
+$ git stack restack
+restacking stack rooted at feat-a
+warning: skipping 'feat-b': its worktree '<repo>-wt' has a rebase in progress
+error: restack skipped 1 branch(es): feat-b
+Deal with the worktrees warned about above, then re-run 'git stack restack'.
+[exit 1]
+worktree still rebasing: 1
+
+### restack skips a branch whose worktree directory is gone
+$ git stack restack
+restacking stack rooted at feat-a
+warning: skipping 'feat-b': its worktree '<repo>-wt' is missing (see 'git worktree prune')
+error: restack skipped 1 branch(es): feat-b
+Deal with the worktrees warned about above, then re-run 'git stack restack'.
+[exit 1]
+
+### a conflict in another worktree is aborted there, with a cd to resolve it
+$ git stack restack
+restacking stack rooted at feat-a
+restacking feat-b onto feat-a in worktree '<repo>-wt'
+error: conflict while rebasing 'feat-b' onto 'feat-a' in worktree '<repo>-wt'.
+Resolve it manually with:
+    cd '<repo>-wt' && git rebase feat-a
+then re-run 'git stack restack'.
+[exit 1]
+worktree still rebasing: 0
+worktree HEAD: feat-b
+HEAD: feat-a
+
+### sync heals an orphan checked out in another worktree
+$ git stack sync
+syncing stack rooted at main
+syncing stack rooted at feat-b
+'feat-b': parent 'feat-a' no longer exists; reparenting onto trunk 'main'
+restacking feat-b onto main in worktree '<repo>-wt'
+done.
+[exit 0]
+feat-b parent: main
+feat-b commits above main: 1
+worktree HEAD: feat-b
+
+### drop restacks a child checked out in another worktree
+$ git stack drop feat-a
+dropped feat-a; reparented children onto main
+restacking feat-b onto main in worktree '<repo>-wt'
+[exit 0]
+feat-b parent: main
+feat-b behind main: 0
+HEAD: main
+
+### drop still splices when a moved child is skipped, then reports it
+$ git stack drop --delete feat-a
+dropped feat-a; reparented children onto main
+warning: skipping 'feat-b': its worktree '<repo>-wt' has uncommitted changes
+deleted branch feat-a
+error: restack skipped 1 branch(es): feat-b
+Deal with the worktrees warned about above, then re-run 'git stack restack'.
+[exit 1]
+feat-b parent: main
+feat-a exists: no

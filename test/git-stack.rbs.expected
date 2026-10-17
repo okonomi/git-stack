@@ -26,6 +26,7 @@ class Object
   def git_out: (String) -> String
   def git_run: (String) -> bool
   def git_scan: (String, bool) -> String
+  def git_config_write: (String) -> bool
   def checkout!: (String) -> nil
   def require_repo: () -> nil
   def current_branch_or_empty: () -> String
@@ -43,6 +44,13 @@ class Object
   def trunk_branches: () -> Array[String]
   def is_trunk?: (String, Array[String]) -> bool
   def containing_trunk: (String, Array[String]) -> String
+  def other_worktree_checkouts: (String) -> Hash[String, String]
+  def worktree_line_branch: (String, String) -> String
+  def worktree_file: (String, String) -> String
+  def worktree_git_path: (String, String) -> String
+  def worktree_path_exists?: (String, String) -> bool
+  def worktree_busy_reason: (String) -> String
+  def worktree_of: (Hash[String, String], String) -> String
   def get_parent: (String) -> String
   def set_parent: (String, String) -> bool
   def clear_parent: (String) -> bool
@@ -92,8 +100,12 @@ class Object
   def cmd_down: (Array[String]) -> nil
   def cmd_up: (Array[String]) -> nil
   def resolve_stack_base: (String, String) -> String
-  def replay_onto!: (String, String, String) -> nil
-  def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
+  def worktree_suffix: (String) -> String
+  def worktree_at: (String) -> String
+  def replay_onto!: (String, String, String, String) -> nil
+  def fast_forward!: (String, String, String) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackTopology, Hash[String, String]) -> String
+  def report_skipped!: (String, String) -> nil
   def run_stack_rebase: (bool, String, String) -> nil
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
@@ -111,12 +123,13 @@ class Object
   def __enum_all?__3068: (Array[untyped]) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
-  def __enum_find__3977: (Array[String]) -> String
-  def __enum_each_with_index__4893: (Array[String]) -> Array[String]
-  def __enum_find__6337: (Array[String]) -> String
-  def __enum_each_with_index__6910: (Array[String]) -> Array[String]
-  def __enum_find__8132: (Array[String]) -> String
-  def __enum_find__8381: (Array[String]) -> String
+  def __enum_find__4047: (Array[String]) -> String
+  def __enum_find__4643: (Array[String]) -> String
+  def __enum_each_with_index__5236: (Array[String]) -> Array[String]
+  def __enum_find__6676: (Array[String]) -> String
+  def __enum_each_with_index__7249: (Array[String]) -> Array[String]
+  def __enum_find__8774: (Array[String]) -> String
+  def __enum_find__9023: (Array[String]) -> String
 end
 
 class OptionParser

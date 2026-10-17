@@ -48,7 +48,7 @@ class Object
   def clear_base: (String) -> bool
   def record_tip_base: (String, String) -> nil
   def untrack!: (String) -> nil
-  def restack_subtree: (String, Array[String], bool, String, StackTopology) -> nil
+  def restack_subtree: (String, Array[String], bool, String, StackTopology, Hash[String, String]) -> String
   def children_of: (String, Array[String]) -> Array[String]
   def named_children_of: (String, Array[String]) -> Array[String]
   def tree_marker: (String, String) -> String
@@ -58,7 +58,7 @@ class Object
   def print_parent_note: (String, Array[String]) -> nil
   def print_tree_row: (String, Integer, String, StackSnapshot) -> nil
   def resolve_stack_base: (String, String) -> String
-  def replay_onto!: (String, String, String) -> nil
+  def replay_onto!: (String, String, String, String) -> nil
 end
 
 # The ivar pins hold the fields every reader widens with: a widened `@children`
