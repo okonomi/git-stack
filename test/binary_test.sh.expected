@@ -178,3 +178,17 @@ $ git stack create feat-a
 created feat-a on top of main
 [exit 0]
 feat-a parent: main
+
+### sync follows the trunk's upstream when stack.trunkUpstream is set
+$ git stack tree
+  main (trunk, restacks onto origin/main)
+  * feat-a (needs restack: 1 behind)
+[exit 0]
+$ git stack sync
+fetching origin
+syncing stack rooted at feat-a
+restacking feat-a onto origin/main
+done.
+[exit 0]
+feat-a behind origin/main: 0
+main behind origin/main (untouched): 1

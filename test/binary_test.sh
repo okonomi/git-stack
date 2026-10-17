@@ -343,3 +343,22 @@ gsq init
 run create feat-a
 wait
 show "feat-a parent" "config --get branch.feat-a.stackParent"
+
+# `stack.trunkUpstream`: the trunk -> upstream Hash from `for-each-ref`, and the
+# batched `%(ahead-behind:)` scan given a remote-tracking ref as a base -- both
+# only exercised under CRuby in the snapshot tests. `sync` fetches first.
+section "sync follows the trunk's upstream when stack.trunkUpstream is set"
+new_repo
+git init -q --bare -b main "$repo-origin.git"
+git_q remote add origin "$repo-origin.git"
+git_q push -q -u origin main
+gsq create feat-a; commit a.txt a1
+git clone -q "$repo-origin.git" "$repo-other"
+(cd "$repo-other" && git config user.email o@example.com && git config user.name Other &&
+  printf 'o1\n' > o.txt && git add o.txt && git commit -qm o1 && git push -q origin main) >/dev/null 2>&1
+git_q config stack.trunkUpstream true
+git_q fetch -q origin
+run tree
+run sync
+show "feat-a behind origin/main" "rev-list --count feat-a..origin/main"
+show "main behind origin/main (untouched)" "rev-list --count main..origin/main"
