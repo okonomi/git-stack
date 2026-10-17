@@ -401,3 +401,17 @@ git clone -q "$repo-origin.git" "$repo-other"
 git_q checkout -q feat-b; commit b2.txt b2
 run submit
 show "feat-b behind origin/feat-b" "rev-list --count feat-b..origin/feat-b"
+
+# `mode`: GIT_STACK_GH read through `ENV`, the linear check's `find`, and the
+# `[github]` tag on a root row -- reached only under CRuby in the snapshot tests.
+section "mode github on a linear stack, and tree tagging its root"
+new_repo
+git init -q --bare -b main "$repo-origin.git"
+git_q remote add origin "$repo-origin.git"
+gsq create feat-a; commit a.txt a1
+gsq create feat-b; commit b.txt b1
+export GIT_STACK_GH=true
+run mode github
+run mode
+run tree
+unset GIT_STACK_GH

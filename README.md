@@ -226,6 +226,7 @@ and has `sync` touch the network.
 | `git stack drop [branch]` | Splice `[branch]` (or the current branch) out of the stack, reconnecting its children to its parent. (`--delete` also removes the branch) |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack sync [--all]`  | Restack the current stack, and reparent every branch whose parent was deleted (e.g. merged via a PR) onto trunk — wherever in the repository it sits. In an [anchor](#anchors), restack all of its stacks, heal only its orphans (`--all`: every orphan), and fast-forward the anchor. |
+| `git stack mode [local\|github]` | Show or set the current stack's sync-mode (see [Sync-mode](#sync-mode)). |
 | `git stack submit`        | Push every branch of the current stack, parents first, with `--force-with-lease` (see [Pushing](#pushing)). |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 | `git stack help`          | Show the built-in help.                                         |
@@ -363,6 +364,28 @@ Pushes are forced, since a restack rewrites history, but never blindly:
 A branch whose lease fails is not pushed: `submit` warns, still pushes the rest
 of the stack, and exits non-zero naming it. Fetch, look at what is there, bring
 it in if it belongs, and run `submit` again.
+
+## Sync-mode
+
+Each stack has a sync-mode: `local` (the default) leaves pull requests to you,
+and `github` will also keep the stack in step with a GitHub stack of pull
+requests.
+
+```sh
+git stack mode            # -> local
+git stack mode github     # -> stack rooted at feature-a is now github
+git config stack.defaultSync github   # the default for stacks with no mode set
+```
+
+The mode is recorded on every branch of the stack (`branch.<name>.stackSync`),
+and `create` copies it to the new branch, so deleting a merged bottom branch
+keeps the rest in the same mode. `tree` tags the root of a github stack with
+`[github]`.
+
+A github stack must be linear, as GitHub's are: `mode github` refuses a stack
+that forks, and `create`, `track` and `parent` refuse to fork one. It also
+needs a remote to push to and the [GitHub CLI](https://cli.github.com) (`gh`).
+`mode local` changes only the local mode.
 
 ## Restack conflicts
 

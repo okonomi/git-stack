@@ -647,6 +647,59 @@ def push_branch(branch, remote)
   lines.empty? ? "git push failed" : lines[lines.length - 1].strip
 end
 
+# --- sync-mode --------------------------------------------------------------
+
+# A stack's sync-mode says whether git-stack also keeps it in step with a
+# GitHub stack of pull requests (`github`) or leaves the remote to the user
+# (`local`, the default). Recorded on every branch of the stack, as `stackAnchor`
+# is, so deleting a merged root does not drop the rest back to local.
+SYNC_MODES = ["local", "github"].freeze
+
+# `branch`'s mode: its own `stackSync`, else `stack.defaultSync`, else local. A
+# value that is neither dies rather than reading as local, which would quietly
+# stop syncing a stack meant for GitHub.
+def sync_mode_of(branch)
+  key = "branch.#{branch}.stackSync"
+  value = git_out("config --get #{sh(key)}")
+  if value.empty?
+    key = "stack.defaultSync"
+    value = git_out("config --get stack.defaultSync")
+  end
+  return "local" if value.empty?
+
+  die("#{key} must be local or github, not '#{value}'") unless SYNC_MODES.include?(value)
+  value
+end
+
+def set_sync_mode(branch, mode)
+  git_config_write("branch.#{sh(branch)}.stackSync #{sh(mode)}")
+end
+
+# The command run as `gh`: GIT_STACK_GH when set, for the tests' stand-in.
+def gh_command
+  gh = ENV["GIT_STACK_GH"]
+  gh.nil? || gh.empty? ? "gh" : gh
+end
+
+def gh_available?
+  system("#{sh(gh_command)} --version >/dev/null 2>&1")
+  $? == 0
+end
+
+# Dies if stacking a new branch on `parent` would fork a github stack. GitHub's
+# stacks are linear, and a fork could not be mirrored there. `moving` is the
+# branch being placed, which may already sit on `parent`.
+def refuse_github_fork!(topology, parent, moving)
+  return nil unless topology.tracked?(parent)
+
+  others = topology.children_of(parent).reject { |child| child == moving }
+  return nil if others.empty?
+  return nil unless sync_mode_of(parent) == "github"
+
+  die("'#{parent}' is in a github stack and already has '#{others[0]}' on it; a github stack must stay linear")
+  nil
+end
+
 # --- worktrees --------------------------------------------------------------
 
 # git refuses to check out, or to rebase by name, a branch another worktree
@@ -809,12 +862,13 @@ def reparent!(branch, parent, err)
   nil
 end
 
-# Parent, base and anchor go together, so none outlives the stack it pointed into.
+# Parent, base, anchor and mode go together, so none outlives the stack it pointed into.
 def untrack!(branch)
   clear_parent(branch)
   clear_base(branch)
   # Fails when the key is absent, which is fine.
   git_config_write("--unset branch.#{sh(branch)}.stackAnchor")
+  git_config_write("--unset branch.#{sh(branch)}.stackSync")
   nil
 end
 
@@ -1448,7 +1502,7 @@ def print_parent_note(branch, trunks)
 end
 
 # One tree row, indented two spaces per `depth`, read from the snapshot alone.
-def print_tree_row(branch, depth, cur, snapshot)
+def print_tree_row(branch, depth, cur, snapshot, tag)
   extra = ""
   topology = snapshot.topology
   parent = topology.parent_of(branch)
@@ -1472,6 +1526,7 @@ def print_tree_row(branch, depth, cur, snapshot)
     extra = extra.empty? ? note : "#{extra} #{note}"
   end
 
+  extra = "#{extra} #{tag}" unless tag.empty?
   puts "#{"  " * depth}#{tree_marker(branch, cur)} #{tree_name(branch, cur, "")} #{extra}"
   nil
 end
@@ -1482,7 +1537,9 @@ def print_order(root, base, skip_root, cur, snapshot)
   snapshot.topology.each_preorder(root) do |branch, depth|
     next if skip_root && depth == 0
 
-    print_tree_row(branch, depth + base, cur, snapshot)
+    # Only a root says its mode: every branch below shares it.
+    tag = depth == 0 && sync_mode_of(branch) == "github" ? cyan("[github]") : ""
+    print_tree_row(branch, depth + base, cur, snapshot, tag)
   end
   nil
 end
@@ -1714,6 +1771,10 @@ def cmd_create(args)
   on_anchor = configured_anchors.include?(here)
   parent = on_anchor ? containing_trunk(here, trunk_branches) : here
   anchor = on_anchor ? here : get_anchor(here)
+  # Only a tracked branch can be in a github stack, so the topology's two scans
+  # are skipped for the common `create` on a trunk.
+  refuse_github_fork!(StackRepository.load_topology(trunk_branches), here, "") unless on_anchor || get_parent(here).empty?
+  mode = git_out("config --get branch.#{sh(here)}.stackSync")
   die("failed to create branch '#{name}'") unless git_ok("checkout -b #{sh(name)}")
   die("created branch '#{name}' but failed to record its parent") unless set_parent(name, parent)
   # A new branch has no commits yet, so its stack begins at the tip it was cut
@@ -1723,8 +1784,41 @@ def cmd_create(args)
     set_anchor(name, anchor)
     mark_anchor_used(anchor) if on_anchor
   end
+  set_sync_mode(name, mode) unless mode.empty?
   where = on_anchor ? "#{cyan(parent)} (anchor #{cyan(here)})" : cyan(parent)
   info "created #{green(name)} on top of #{where}"
+end
+
+# Show the current stack's sync-mode, or set it on every branch of the stack.
+#
+# github is refused where it could not work: on a stack that forks (GitHub's
+# stacks are linear), with no remote to push to, or without gh. Switching back
+# to local only changes the local mode; the GitHub stack is left as it is.
+def cmd_mode(args)
+  branch = current_branch
+  topology = StackRepository.load_topology(trunk_branches)
+  die("'#{branch}' is not in a stack; check out a branch of a stack to see or set its mode") unless topology.tracked?(branch)
+
+  want = arg0(args)
+  if want.empty?
+    puts sync_mode_of(branch)
+    return nil
+  end
+  die("mode must be local or github, not '#{want}'") unless SYNC_MODES.include?(want)
+
+  root = topology.stack_root(branch)
+  members = topology.order_branches(root).select { |name| topology.branch?(name) }
+  if want == "github"
+    fork = members.find { |name| topology.children_of(name).length > 1 }
+    unless fork.nil?
+      die("'#{fork}' has #{topology.children_of(fork).join(", ")} on it; a github stack must be linear")
+    end
+    die("no remote to push '#{root}' to; add one with 'git remote add <name> <url>'") if push_remote_for(root).empty?
+    die("github mode needs the GitHub CLI; install gh (https://cli.github.com) and run 'gh auth login'") unless gh_available?
+  end
+  members.each { |name| set_sync_mode(name, want) }
+  info "stack rooted at #{cyan(root)} is now #{green(want)}"
+  nil
 end
 
 def cmd_tree(_args)
@@ -1805,7 +1899,9 @@ def cmd_parent(args)
   end
   die("cannot set parent of trunk '#{branch}'") if is_trunk?(branch, trunks)
   refuse_anchor_parent!(new_parent)
-  StackRepository.load_topology(trunks).validate_new_parent!(branch, new_parent, "setting it as parent")
+  topology = StackRepository.load_topology(trunks)
+  refuse_github_fork!(topology, new_parent, branch)
+  topology.validate_new_parent!(branch, new_parent, "setting it as parent")
   reparent!(branch, new_parent, "failed to set parent of '#{branch}'")
   info "parent of '#{branch}' set to '#{new_parent}'"
 end
@@ -1818,7 +1914,9 @@ def cmd_track(args)
   # The trunk its history rests on, not just the primary.
   parent = containing_trunk(branch, trunks) if parent.empty?
   refuse_anchor_parent!(parent)
-  StackRepository.load_topology(trunks).validate_new_parent!(branch, parent, "tracking it")
+  topology = StackRepository.load_topology(trunks)
+  refuse_github_fork!(topology, parent, branch)
+  topology.validate_new_parent!(branch, parent, "tracking it")
   reparent!(branch, parent, "failed to track '#{branch}'")
   info "tracking '#{branch}' on top of '#{parent}'"
 end
@@ -2303,6 +2401,7 @@ def cmd_help(_args)
         drop [branch]         Splice [branch] (or the current branch) out of the stack, reconnecting its children to its parent. (--delete also removes the branch)
         restack               Rebase the whole stack so each branch sits on its parent.
         sync [--all]          Reparent branches whose parent was deleted (e.g. merged via a PR) onto trunk, then restack. In an anchor: its stacks only, then fast-forward the anchor (--all: every orphan).
+        mode [local|github]   Show or set the current stack's sync-mode (default: stack.defaultSync, else local).
         submit                Push every branch of the current stack, parents first, with --force-with-lease.
         version               Show the git-stack version and the Spinel build revision.
         help                  Show this help.
@@ -2353,6 +2452,7 @@ def max_operands(cmd)
   case cmd
   when "init", "plant", "fell" then -1
   when "anchor", "unanchor" then -1
+  when "mode" then 1
   when "create", "b", "branch" then 1
   when "tree", "ls", "list" then 0
   when "up", "next" then 1
@@ -2450,6 +2550,7 @@ def main(argv)
   when "restack"              then cmd_restack(rest)
   when "sync"                 then cmd_sync(rest)
   when "submit"               then cmd_submit(rest)
+  when "mode"                 then cmd_mode(rest)
   when "version"              then cmd_version(rest)
   when "help"                 then cmd_help(rest)
   else
