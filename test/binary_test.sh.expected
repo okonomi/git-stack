@@ -236,6 +236,7 @@ feat-b behind origin/feat-b: 0
 ### mode github on a linear stack, and tree tagging its root
 $ git stack mode github
 stack rooted at feat-a is now github
+2 branch(es) have no pull request yet; 'git stack submit' opens them
 [exit 0]
 $ git stack mode
 github
@@ -245,3 +246,23 @@ $ git stack tree
     feat-a (1 commit(s)) [github]
     * feat-b (1 commit(s))
 [exit 0]
+
+### github mode: submit opens and stacks pull requests, mode registers them
+$ git stack mode github
+stack rooted at feat-a is now github
+1 branch(es) have no pull request yet; 'git stack submit' opens them
+[exit 0]
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+pushing feat-c to origin
+opened #2 for feat-b onto feat-a
+opened #3 for feat-c onto feat-b
+created GitHub stack #4: #1, #2, #3
+done.
+[exit 0]
+PR #1 feat-a -> main (open) feat-a
+PR #2 feat-b -> feat-a (open) b1
+PR #3 feat-c -> feat-b (open) c1
+stack #4: #1 #2 #3

@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+#
+# A stand-in for `gh`, for the github-mode tests (GIT_STACK_GH points here). It
+# never talks to GitHub: pull requests and stacks live as files under $FAKE_GH,
+# and every `gh api` call is appended to $FAKE_GH/log.
+#
+# It does not evaluate `--jq`. Each endpoint git-stack calls answers with the
+# value git-stack's own `--jq` would have extracted, so this file has to change
+# with those calls. It does check what GitHub checks: a stack's pull requests
+# must chain, each one's base being the head of the one below.
+#
+# Besides `--version` and `api`, the tests drive it with `--fake`:
+#
+#   fake-gh --fake pr <head> <base> [title]   open a pull request
+#   fake-gh --fake merge <number>             mark a pull request merged
+#   fake-gh --fake state                      print every pull request and stack
+#   fake-gh --fake fail <pattern>             fail the next call matching it
+#
+# Pull requests and stacks share one number sequence, as on GitHub.
+
+set -u
+dir="${FAKE_GH:?FAKE_GH must name a state directory}"
+mkdir -p "$dir/pr" "$dir/stack"
+
+next_number() {
+  local n=1
+  [ -f "$dir/counter" ] && n=$(( $(cat "$dir/counter") + 1 ))
+  echo "$n" > "$dir/counter"
+  echo "$n"
+}
+
+open_pr() { # head base title body
+  local n; n=$(next_number)
+  mkdir -p "$dir/pr/$n"
+  printf '%s' "$1" > "$dir/pr/$n/head"
+  printf '%s' "$2" > "$dir/pr/$n/base"
+  printf '%s' "$3" > "$dir/pr/$n/title"
+  printf '%s' "$4" > "$dir/pr/$n/body"
+  echo open > "$dir/pr/$n/state"
+  echo "$n"
+}
+
+fail() {
+  echo "gh: $1 (HTTP 422)" >&2
+  exit 1
+}
+
+if [ "${1:-}" = "--version" ]; then
+  echo "gh version 0.0.0-fake"
+  exit 0
+fi
+
+if [ "${1:-}" = "--fake" ]; then
+  case "$2" in
+    pr) open_pr "$3" "$4" "${5:-$3}" "" ;;
+    merge)
+      echo merged > "$dir/pr/$3/state" ;;
+    fail) printf '%s' "$3" > "$dir/fail" ;;
+    state)
+      for p in $(ls "$dir/pr" | sort -n); do
+        printf 'PR #%s %s -> %s (%s) %s\n' "$p" "$(cat "$dir/pr/$p/head")" "$(cat "$dir/pr/$p/base")" \
+          "$(cat "$dir/pr/$p/state")" "$(cat "$dir/pr/$p/title")"
+        [ -s "$dir/pr/$p/body" ] && sed 's/^/    | /' "$dir/pr/$p/body" && echo
+      done
+      for s in $(ls "$dir/stack" | sort -n); do
+        printf 'stack #%s: %s\n' "$s" "$(sed 's/^/#/' "$dir/stack/$s" | tr '\n' ' ' | sed 's/ $//')"
+      done ;;
+  esac
+  exit 0
+fi
+
+[ "${1:-}" = "api" ] || fail "fake-gh only knows 'api'"
+shift
+method=GET
+endpoint=""
+fields=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    -f|-F) fields+=("$2"); shift 2 ;;
+    --jq) shift 2 ;;
+    *) endpoint="$1"; shift ;;
+  esac
+done
+call="$method $endpoint${fields[*]:+ ${fields[*]}}"
+echo "$call" >> "$dir/log"
+
+if [ -f "$dir/fail" ] && [[ "$call" == *"$(cat "$dir/fail")"* ]]; then
+  rm -f "$dir/fail"
+  fail "injected failure for '$call'"
+fi
+
+field() { # name -> value of the first -f/-F name=value
+  local f
+  for f in "${fields[@]}"; do
+    [ "${f%%=*}" = "$1" ] && { printf '%s' "${f#*=}"; return; }
+  done
+}
+
+numbers() { # every pull_requests[]= value, one per line
+  local f
+  for f in "${fields[@]}"; do
+    [ "${f%%=*}" = "pull_requests[]" ] && echo "${f#*=}"
+  done
+}
+
+# Each pull request's base must be the head of the one before it.
+check_chain() { # numbers... (the first is checked against $prev_head when set)
+  local n
+  for n in "$@"; do
+    [ -d "$dir/pr/$n" ] || fail "pull request #$n not found"
+    [ -s "$dir/pr/$n/stack" ] && fail "pull request #$n is already in a stack"
+    if [ -n "$prev_head" ] && [ "$(cat "$dir/pr/$n/base")" != "$prev_head" ]; then
+      fail "pull request #$n's base is not $prev_head"
+    fi
+    prev_head=$(cat "$dir/pr/$n/head")
+  done
+}
+
+r="repos/{owner}/{repo}"
+case "$method $endpoint" in
+  "GET $r") echo octo ;;
+  "GET $r/pulls")
+    head=$(field head); head=${head#octo:}
+    for p in $(ls "$dir/pr" | sort -n); do
+      if [ "$(cat "$dir/pr/$p/head")" = "$head" ] && [ "$(cat "$dir/pr/$p/state")" = open ]; then
+        printf '%s\t%s\n' "$p" "$(cat "$dir/pr/$p/base")"
+      fi
+    done ;;
+  "POST $r/pulls") open_pr "$(field head)" "$(field base)" "$(field title)" "$(field body)" ;;
+  "PATCH $r/pulls/"*)
+    n=${endpoint##*/}
+    printf '%s' "$(field base)" > "$dir/pr/$n/base"
+    echo "$n" ;;
+  "GET $r/pulls/"*)
+    n=${endpoint##*/}
+    if [ -s "$dir/pr/$n/stack" ]; then cat "$dir/pr/$n/stack"; fi ;;
+  "POST $r/stacks")
+    prev_head=""
+    check_chain $(numbers)
+    s=$(next_number)
+    numbers > "$dir/stack/$s"
+    for n in $(numbers); do echo "$s" > "$dir/pr/$n/stack"; done
+    echo "$s" ;;
+  "POST $r/stacks/"*/add)
+    s=${endpoint%/add}; s=${s##*/}
+    top=$(tail -1 "$dir/stack/$s")
+    prev_head=$(cat "$dir/pr/$top/head")
+    check_chain $(numbers)
+    numbers >> "$dir/stack/$s"
+    for n in $(numbers); do echo "$s" > "$dir/pr/$n/stack"; done
+    echo "$s" ;;
+  "GET $r/stacks/"*)
+    s=${endpoint##*/}
+    while read -r n; do
+      [ "$(cat "$dir/pr/$n/state")" = open ] && echo "$n"
+    done < "$dir/stack/$s" ;;
+  *) fail "fake-gh does not know '$method $endpoint'" ;;
+esac

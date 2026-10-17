@@ -70,6 +70,13 @@ class Object
   def gh_command: () -> String
   def gh_available?: () -> bool
   def refuse_github_fork!: (StackTopology, String, String) -> nil
+  def gh_api: (String) -> String
+  def gh_open_pr: (String, String) -> String
+  def pr_fill_title: (String, String) -> String
+  def pr_fill_body: (String) -> String
+  def github_pr!: (String, String, String, String) -> String
+  def pr_list: (Array[String]) -> String
+  def github_stack!: (Array[String]) -> nil
   def other_worktree_checkouts: (String) -> Hash[String, String]
   def worktree_line_branch: (String, String) -> String
   def worktree_file: (String, String) -> String
@@ -122,6 +129,7 @@ class Object
   def cmd_anchor: (Array[String]) -> nil
   def cmd_unanchor: (Array[String]) -> nil
   def cmd_create: (Array[String]) -> nil
+  def github_register!: (StackTopology, Array[String]) -> nil
   def cmd_mode: (Array[String]) -> nil
   def cmd_tree: (Array[String]) -> Array[String]
   def print_anchor_row: (String, String, bool, String, StackSnapshot) -> nil
@@ -141,6 +149,7 @@ class Object
   def scope_anchor: (String, Array[String]) -> String
   def follow_anchor: (String, String, String, Hash[String, String]) -> nil
   def cmd_submit: (Array[String]) -> nil
+  def own_range: (StackTopology, Hash[String, String], String) -> String
   def cmd_restack: (Array[String]) -> nil
   def cmd_sync: (Array[String]) -> nil
   def cmd_drop: (Array[String]) -> nil
@@ -158,16 +167,18 @@ class Object
   def __enum_all?__3090: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
-  def __enum_find__5718: (Array[String]) -> String
-  def __enum_each_with_index__6367: (Array[String]) -> Array[String]
-  def __enum_find__7909: (Array[String]) -> String
-  def __enum_find__8852: (Array[String]) -> String
-  def __enum_each_with_index__9038: (Array[String]) -> Array[String]
-  def __enum_each_with_index__9124: (Array[String]) -> Array[String]
-  def __enum_each_with_index__10899: (Array[String]) -> Array[String]
-  def __enum_each_with_index__10933: (Array[String]) -> Array[String]
-  def __enum_find__11437: (Array[String]) -> String
-  def __enum_find__11696: (Array[String]) -> String
+  def __enum_find__6295: (Array[String]) -> String
+  def __enum_each_with_index__6944: (Array[String]) -> Array[String]
+  def __enum_find__8486: (Array[String]) -> String
+  def __enum_each_with_index__9405: (Array[String]) -> Array[String]
+  def __enum_find__9590: (Array[String]) -> String
+  def __enum_each_with_index__9795: (Array[String]) -> Array[String]
+  def __enum_each_with_index__9881: (Array[String]) -> Array[String]
+  def __enum_each_with_index__11656: (Array[String]) -> Array[String]
+  def __enum_find__11702: (Array[String]) -> String
+  def __enum_each_with_index__11746: (Array[String]) -> Array[String]
+  def __enum_find__12309: (Array[String]) -> String
+  def __enum_find__12568: (Array[String]) -> String
 end
 
 class OptionParser
