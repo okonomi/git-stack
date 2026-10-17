@@ -747,11 +747,25 @@ def pr_fill_title(branch, range)
   subjects.length == 1 ? subjects[0] : branch
 end
 
+#
+# A single commit's trailers (`Co-Authored-By:`, `Signed-off-by:`) are left out:
+# they credit the commit, and on a pull request they read as body text. Which
+# lines are trailers is git's call (`%(trailers)`), not a pattern here: git
+# counts only a last paragraph made of them, so a "Key: value" line elsewhere
+# stays.
 def pr_fill_body(range)
   subjects = unpack_lines(git_out("log --reverse --format=%s #{range}"))
-  return git_out("log -1 --format=%b #{range}") if subjects.length == 1
+  return subjects.map { |subject| "- #{subject}" }.join("\n") if subjects.length != 1
 
-  subjects.map { |subject| "- #{subject}" }.join("\n")
+  body = git_out("log -1 --format=%b #{range}")
+  trailers = unpack_lines(git_out("log -1 #{sh("--format=%(trailers:only,unfold)")} #{range}"))
+  return body if trailers.empty?
+
+  paragraphs = body.split("\n\n")
+  last = unpack_lines(paragraphs[paragraphs.length - 1])
+  return body unless last.reject { |line| trailers.include?(line.strip) }.empty?
+
+  paragraphs[0...(paragraphs.length - 1)].join("\n\n").strip
 end
 
 # The number of `branch`'s open pull request, opening one onto `parent` when

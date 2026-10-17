@@ -75,6 +75,24 @@ PR #1 feat-b -> feat-a (open) feat-b
 PR #2 feat-a -> main (open) a1
 stack #3: #2 #1
 
+### a pull request's body leaves out the commit's trailers
+$ git stack submit
+submitting stack rooted at feat-a
+pushed feat-a to origin (new branch)
+pushed feat-b to origin (new branch)
+opened #1 for feat-a onto main
+opened #2 for feat-b onto feat-a
+created GitHub stack #3: #1, #2
+done.
+[exit 0]
+PR #1 feat-a -> main (open) Add a.txt
+    | Why it is needed.
+PR #2 feat-b -> feat-a (open) Add b.txt
+    | Refs: not a trailer block
+    | 
+    | Closing words.
+stack #3: #1 #2
+
 ### submit leaves a GitHub stack that does not match, and says so
 $ git stack submit
 submitting stack rooted at feat-a

@@ -173,18 +173,18 @@ class Object
   def __enum_all?__3137: (untyped) -> bool # spinel: widened to untyped (slow path)
   def __enum_find__4047: (Array[String]) -> String
   def __enum_find__5276: (Array[String]) -> String
-  def __enum_find__7234: (Array[String]) -> String
-  def __enum_each_with_index__7883: (Array[String]) -> Array[String]
-  def __enum_find__9425: (Array[String]) -> String
-  def __enum_each_with_index__10370: (Array[String]) -> Array[String]
-  def __enum_find__10555: (Array[String]) -> String
-  def __enum_each_with_index__10767: (Array[String]) -> Array[String]
-  def __enum_each_with_index__10853: (Array[String]) -> Array[String]
-  def __enum_each_with_index__12654: (Array[String]) -> Array[String]
-  def __enum_find__12700: (Array[String]) -> String
-  def __enum_each_with_index__12744: (Array[String]) -> Array[String]
-  def __enum_find__13308: (Array[String]) -> String
-  def __enum_find__13568: (Array[String]) -> String
+  def __enum_find__7308: (Array[String]) -> String
+  def __enum_each_with_index__7957: (Array[String]) -> Array[String]
+  def __enum_find__9499: (Array[String]) -> String
+  def __enum_each_with_index__10444: (Array[String]) -> Array[String]
+  def __enum_find__10629: (Array[String]) -> String
+  def __enum_each_with_index__10841: (Array[String]) -> Array[String]
+  def __enum_each_with_index__10927: (Array[String]) -> Array[String]
+  def __enum_each_with_index__12728: (Array[String]) -> Array[String]
+  def __enum_find__12774: (Array[String]) -> String
+  def __enum_each_with_index__12818: (Array[String]) -> Array[String]
+  def __enum_find__13382: (Array[String]) -> String
+  def __enum_find__13642: (Array[String]) -> String
 end
 
 class OptionParser
