@@ -192,3 +192,26 @@ done.
 [exit 0]
 feat-a behind origin/main: 0
 main behind origin/main (untouched): 1
+
+### anchors: tree, up from an anchor, and sync moving the anchor up
+$ git stack up
+'wt-x' has multiple stacks; pick one:
+  git stack up feat-a
+  git stack up fix-c
+[exit 1]
+$ git stack tree
+  main (trunk)
+    wt-x (anchor, 1 behind; run `git stack sync`)
+    * feat-a (needs restack: 1 behind)
+      fix-c (needs restack: 1 behind)
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-a
+restacking feat-a onto main
+syncing stack rooted at fix-c
+restacking fix-c onto main
+fast-forwarding anchor wt-x to main
+done.
+[exit 0]
+wt-x behind main: 0
+fix-c behind main: 0

@@ -362,3 +362,23 @@ run tree
 run sync
 show "feat-a behind origin/main" "rev-list --count feat-a..origin/main"
 show "main behind origin/main (untouched)" "rev-list --count main..origin/main"
+
+# Anchors: the branch -> anchor Hash from `anchor_memberships`, the `select`s
+# that pick each anchor's stacks for `tree` and `up`, and `follow_anchor`'s
+# `update-ref` -- reached only under CRuby in the snapshot tests.
+section "anchors: tree, up from an anchor, and sync moving the anchor up"
+new_repo
+git_q branch wt-x
+gsq anchor wt-x
+git_q checkout -q wt-x
+gsq create feat-a; commit a.txt a1
+git_q checkout -q wt-x
+gsq create fix-c; commit c.txt c1
+git_q checkout -q main; commit m.txt m2
+git_q checkout -q wt-x
+run up
+git_q checkout -q feat-a
+run tree
+run sync
+show "wt-x behind main" "rev-list --count wt-x..main"
+show "fix-c behind main" "rev-list --count fix-c..main"
