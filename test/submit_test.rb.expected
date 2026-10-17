@@ -2,8 +2,8 @@
 ### submit pushes every branch of the current stack, parents first
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
-pushing feat-b to origin
+pushed feat-a to origin (new branch)
+pushed feat-b to origin (new branch)
 done.
 [exit 0]
 feat-a on origin: yes
@@ -13,11 +13,19 @@ feat-b upstream: origin/feat-b
 feat-a stackPushed == tip: yes
 HEAD: feat-b
 
+### submit says which branches were up to date and which it pushed
+$ git stack submit
+submitting stack rooted at feat-a
+feat-a is up to date on origin
+pushed feat-b to origin
+done.
+[exit 0]
+
 ### submit force-pushes over its own last push
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
-pushing feat-b to origin
+pushed feat-a to origin
+pushed feat-b to origin
 done.
 [exit 0]
 feat-a on origin: yes
@@ -26,9 +34,8 @@ feat-b on origin: yes
 ### submit refuses to overwrite a branch someone else pushed to
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
 warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
-pushing feat-b to origin
+pushed feat-b to origin
 error: submit failed for 1 branch(es): feat-a
 Deal with the branches warned about above, then re-run 'git stack submit'.
 [exit 1]
@@ -38,8 +45,8 @@ feat-b on origin: yes
 ### a branch pushed outside git-stack leases against its remote-tracking ref
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
-pushing feat-b to origin
+pushed feat-a to origin
+pushed feat-b to origin (new branch)
 done.
 [exit 0]
 feat-a on origin: yes
@@ -47,9 +54,8 @@ feat-a on origin: yes
 ### an unrecorded branch whose remote moved since the last fetch is not pushed
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
 warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
-pushing feat-b to origin
+pushed feat-b to origin (new branch)
 error: submit failed for 1 branch(es): feat-a
 Deal with the branches warned about above, then re-run 'git stack submit'.
 [exit 1]
@@ -58,9 +64,8 @@ origin feat-a has their commit: 1
 ### an unrecorded branch is not pushed over commits fetched but not integrated
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to origin
 warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
-pushing feat-b to origin
+pushed feat-b to origin (new branch)
 error: submit failed for 1 branch(es): feat-a
 Deal with the branches warned about above, then re-run 'git stack submit'.
 [exit 1]
@@ -69,8 +74,8 @@ origin feat-a has their commit: 1
 ### submit pushes to remote.pushDefault when it is set
 $ git stack submit
 submitting stack rooted at feat-a
-pushing feat-a to fork
-pushing feat-b to fork
+pushed feat-a to fork (new branch)
+pushed feat-b to fork (new branch)
 done.
 [exit 0]
 feat-a on fork: yes
