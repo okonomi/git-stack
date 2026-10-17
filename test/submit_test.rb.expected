@@ -1,0 +1,90 @@
+
+### submit pushes every branch of the current stack, parents first
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+done.
+[exit 0]
+feat-a on origin: yes
+feat-b on origin: yes
+other-x on origin (other stack): none
+feat-b upstream: origin/feat-b
+feat-a stackPushed == tip: yes
+HEAD: feat-b
+
+### submit force-pushes over its own last push
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+done.
+[exit 0]
+feat-a on origin: yes
+feat-b on origin: yes
+
+### submit refuses to overwrite a branch someone else pushed to
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
+pushing feat-b to origin
+error: submit failed for 1 branch(es): feat-a
+Deal with the branches warned about above, then re-run 'git stack submit'.
+[exit 1]
+origin feat-a has their commit: 1
+feat-b on origin: yes
+
+### a branch pushed outside git-stack leases against its remote-tracking ref
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+pushing feat-b to origin
+done.
+[exit 0]
+feat-a on origin: yes
+
+### an unrecorded branch whose remote moved since the last fetch is not pushed
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
+pushing feat-b to origin
+error: submit failed for 1 branch(es): feat-a
+Deal with the branches warned about above, then re-run 'git stack submit'.
+[exit 1]
+origin feat-a has their commit: 1
+
+### an unrecorded branch is not pushed over commits fetched but not integrated
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to origin
+warning: not pushing 'feat-a': 'origin/feat-a' has commits this branch does not include; fetch them and bring them in (or check they can go) first
+pushing feat-b to origin
+error: submit failed for 1 branch(es): feat-a
+Deal with the branches warned about above, then re-run 'git stack submit'.
+[exit 1]
+origin feat-a has their commit: 1
+
+### submit pushes to remote.pushDefault when it is set
+$ git stack submit
+submitting stack rooted at feat-a
+pushing feat-a to fork
+pushing feat-b to fork
+done.
+[exit 0]
+feat-a on fork: yes
+feat-a on origin: none
+
+### submit needs a remote
+$ git stack submit
+error: no remote to push 'feat-a' to; add one with 'git remote add <name> <url>'
+[exit 1]
+
+### submit runs from a branch of a stack, not a trunk or an anchor
+$ git stack submit
+error: 'main' is not in a stack; check out a branch of the stack to submit
+[exit 1]
+$ git stack submit
+error: 'wt-x' is not in a stack; check out a branch of the stack to submit
+[exit 1]

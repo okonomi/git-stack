@@ -226,6 +226,7 @@ and has `sync` touch the network.
 | `git stack drop [branch]` | Splice `[branch]` (or the current branch) out of the stack, reconnecting its children to its parent. (`--delete` also removes the branch) |
 | `git stack restack`       | Rebase the whole stack so each branch sits on its parent.       |
 | `git stack sync [--all]`  | Restack the current stack, and reparent every branch whose parent was deleted (e.g. merged via a PR) onto trunk — wherever in the repository it sits. In an [anchor](#anchors), restack all of its stacks, heal only its orphans (`--all`: every orphan), and fast-forward the anchor. |
+| `git stack submit`        | Push every branch of the current stack, parents first, with `--force-with-lease` (see [Pushing](#pushing)). |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 | `git stack help`          | Show the built-in help.                                         |
 
@@ -330,6 +331,38 @@ Already have a branch you want to fold into a stack?
 git checkout my-existing-branch
 git stack track main            # or any other branch as the parent
 ```
+
+## Pushing
+
+`git stack submit` pushes every branch of the current stack, parents first,
+each to the same name on its remote. It opens no pull requests: create them
+with `gh` or on the web, each based on the branch below it.
+
+```sh
+git stack submit
+# submitting stack rooted at feature-a
+# pushing feature-a to origin
+# pushing feature-b to origin
+# done.
+```
+
+The remote is the one git would pick for that branch (`branch.<name>.pushRemote`,
+`remote.pushDefault`, then `branch.<name>.remote`), else `origin`, else the
+repository's only remote. A branch with no upstream gets one.
+
+Pushes are forced, since a restack rewrites history, but never blindly:
+
+- After each push git-stack records the SHA it pushed in
+  `branch.<name>.stackPushed`, and the next push is
+  `--force-with-lease=refs/heads/<name>:<that SHA>`. If someone else pushed to
+  the branch in between, the lease fails.
+- A branch git-stack never pushed is leased against its remote-tracking ref
+  with `--force-if-includes`, so commits you fetched but did not bring in are
+  not overwritten either.
+
+A branch whose lease fails is not pushed: `submit` warns, still pushes the rest
+of the stack, and exits non-zero naming it. Fetch, look at what is there, bring
+it in if it belongs, and run `submit` again.
 
 ## Restack conflicts
 
