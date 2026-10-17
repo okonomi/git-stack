@@ -168,7 +168,7 @@ restacking stack rooted at feat-a
 restacking feat-b onto feat-a in worktree '<repo>-wt-b'
 warning: skipping 'feat-c': its worktree '<repo>-wt-c' has uncommitted changes
 error: restack skipped 1 branch(es): feat-c
-Deal with the worktrees warned about above, then re-run 'git stack restack'.
+Deal with the branches warned about above, then re-run 'git stack restack'.
 [exit 1]
 feat-b behind feat-a: 0
 feat-c behind feat-a: 1
@@ -266,3 +266,17 @@ PR #1 feat-a -> main (open) feat-a
 PR #2 feat-b -> feat-a (open) b1
 PR #3 feat-c -> feat-b (open) c1
 stack #4: #1 #2 #3
+
+### github mode: merge, then sync takes in GitHub's merge and rebase
+$ git stack merge
+asked GitHub to merge #2 (feat-b) with the 1 below it: pending
+it merges in the background; run 'git stack sync' to take in the result
+[exit 0]
+$ git stack sync
+syncing stack rooted at feat-a
+'feat-a': #1 merged; dropped it from the stack (the branch is kept; 'git branch -D feat-a' removes it)
+'feat-b': took in origin/feat-b as GitHub left it
+done.
+[exit 0]
+feat-a parent (dropped): 
+feat-b behind origin/feat-b: 0

@@ -434,3 +434,29 @@ gsq create feat-c; commit c.txt c1
 run submit
 "$GIT_STACK_GH" --fake state
 unset GIT_STACK_GH FAKE_GH
+
+# github `merge` and `sync`: the merge-async status read back through `--jq`,
+# and `sync` taking in GitHub's merge -- the dropped-branch Hash walked with
+# `while`, `reset`/`update-ref` of a rewritten branch -- reached only under
+# CRuby in the snapshot tests.
+section "github mode: merge, then sync takes in GitHub's merge and rebase"
+new_repo
+git init -q --bare -b main "$repo-origin.git"
+git_q remote add origin "$repo-origin.git"
+git_q push -q -u origin main
+export GIT_STACK_GH="$root/test/support/fake-gh" FAKE_GH="$(mktemp -d)"
+gsq create feat-a; commit a.txt a1
+gsq create feat-b; commit b.txt b1
+gsq mode github
+gsq submit
+run merge
+git clone -q "$repo-origin.git" "$repo-other"
+(cd "$repo-other" && git config user.email gh@example.com && git config user.name GitHub &&
+  git merge -q --squash origin/feat-a && git commit -qm 'a1 (#1)' && git push -q origin main &&
+  git checkout -q -b feat-b origin/feat-b && git rebase -q --onto main origin/feat-a &&
+  git push -q -f origin feat-b && git push -q origin --delete feat-a) >/dev/null 2>&1
+"$GIT_STACK_GH" --fake merge 1
+run sync
+show "feat-a parent (dropped)" "config --get branch.feat-a.stackParent"
+show "feat-b behind origin/feat-b" "rev-list --count feat-b..origin/feat-b"
+unset GIT_STACK_GH FAKE_GH

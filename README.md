@@ -228,6 +228,7 @@ and has `sync` touch the network.
 | `git stack sync [--all]`  | Restack the current stack, and reparent every branch whose parent was deleted (e.g. merged via a PR) onto trunk — wherever in the repository it sits. In an [anchor](#anchors), restack all of its stacks, heal only its orphans (`--all`: every orphan), and fast-forward the anchor. |
 | `git stack mode [local\|github]` | Show or set the current stack's sync-mode (see [Sync-mode](#sync-mode)). |
 | `git stack submit`        | Push every branch of the current stack, parents first, with `--force-with-lease` (see [Pushing](#pushing)). |
+| `git stack merge`         | Ask GitHub to merge the current branch's pull request and those below it, then return (github mode). |
 | `git stack version`       | Show the git-stack version and the Spinel build revision.       |
 | `git stack help`          | Show the built-in help.                                         |
 
@@ -418,6 +419,29 @@ stack has been changed on github.com (a pull request added or removed),
 `submit` warns and leaves it alone rather than undoing the change. A branch
 with no commits of its own stops `submit` before anything is pushed: GitHub
 cannot open a pull request for it.
+
+`git stack merge` asks GitHub to merge the current branch's pull request — and,
+as GitHub merges a stack, every one below it — and returns at once. Every
+branch up to the current one must be exactly what git-stack last pushed, and
+its SHA goes with the request, so GitHub merges what was reviewed. The merge
+runs on GitHub; `sync` takes in the result. In local mode `merge` refuses:
+merge on your hosting service, then run `sync`.
+
+In a github stack, `git stack sync` takes in what GitHub did instead of
+restacking, since GitHub rebases the rest of the stack itself when its bottom
+merges:
+
+- a branch whose pull request merged is dropped from the stack, as `drop` would
+  — its ref is kept, for you or your worktree tool to delete;
+- every other branch is moved to its remote tip, where its worktree has it
+  checked out if one does (`reset --keep`), and its base and pushed SHA are
+  re-recorded there;
+- a branch with commits that are not on the remote is left alone, with the
+  branches above it, and `sync` exits non-zero naming them.
+
+`restack` still replays a github stack when you ask for it; `submit` then
+pushes the result. With `stack.trunkUpstream`, the stack follows the trunk as
+GitHub sees it (`origin/main`), which is usually what a github stack wants.
 
 
 ## Restack conflicts
